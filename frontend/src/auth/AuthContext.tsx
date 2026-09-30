@@ -6,7 +6,7 @@ import type { AuthSession, User } from "../types/domain";
 type AuthContextValue = {
   user: User | null; ready: boolean; login(email: string, password: string): Promise<void>;
   register(email: string, password: string, name: string): Promise<void>; verifyOtp(email: string, code: string): Promise<void>;
-  logout(): Promise<void>; googleLogin(): void;
+  logout(): Promise<void>; googleLogin(): void; accessToken: string | null;
 };
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 const KEY = "bocbang.session";
@@ -26,7 +26,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => { if (oauthRefreshToken) void authApi.refresh(oauthRefreshToken).then(persist).catch(() => persist(null)).finally(() => setReady(true)); }, [oauthRefreshToken, persist]);
   useEffect(() => { configureApiAuth(() => session?.access_token ?? null, refresh); }, [refresh, session?.access_token]);
   const value = useMemo<AuthContextValue>(() => ({
-    user: session?.user ?? null, ready,
+    user: session?.user ?? null, ready, accessToken: session?.access_token ?? null,
     login: async (email, password) => persist(await authApi.login(email, password)),
     register: async (email, password, name) => { await authApi.register(email, password, name); },
     verifyOtp: async (email, code) => persist(await authApi.verifyOtp(email, code)),

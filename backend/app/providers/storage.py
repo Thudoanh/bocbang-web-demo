@@ -13,6 +13,10 @@ class MediaStorage(Protocol):
 
     async def delete(self, key: str) -> None: ...
 
+    async def put_bytes(self, content: bytes, key: str) -> None: ...
+
+    async def get_bytes(self, key: str) -> bytes: ...
+
 
 class FileSystemMediaStorage:
     """Stores opaque object keys below one configured directory.
@@ -33,6 +37,14 @@ class FileSystemMediaStorage:
         path = self._path_for(key)
         if path.exists():
             await asyncio.to_thread(path.unlink)
+
+    async def put_bytes(self, content: bytes, key: str) -> None:
+        destination = self._path_for(key)
+        await asyncio.to_thread(destination.parent.mkdir, parents=True, exist_ok=True)
+        await asyncio.to_thread(destination.write_bytes, content)
+
+    async def get_bytes(self, key: str) -> bytes:
+        return await asyncio.to_thread(self._path_for(key).read_bytes)
 
     def _path_for(self, key: str) -> Path:
         candidate = (self._root / key).resolve()

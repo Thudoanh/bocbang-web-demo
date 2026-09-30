@@ -215,6 +215,7 @@ GET    /meetings/{id}/comments
 POST   /meetings/{id}/comments
 PATCH  /comments/{id}
 DELETE /comments/{id}
+GET    /shares/{token}
 ```
 
 ## 10. Translation
@@ -258,9 +259,14 @@ expose the immutable history.
 ``` text
 POST /meetings/{id}/exports
 GET  /exports/{id}
+GET  /exports/{id}/download
 ```
 
 Formats: `pdf | docx | txt | srt | vtt | json`
+
+Export requests return `202` with a durable job. `GET /exports/{id}` reports
+that job's state; downloading is authorized with meeting `read` access and is
+available only after completion.
 
 ## 13. Realtime
 

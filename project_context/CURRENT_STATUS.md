@@ -11,6 +11,9 @@ _Cập nhật lần cuối: 2026-09-30_
   monitoring.
 - Đã chạy thành công `npm run check` và `npm run build` trong `frontend/`.
 - Đã bổ sung `project_context/` và quy ước handoff/cập nhật tiến độ cho agent.
+- Task 12 frontend integration: API client now covers auth recovery, meeting,
+  transcript mutation, speakers, comments, jobs and export downloads; the UI
+  uses real REST/WebSocket boundaries and has no fake success fallback.
 - Đã dựng FastAPI backend foundation: `/api/v1`, health/readiness,
   environment settings, CORS, structured errors/request IDs, JSON logging,
   database/Alembic foundation và provider-neutral contracts.
@@ -40,7 +43,9 @@ _Cập nhật lần cuối: 2026-09-30_
 
 ## In progress
 
-- Chưa có task implementation nào đang chạy.
+- Task 12 cannot meet end-to-end completion criteria yet: no real STT,
+  translation or LLM adapters are registered, and no batch media processor is
+  present. Upload jobs therefore remain queued by design.
 
 ## Next
 

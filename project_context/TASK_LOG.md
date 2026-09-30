@@ -12,6 +12,19 @@ Mục mới nhất được thêm ở đầu file. Dùng format ngắn dưới �
 - Follow-up / blocker: ...
 ```
 
+## 2026-09-30 — Frontend ↔ Backend Integration
+
+- Status: blocked
+- Scope: Completed REST/WebSocket UI integration and real async/error states;
+  added recovery auth, transcript mutations, speaker/comment controls, export
+  job/download handling, capability-gated browser recording and local-run docs.
+- Changed: `frontend/src/api/*`, `frontend/src/auth/AuthContext.tsx`,
+  `frontend/src/pages/AuthPage.tsx`, `frontend/src/pages/MeetingPage.tsx`,
+  `frontend/src/types/domain.ts`, `README.md`, project context.
+- Verified: `npm.cmd run check` and `npm.cmd run build` pass in `frontend/`.
+- Follow-up / blocker: Batch upload STT worker and real STT/translation/LLM
+  adapters must be registered server-side before Task 12 can be marked complete.
+
 ## 2026-09-30 — Translation + AI Summary
 
 - Status: done

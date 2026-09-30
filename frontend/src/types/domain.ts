@@ -12,7 +12,7 @@ export interface Meeting {
   diarization_enabled: boolean; duration_ms?: number; created_at: string; updated_at: string;
 }
 export interface MediaFile { id: string; original_filename: string; size_bytes: number; duration_ms?: number; status: string }
-export interface Speaker { id: string; name: string; role?: string; organization?: string; is_identified: boolean }
+export interface Speaker { id: string; meeting_id?: string; name: string; role?: string; organization?: string; is_identified: boolean }
 export interface Segment { logical_segment_id: string; start_ms: number; end_ms: number; text: string; speaker_id?: string; speaker_label?: string; confidence?: number }
 export interface Transcript { version_id: string; language: string; segments: Segment[] }
 export interface Capabilities {
@@ -20,4 +20,6 @@ export interface Capabilities {
   translation: { languages: string[] }; summary_templates: SummaryTemplate[]; exports: ExportFormat[];
 }
 export interface Job { id: string; status: JobStatus; progress?: number; error?: { code: string; message: string } }
+export interface Comment { id: string; meeting_id: string; segment_logical_id?: string; author_id: string; body: string; created_at: string; updated_at: string }
+export interface ExportArtifact { id: string; meeting_id: string; transcript_version_id: string; format: ExportFormat; job_id?: string; status: JobStatus; filename?: string; content_type?: string; created_at: string }
 export interface ApiErrorShape { code?: string; message?: string; detail?: string }

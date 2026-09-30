@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, Request, Response, status
 
 from app.api.v1.routes.auth import CurrentUserDependency
 from app.api.v1.routes.media import MediaServiceDependency
+from app.api.v1.routes.exports import ExportServiceDependency
 from app.core.dependencies import get_database
 from app.db.session import Database
 from app.schemas.meeting import (
@@ -77,11 +78,13 @@ async def delete_meeting(
     user: CurrentUserDependency,
     service: MeetingServiceDependency,
     media_service: MediaServiceDependency,
+    export_service: ExportServiceDependency,
 ) -> Response:
     # Check ownership before touching storage, then let database cascades remove
     # media/job records after all associated object keys have been purged.
     await service.require_access(meeting_id, user, "owner")
     await media_service.purge_meeting_storage(meeting_id)
+    await export_service.purge_meeting_storage(meeting_id)
     await service.delete(meeting_id, user)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

@@ -24,6 +24,7 @@ from app.providers.contracts import (
     TranslationProvider,
     TranslationProviderError,
 )
+from app.providers.storage import MediaStorage
 from app.schemas.ai import (
     SummaryCreateRequest,
     SummaryResponse,
@@ -34,6 +35,7 @@ from app.schemas.ai import (
 )
 from app.schemas.media import JobErrorResponse, JobResponse
 from app.services.meetings import MeetingService
+from app.services.exports import ExportJobRunner
 
 
 class AIService:
@@ -154,8 +156,9 @@ class AIService:
 class AIJobDispatcher:
     """In-process durable job runner; deployments may invoke ``run`` from a worker."""
 
-    def __init__(self, database: Database, settings: Settings, translation: TranslationProvider | None, llm: LLMProvider | None) -> None:
+    def __init__(self, database: Database, settings: Settings, translation: TranslationProvider | None, llm: LLMProvider | None, storage: MediaStorage) -> None:
         self._database, self._settings, self._translation, self._llm = database, settings, translation, llm
+        self._exports = ExportJobRunner(storage)
         self._tasks: set[asyncio.Task[None]] = set()
 
     def enqueue(self, job_id: UUID) -> None:
@@ -175,6 +178,8 @@ class AIJobDispatcher:
                     await self._run_translation(session, job)
                 elif job.job_type == "summary":
                     await self._run_summary(session, job)
+                elif job.job_type == "export":
+                    await self._exports.run(session, job)
                 else:
                     raise ValueError("Unsupported AI job type.")
                 job.status, job.progress = JobStatus.COMPLETED, 100

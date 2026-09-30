@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import ForeignKey
+from sqlalchemy import ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -29,6 +29,9 @@ class Export(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     format: Mapped[ExportFormat] = mapped_column(
         domain_enum(ExportFormat, "export_format"), nullable=False
     )
+    storage_key: Mapped[str | None] = mapped_column(String, nullable=True, unique=True)
+    content_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    filename: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
     meeting: Mapped[Meeting] = relationship(back_populates="exports")
     transcript_version: Mapped[TranscriptVersion] = relationship()

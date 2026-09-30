@@ -26,7 +26,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("APP_ENVIRONMENT", "ENVIRONMENT"),
     )
     log_level: str = "INFO"
-    frontend_origins: tuple[str, ...] = Field(
+    frontend_origins: str | tuple[str, ...] = Field(
         default=("http://localhost:5173",),
         validation_alias=AliasChoices("FRONTEND_ORIGINS", "FRONTEND_ORIGIN"),
     )

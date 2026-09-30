@@ -35,6 +35,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             resolved_settings,
             app.state.translation_provider,
             app.state.llm_provider,
+            app.state.media_storage,
         )
         logger.info(
             "application_started",
