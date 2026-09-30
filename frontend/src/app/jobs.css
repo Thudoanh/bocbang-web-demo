@@ -1,0 +1,11 @@
+.job-state {
+  margin: 0 0 15px;
+  border: 1px solid #cbdff5;
+  background: #edf5ff;
+  color: #3b6695;
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+.job-state.failed { border-color: #ffcbd0; background: #fff1f3; color: #b33241; }
+.job-state.completed { border-color: #bcefd4; background: #eafaf1; color: #17845a; }

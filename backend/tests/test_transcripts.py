@@ -1,0 +1,153 @@
+import asyncio
+from pathlib import Path
+from uuid import UUID
+
+from fastapi.testclient import TestClient
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from app.core.config import Settings
+from app.db.base import Base
+from app.main import create_app
+from app.models.enums import MeetingPermission, MeetingSourceType, TranscriptVersionSource
+from app.models.meeting import Meeting, MeetingMember
+from app.models.transcript import SegmentVersion, Speaker, Transcript, TranscriptVersion
+from app.models.user import User
+
+
+class CapturingEmailSender:
+    def __init__(self) -> None:
+        self.messages: list[tuple[str, str, str]] = []
+
+    async def send_otp(self, recipient: str, code: str, purpose: str) -> None:
+        self.messages.append((recipient, code, purpose))
+
+
+def test_get_current_transcript_and_history_are_ordered_and_immutable(tmp_path: Path) -> None:
+    app, sender, url = _app(tmp_path)
+    with TestClient(app) as client:
+        owner = _session(client, sender, "owner@example.com")
+        seeded = _seed(url, UUID(owner["user"]["id"]))
+        headers = _headers(owner)
+        current = client.get(f"/api/v1/meetings/{seeded['meeting_id']}/transcript", headers=headers)
+        assert current.status_code == 200
+        assert [item["text"] for item in current.json()["segments"]] == ["First segment", "Second segment"]
+        assert current.json()["segments"][0]["id"] == seeded["first"]
+        edited = client.patch(f"/api/v1/segments/{seeded['first']}", headers=headers, json={"text": "Edited"})
+        assert edited.status_code == 200
+        history = client.get(f"/api/v1/meetings/{seeded['meeting_id']}/transcript/versions", headers=headers)
+        assert [item["version_no"] for item in history.json()] == [2, 1]
+        old = client.get(f"/api/v1/meetings/{seeded['meeting_id']}/transcript/versions/{seeded['version_id']}", headers=headers)
+        assert old.json()["segments"][0]["text"] == "First segment"
+
+
+def test_edit_split_merge_delete_and_version_creation(tmp_path: Path) -> None:
+    app, sender, url = _app(tmp_path)
+    with TestClient(app) as client:
+        owner = _session(client, sender, "editor@example.com")
+        seeded = _seed(url, UUID(owner["user"]["id"]))
+        headers = _headers(owner)
+        edited = client.patch(f"/api/v1/segments/{seeded['first']}", headers=headers, json={"start_ms": 100, "text": "Alpha beta"})
+        assert edited.status_code == 200 and edited.json()["version_no"] == 2
+        split = client.post(f"/api/v1/segments/{seeded['first']}/split", headers=headers, json={"split_at_ms": 500, "first_text": "Alpha", "second_text": "beta"})
+        assert split.status_code == 200 and split.json()["version_no"] == 3
+        current = client.get(f"/api/v1/meetings/{seeded['meeting_id']}/transcript", headers=headers).json()
+        assert [(item["start_ms"], item["end_ms"]) for item in current["segments"]] == [(100, 500), (500, 1000), (1000, 2000)]
+        second_part = current["segments"][1]["logical_segment_id"]
+        merged = client.post("/api/v1/segments/merge", headers=headers, json={"first_segment_id": seeded["first"], "second_segment_id": second_part})
+        assert merged.status_code == 200 and merged.json()["version_no"] == 4
+        deleted = client.delete(f"/api/v1/segments/{seeded['second']}", headers=headers)
+        assert deleted.status_code == 200 and deleted.json()["version_no"] == 5
+        assert len(client.get(f"/api/v1/meetings/{seeded['meeting_id']}/transcript", headers=headers).json()["segments"]) == 1
+
+
+def test_speaker_assignment_and_edit_permissions(tmp_path: Path) -> None:
+    app, sender, url = _app(tmp_path)
+    with TestClient(app) as client:
+        owner = _session(client, sender, "speaker-owner@example.com")
+        commenter = _session(client, sender, "commenter@example.com")
+        seeded = _seed(url, UUID(owner["user"]["id"]), UUID(commenter["user"]["id"]))
+        owner_headers, commenter_headers = _headers(owner), _headers(commenter)
+        assert client.get(f"/api/v1/meetings/{seeded['meeting_id']}/speakers", headers=commenter_headers).status_code == 200
+        assert client.patch(f"/api/v1/segments/{seeded['first']}", headers=commenter_headers, json={"text": "No"}).status_code == 403
+        speaker = client.post(f"/api/v1/meetings/{seeded['meeting_id']}/speakers", headers=owner_headers, json={"name": "Alice", "role": "Host"})
+        assert speaker.status_code == 201
+        speaker_id = speaker.json()["id"]
+        assigned = client.patch(f"/api/v1/segments/{seeded['first']}/speaker", headers=owner_headers, json={"speaker_id": speaker_id})
+        assert assigned.status_code == 200
+        assert assigned.json()["segment"]["speaker_id"] == speaker_id
+        reassigned = client.patch(
+            f"/api/v1/segments/{seeded['first']}/speaker",
+            headers=owner_headers,
+            json={"speaker_id": seeded["speaker_id"]},
+        )
+        assert reassigned.status_code == 200
+        assert reassigned.json()["segment"]["speaker_id"] == seeded["speaker_id"]
+        updated = client.patch(f"/api/v1/speakers/{speaker_id}", headers=owner_headers, json={"name": "Alice Nguyen"})
+        assert updated.status_code == 200 and updated.json()["name"] == "Alice Nguyen"
+        assert client.patch(f"/api/v1/speakers/{speaker_id}", headers=commenter_headers, json={"name": "No"}).status_code == 403
+
+
+def test_rejects_invalid_timestamps_and_cross_meeting_speaker(tmp_path: Path) -> None:
+    app, sender, url = _app(tmp_path)
+    with TestClient(app) as client:
+        owner = _session(client, sender, "validation@example.com")
+        one = _seed(url, UUID(owner["user"]["id"]))
+        two = _seed(url, UUID(owner["user"]["id"]))
+        headers = _headers(owner)
+        invalid = client.patch(f"/api/v1/segments/{one['first']}", headers=headers, json={"start_ms": 1200, "end_ms": 1100})
+        assert invalid.status_code == 422
+        overlap = client.patch(f"/api/v1/segments/{one['second']}", headers=headers, json={"start_ms": 900})
+        assert overlap.status_code == 422
+        wrong_speaker = client.patch(f"/api/v1/segments/{one['first']}/speaker", headers=headers, json={"speaker_id": two["speaker_id"]})
+        assert wrong_speaker.status_code == 404
+
+
+def _app(tmp_path: Path):
+    url = f"sqlite+aiosqlite:///{(tmp_path / 'transcript.sqlite3').as_posix()}"
+
+    async def create_schema() -> None:
+        engine = create_async_engine(url)
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        await engine.dispose()
+
+    asyncio.run(create_schema())
+    app = create_app(Settings(_env_file=None, database_url=url, jwt_secret="test-secret", frontend_origins="http://localhost:5173"))
+    sender = CapturingEmailSender()
+    app.state.email_sender = sender
+    return app, sender, url
+
+
+def _session(client: TestClient, sender: CapturingEmailSender, email: str) -> dict:
+    assert client.post("/api/v1/auth/register", json={"email": email, "password": "correct horse battery", "full_name": email}).status_code == 201
+    response = client.post("/api/v1/auth/verify-email-otp", json={"email": email, "code": sender.messages[-1][1]})
+    assert response.status_code == 200
+    return response.json()
+
+
+def _headers(session: dict) -> dict[str, str]:
+    return {"Authorization": f"Bearer {session['access_token']}"}
+
+
+def _seed(url: str, owner_id: UUID, commenter_id: UUID | None = None) -> dict[str, str]:
+    async def seed() -> dict[str, str]:
+        engine = create_async_engine(url)
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with factory() as session:
+            meeting = Meeting(owner_id=owner_id, title="Transcript", source_type=MeetingSourceType.REALTIME, language_mode="en")
+            transcript = Transcript(meeting=meeting)
+            version = TranscriptVersion(transcript=transcript, version_no=1, source=TranscriptVersionSource.STT, created_by=owner_id)
+            speaker = Speaker(meeting=meeting, name="Provider speaker", provider_speaker_id="speaker_1")
+            first = SegmentVersion(transcript_version=version, speaker=speaker, sequence=1, start_ms=0, end_ms=1000, text="First segment", original_stt_text="First segment")
+            second = SegmentVersion(transcript_version=version, speaker=speaker, sequence=2, start_ms=1000, end_ms=2000, text="Second segment", original_stt_text="Second segment")
+            if commenter_id:
+                session.add(MeetingMember(meeting=meeting, user_id=commenter_id, permission=MeetingPermission.COMMENT))
+            session.add_all((meeting, transcript, version, speaker, first, second))
+            await session.flush()
+            meeting.current_transcript_version_id = version.id
+            await session.commit()
+            result = {"meeting_id": str(meeting.id), "version_id": str(version.id), "speaker_id": str(speaker.id), "first": str(first.logical_segment_id), "second": str(second.logical_segment_id)}
+        await engine.dispose()
+        return result
+
+    return asyncio.run(seed())

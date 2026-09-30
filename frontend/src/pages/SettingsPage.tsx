@@ -1,0 +1,2 @@
+import { PageHeading } from "../components/ui";
+export function SettingsPage() { return <><PageHeading eyebrow="THIẾT LẬP" title="Cài đặt" description="Thiết lập tài khoản sẽ được lưu khi endpoint hồ sơ được bổ sung vào API contract." /><section className="panel"><h2>Giới hạn tải lên</h2><p>Giới hạn tệp và thời lượng được lấy từ môi trường triển khai. Máy chủ luôn là nguồn kiểm tra cuối cùng.</p></section><section className="panel"><h2>Bảo mật</h2><p>Đăng xuất sẽ thu hồi phiên hiện tại qua endpoint auth.</p></section></>; }
