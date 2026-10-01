@@ -16,7 +16,7 @@ settings = get_settings()
 database_url = config.get_main_option("sqlalchemy.url") or settings.database_url
 if not database_url:
     raise RuntimeError("DATABASE_URL is required to run database migrations.")
-config.set_main_option("sqlalchemy.url", database_url)
+config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
 target_metadata = Base.metadata
 
 

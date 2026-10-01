@@ -12,9 +12,11 @@ from app.api.v1.routes.auth import CurrentUserDependency
 from app.core.config import Settings
 from app.core.dependencies import get_database, get_settings
 from app.db.session import Database
+from app.providers.contracts import STTProvider
 from app.providers.storage import MediaStorage
 from app.schemas.media import JobResponse, MediaFileResponse
 from app.services.media import MediaService
+from app.services.media_worker import MediaProcessingWorker
 
 meetings_router = APIRouter(prefix="/meetings")
 jobs_router = APIRouter(prefix="/jobs")
@@ -39,8 +41,13 @@ async def upload_media(
     file: Annotated[UploadFile, File(...)],
     user: CurrentUserDependency,
     service: MediaServiceDependency,
+    request: Request,
 ) -> JobResponse:
-    return await service.upload(meeting_id, user, file)
+    job = await service.upload(meeting_id, user, file)
+    provider = cast(STTProvider | None, request.app.state.stt_provider)
+    if provider is not None and provider.capabilities().batch:
+        cast(MediaProcessingWorker, request.app.state.media_worker).enqueue(job.id)
+    return job
 
 
 @meetings_router.get("/{meeting_id}/media", response_model=list[MediaFileResponse])

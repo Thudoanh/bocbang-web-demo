@@ -24,6 +24,10 @@ class TranslationProviderRegistry:
 
 translation_provider_registry = TranslationProviderRegistry()
 
+from app.providers.gemini import build_gemini_translation_provider  # noqa: E402
+
+translation_provider_registry.register("gemini", build_gemini_translation_provider)
+
 
 def build_translation_provider(settings: Settings) -> TranslationProvider | None:
     return translation_provider_registry.build(settings)

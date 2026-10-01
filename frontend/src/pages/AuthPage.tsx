@@ -25,7 +25,7 @@ export function AuthPage() {
     {(mode === "verify" || mode === "reset") && <label>Mã OTP<input inputMode="numeric" autoComplete="one-time-code" required value={code} onChange={(e) => setCode(e.target.value)} /></label>}
     {mode !== "verify" && mode !== "forgot" && <label>{mode === "reset" ? "Mật khẩu mới" : "Mật khẩu"}<input type="password" minLength={8} required value={password} onChange={(e) => setPassword(e.target.value)} /></label>}
     {error && <div className="form-error">{error}</div>}
-    <Button tone="dark" disabled={pending}>{pending ? "Đang xử lý…" : mode === "verify" ? "Xác minh email" : mode === "forgot" ? "Gửi mã" : mode === "reset" ? "Đặt lại mật khẩu" : copy[0]}</Button>
+    <Button type="submit" tone="dark" disabled={pending}>{pending ? "Đang xử lý…" : mode === "verify" ? "Xác minh email" : mode === "forgot" ? "Gửi mã" : mode === "reset" ? "Đặt lại mật khẩu" : copy[0]}</Button>
   </form>
   {mode === "login" && <><button className="google" onClick={() => auth.googleLogin()}>G Đăng nhập bằng Google</button><p className="switch">Chưa có tài khoản? <button onClick={() => setMode("register")}>Đăng ký</button> · <button onClick={() => setMode("forgot")}>Quên mật khẩu?</button></p></>}
   {mode === "register" && <p className="switch">Đã có tài khoản? <button onClick={() => setMode("login")}>Đăng nhập</button></p>}

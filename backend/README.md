@@ -105,3 +105,21 @@ Only normalized `transcript.final` results create `TranscriptVersion` and
 changes an active meeting to `processing`, not `completed`; a non-retryable STT
 provider error changes it to `failed`. Realtime sessions do not fabricate or
 complete upload jobs.
+
+## Production provider adapters
+
+Set `STT_PROVIDER=assemblyai` and `STT_API_KEY` to enable AssemblyAI batch and
+realtime STT. The media worker normalizes uploads to mono PCM WAV at 16 kHz
+using `ffmpeg`, stores the normalized object, and persists normalized STT
+segments and speaker labels. The browser sends 16 kHz mono PCM16 over the API
+WebSocket; the AssemblyAI credential always stays on the server. `ffmpeg` and
+`ffprobe` must both be present on PATH.
+
+Set `TRANSLATION_PROVIDER=gemini` with `TRANSLATION_API_KEY` (or `LLM_API_KEY`)
+for segment-aligned VI ↔ EN translations. Set `LLM_PROVIDER=gemini` with
+`LLM_API_KEY` for structured `general`, `briefing`, and `voting` summaries.
+`GEMINI_MODEL` defaults to `gemini-2.5-flash`; `LLM_MODEL` overrides it for
+summary generation. Provider keys are backend-only values.
+`ASSEMBLYAI_API_BASE_URL`, `ASSEMBLYAI_STREAMING_BASE_URL`, and
+`GEMINI_API_BASE_URL` default to their official endpoints and may be overridden
+for a regional endpoint, proxy, or integration test.

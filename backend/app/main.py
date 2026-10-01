@@ -18,6 +18,7 @@ from app.providers.stt import build_stt_provider
 from app.providers.storage import FileSystemMediaStorage
 from app.providers.translation import build_translation_provider
 from app.services.ai import AIJobDispatcher
+from app.services.media_worker import MediaProcessingWorker
 
 logger = get_logger(__name__)
 
@@ -36,6 +37,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.state.translation_provider,
             app.state.llm_provider,
             app.state.media_storage,
+        )
+        app.state.media_worker = MediaProcessingWorker(
+            app.state.database, app.state.media_storage, app.state.stt_provider
         )
         logger.info(
             "application_started",

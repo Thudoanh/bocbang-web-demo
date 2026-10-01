@@ -180,6 +180,47 @@ class TranscriptService:
         await self._session.refresh(stored)
         return stored
 
+    async def replace_stt_batch(
+        self, meeting: Meeting, actor_id: UUID, segments: tuple[TranscriptionSegment, ...]
+    ) -> None:
+        """Persist a complete batch response as one immutable STT snapshot.
+
+        Unlike realtime finals, an upload must not leave a partially committed
+        transcript when one malformed provider segment is encountered.
+        """
+        if not segments or any(
+            not item.text.strip() or item.start_ms < 0 or item.end_ms <= item.start_ms
+            for item in segments
+        ):
+            raise ValueError("Batch transcript result is invalid.")
+        if any(right.start_ms < left.end_ms for left, right in zip(segments, segments[1:])):
+            raise ValueError("Batch transcript segments overlap.")
+        transcript = await self._ensure_transcript(meeting.id)
+        previous = await self._current_version_or_none(meeting)
+        version = TranscriptVersion(
+            transcript_id=transcript.id,
+            version_no=await self._next_version_no(transcript.id),
+            source=TranscriptVersionSource.STT,
+            parent_version_id=previous.id if previous else None,
+            created_by=actor_id,
+        )
+        self._session.add(version)
+        await self._session.flush()
+        for sequence, segment in enumerate(segments, start=1):
+            self._session.add(
+                SegmentVersion(
+                    transcript_version_id=version.id,
+                    speaker_id=await self._speaker_for_label(meeting.id, segment.speaker_label),
+                    sequence=sequence,
+                    start_ms=segment.start_ms,
+                    end_ms=segment.end_ms,
+                    text=segment.text.strip(),
+                    original_stt_text=segment.text.strip(),
+                    confidence=segment.confidence,
+                )
+            )
+        meeting.current_transcript_version_id = version.id
+
     async def _mutate_segment(
         self, logical_id: UUID, user: User, operation: Callable[[list[dict[str, object]], int], object]
     ) -> TranscriptMutationResponse:

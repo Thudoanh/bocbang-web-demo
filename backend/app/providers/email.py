@@ -21,6 +21,21 @@ class UnavailableEmailSender:
         raise ApiError("EMAIL_DELIVERY_UNAVAILABLE", "Email delivery is not configured.", 503)
 
 
+class ConsoleEmailSender:
+    """Console/logger email sender for local development testing."""
+
+    async def send_otp(self, recipient: str, code: str, purpose: str) -> None:
+        print(
+            f"\n==========================================\n"
+            f"  [DEV EMAIL OTP]\n"
+            f"  To: {recipient}\n"
+            f"  Purpose: {purpose}\n"
+            f"  Verification Code: {code}\n"
+            f"==========================================\n",
+            flush=True,
+        )
+
+
 class SmtpEmailSender:
     def __init__(self, settings: Settings) -> None:
         if not all((settings.email_from, settings.email_smtp_host)):
@@ -63,4 +78,8 @@ def build_email_sender(settings: Settings) -> EmailSender:
             return SmtpEmailSender(settings)
         except ValueError:
             return UnavailableEmailSender()
+    if settings.email_provider in ("console", "dev", "local") or (
+        not settings.email_provider and settings.environment == "development"
+    ):
+        return ConsoleEmailSender()
     return UnavailableEmailSender()

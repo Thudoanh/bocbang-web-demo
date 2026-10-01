@@ -12,7 +12,7 @@ export class MeetingSocket {
     this.socket.onmessage = ({ data }) => { try { const event = JSON.parse(data) as RealtimeEvent; if (event.type === "error" && event.retryable === false) this.stopped = true; this.onEvent(event); } catch { this.onEvent({ type: "error", message: "Sự kiện realtime không hợp lệ." }); } };
     this.socket.onclose = () => { if (this.stopped) return this.onStatus("closed"); this.retry += 1; this.onStatus("reconnecting"); window.setTimeout(() => this.connect(), Math.min(1000 * 2 ** this.retry, 15000)); };
   }
-  sendAudio(chunk: Blob) { if (this.socket?.readyState === WebSocket.OPEN) this.socket.send(chunk); }
+  sendAudio(chunk: Blob | ArrayBuffer) { if (this.socket?.readyState === WebSocket.OPEN) this.socket.send(chunk); }
   command(command: "recording.pause" | "recording.resume" | "recording.stop") { if (command === "recording.stop") this.stopped = true; this.socket?.send(JSON.stringify({ type: command })); }
   close() { this.stopped = true; this.socket?.close(); }
 }

@@ -30,6 +30,11 @@ class STTProviderRegistry:
 
 stt_provider_registry = STTProviderRegistry()
 
+# Importing registers deployment adapters while keeping vendor code out of services.
+from app.providers.assemblyai import build_assemblyai_provider  # noqa: E402
+
+stt_provider_registry.register("assemblyai", build_assemblyai_provider)
+
 
 def build_stt_provider(settings: Settings) -> STTProvider | None:
     return stt_provider_registry.build(settings)

@@ -90,11 +90,10 @@ The frontend is at `http://localhost:5173`, the API documentation is at
    microphone access, start recording, confirm partial text, then stop and
    confirm final persisted segments.
 
-The repository deliberately contains no registered real STT, translation, or
-LLM adapter, and no batch-media processor. Consequently uploads remain queued,
-and provider-dependent transcription, translation, summaries, and realtime
-recording cannot complete until backend-only adapters/processing are supplied.
-This is a backend capability limitation, not a frontend fallback. If the
+The AssemblyAI and Gemini adapters activate only through their respective
+backend environment variables. With no batch STT configured uploads remain
+queued; with no translation/LLM provider the endpoints report capability
+unavailable. This is a backend capability limitation, not a frontend fallback. If the
 frontend cannot reach the API, first verify `VITE_API_BASE_URL`,
 `VITE_WS_BASE_URL`, `FRONTEND_ORIGIN`, PostgreSQL connectivity, migrations, and
 that the API process is running. A queued media job means no batch processor is

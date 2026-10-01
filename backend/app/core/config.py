@@ -53,11 +53,18 @@ class Settings(BaseSettings):
     media_storage_path: Path = REPOSITORY_ROOT / ".local-media"
     stt_provider: str | None = None
     stt_api_key: str | None = None
+    stt_model: str = "universal-3-pro"
+    assemblyai_api_base_url: str = "https://api.assemblyai.com/v2"
+    assemblyai_streaming_base_url: str = "wss://streaming.assemblyai.com/v3/ws"
+    stt_poll_interval_seconds: float = 2.0
+    stt_poll_timeout_seconds: int = 1800
     translation_provider: str | None = None
     translation_api_key: str | None = None
     llm_provider: str | None = None
     llm_api_key: str | None = None
     llm_model: str | None = None
+    gemini_model: str = "gemini-2.5-flash"
+    gemini_api_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
 
     @field_validator("frontend_origins", mode="before")
     @classmethod

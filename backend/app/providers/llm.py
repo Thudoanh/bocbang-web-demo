@@ -24,6 +24,10 @@ class LLMProviderRegistry:
 
 llm_provider_registry = LLMProviderRegistry()
 
+from app.providers.gemini import build_gemini_summary_provider  # noqa: E402
+
+llm_provider_registry.register("gemini", build_gemini_summary_provider)
+
 
 def build_llm_provider(settings: Settings) -> LLMProvider | None:
     return llm_provider_registry.build(settings)

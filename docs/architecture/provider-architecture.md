@@ -161,3 +161,19 @@ public API nếu capability đã nằm trong abstraction.
 Chưa khóa vendor trong architecture. Trước deploy, chọn ít nhất một STT
 adapter thật đáp ứng Việt + Anh, batch, diarization và nếu demo realtime
 thì streaming. Provider có thể đổi mà không thay public frontend API.
+
+## 8. Current deployment adapters
+
+- `STT_PROVIDER=assemblyai` registers an AssemblyAI adapter for batch STT and
+  server-side Universal Streaming. Batch jobs normalize source media with
+  FFmpeg to mono PCM WAV/16 kHz before upload. The worker persists one complete
+  immutable STT transcript version only after a valid normalized response.
+- `TRANSLATION_PROVIDER=gemini` registers Gemini segment-aligned VI ↔ EN
+  translation. Output count must match the input segment count.
+- `LLM_PROVIDER=gemini` registers Gemini structured summaries for `general`,
+  `briefing`, and `voting`; the adapter asks Gemini for the normalized summary
+  JSON schema and the service remains responsible for validation/persistence.
+
+For realtime AssemblyAI, browser audio is resampled to 16 kHz mono PCM16 and
+sent to this API WebSocket. The API opens the upstream WebSocket with the API
+key, so no provider secret is exposed to the browser.
