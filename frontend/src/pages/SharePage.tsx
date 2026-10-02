@@ -1,0 +1,6 @@
+import { sharesApi } from "../api/endpoints";
+import { useAsync } from "../hooks/useAsync";
+import { Failure, Loading } from "../components/ui";
+
+/** Public links intentionally expose only the data returned by the capability-link API. */
+export function SharePage({ token }: { token: string }) { const access = useAsync(() => sharesApi.resolve(token), [token]); if (access.loading) return <div className="public-share"><Loading label="Đang kiểm tra link chia sẻ…" /></div>; if (access.error || !access.data) return <div className="public-share"><Failure error={access.error ?? new Error("Link chia sẻ không hợp lệ hoặc đã hết hạn.")} retry={access.reload} /></div>; const { meeting, permission } = access.data; return <main className="public-share"><section className="public-share-card"><span className="auth-mark">▥</span><small>CUỘC HỌP ĐƯỢC CHIA SẺ</small><h1>{meeting.title}</h1><p>{meeting.description ?? "Người sở hữu chưa thêm mô tả cho cuộc họp này."}</p><dl><div><dt>Trạng thái</dt><dd>{meeting.status}</dd></div><div><dt>Quyền truy cập</dt><dd>{permission}</dd></div><div><dt>Ngôn ngữ</dt><dd>{meeting.language_mode.toUpperCase()}</dd></div></dl><div className="notice">Link này đã được xác thực. API công khai hiện chỉ cung cấp metadata cuộc họp; transcript và kết quả cần endpoint chia sẻ riêng trước khi có thể hiển thị an toàn.</div></section></main>; }

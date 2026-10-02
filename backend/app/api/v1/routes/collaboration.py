@@ -1,15 +1,13 @@
 """Comment APIs and public, capability-limited share resolution."""
 
-from collections.abc import AsyncIterator
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request, Response, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 
 from app.api.v1.routes.auth import CurrentUserDependency
 from app.api.v1.routes.meetings import MeetingServiceDependency
-from app.core.dependencies import get_database
-from app.db.session import Database
+from app.core.dependencies import DatabaseSessionDependency
 from app.schemas.collaboration import (
     CommentCreateRequest,
     CommentResponse,
@@ -23,10 +21,8 @@ comments_router = APIRouter(prefix="/comments")
 shares_router = APIRouter(prefix="/shares")
 
 
-async def get_collaboration_service(request: Request) -> AsyncIterator[CollaborationService]:
-    database: Database = get_database(request)
-    async with database.session() as session:
-        yield CollaborationService(session)
+async def get_collaboration_service(session: DatabaseSessionDependency) -> CollaborationService:
+    return CollaborationService(session)
 
 
 CollaborationServiceDependency = Annotated[CollaborationService, Depends(get_collaboration_service)]
@@ -34,9 +30,13 @@ CollaborationServiceDependency = Annotated[CollaborationService, Depends(get_col
 
 @meetings_router.get("/{meeting_id}/comments", response_model=list[CommentResponse])
 async def list_comments(
-    meeting_id: UUID, user: CurrentUserDependency, service: CollaborationServiceDependency
+    meeting_id: UUID,
+    user: CurrentUserDependency,
+    service: CollaborationServiceDependency,
+    limit: int = Query(default=100, ge=1, le=250),
+    offset: int = Query(default=0, ge=0),
 ) -> list[CommentResponse]:
-    return await service.list_comments(meeting_id, user)
+    return await service.list_comments(meeting_id, user, limit=limit, offset=offset)
 
 
 @meetings_router.post(

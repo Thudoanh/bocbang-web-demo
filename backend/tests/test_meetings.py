@@ -61,14 +61,14 @@ def test_meeting_crud_and_collaborator_acl(tmp_path: Path) -> None:
             },
         )
         assert created.status_code == 201
+        assert "X-Process-Time-Ms" in created.headers
         meeting = created.json()
         meeting_id = meeting["id"]
         assert meeting["permission"] == "owner"
 
-        assert (
-            client.get(f"/api/v1/meetings/{meeting_id}", headers=outsider_headers).status_code
-            == 403
-        )
+        forbidden = client.get(f"/api/v1/meetings/{meeting_id}", headers=outsider_headers)
+        assert forbidden.status_code == 403
+        assert "X-Process-Time-Ms" in forbidden.headers
         invited = client.post(
             f"/api/v1/meetings/{meeting_id}/members",
             headers=owner_headers,
@@ -82,6 +82,9 @@ def test_meeting_crud_and_collaborator_acl(tmp_path: Path) -> None:
         assert listed_for_member.status_code == 200
         assert [item["id"] for item in listed_for_member.json()] == [meeting_id]
         assert listed_for_member.json()[0]["permission"] == "edit"
+        assert [item["id"] for item in client.get(
+            "/api/v1/meetings?limit=1&offset=0", headers=member_headers
+        ).json()] == [meeting_id]
         edited = client.patch(
             f"/api/v1/meetings/{meeting_id}",
             headers=member_headers,
@@ -109,10 +112,9 @@ def test_meeting_crud_and_collaborator_acl(tmp_path: Path) -> None:
             headers=member_headers,
             json={"title": "Not permitted"},
         ).status_code == 403
-        assert (
-            client.delete(f"/api/v1/meetings/{meeting_id}", headers=owner_headers).status_code
-            == 204
-        )
+        deleted = client.delete(f"/api/v1/meetings/{meeting_id}", headers=owner_headers)
+        assert deleted.status_code == 204
+        assert "X-Process-Time-Ms" in deleted.headers
         assert (
             client.get(f"/api/v1/meetings/{meeting_id}", headers=owner_headers).status_code == 404
         )

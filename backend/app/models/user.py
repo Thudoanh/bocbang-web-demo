@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, desc, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -40,6 +40,15 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
 class EmailOtp(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "email_otps"
+    __table_args__ = (
+        Index(
+            "ix_email_otps_user_id_purpose_created_at_active",
+            "user_id",
+            "purpose",
+            desc("created_at"),
+            postgresql_where=text("consumed_at IS NULL"),
+        ),
+    )
 
     user_id: Mapped[UUID] = mapped_column(
         ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True

@@ -12,6 +12,48 @@ Mục mới nhất được thêm ở đầu file. Dùng format ngắn dưới �
 - Follow-up / blocker: ...
 ```
 
+## 2026-10-01 — Frontend BA Phase 4: Polish and QA Record
+
+- Status: done
+- Scope: Shared SVG icon polish for app/auth chrome, responsive/static BA
+  reference checklist and acceptance verification record.
+- Changed: `frontend/src/components/ui.tsx`, `frontend/src/components/AppShell.tsx`,
+  `frontend/src/pages/AuthPage.tsx`, `frontend/src/app/styles.css`,
+  `docs/planning/phase-4-qa.md`, project context.
+- Verified: `npm.cmd run build` passed in `frontend/`; targeted backend
+  `python -m compileall` passed.
+- Follow-up / blocker: Browser automation and provider-backed E2E were not
+  available in this environment; playback and public shared content still need
+  backend token-scoped stream/read contracts.
+
+## 2026-10-01 — Frontend BA Phase 3: History, Data, Profile
+
+- Status: done
+- Scope: Server-side meeting search/filter, owner-only media/meeting deletion
+  confirmation, and editable user full-name profile.
+- Changed: `backend/app/api/v1/routes/auth.py`, `backend/app/api/v1/routes/meetings.py`,
+  `backend/app/schemas/auth.py`, `backend/app/services/auth.py`,
+  `backend/app/services/meetings.py`, `frontend/src/api/*`,
+  `frontend/src/auth/AuthContext.tsx`, `frontend/src/pages/HistoryPage.tsx`,
+  `frontend/src/pages/SettingsPage.tsx`, styles and project context.
+- Verified: frontend `npm.cmd run build`; backend targeted `python -m compileall`.
+- Follow-up / blocker: Profile defaults/phone/storage metadata and History
+  total-count pagination need explicit persisted API contracts; E2E requires
+  configured providers and isolated database.
+
+## 2026-10-01 — Frontend BA Phase 0–2
+
+- Status: done
+- Scope: BA/API gap audit, realtime/upload flow, transcript editing controls,
+  speaker management, translation, summary/minutes, authenticated export and
+  share-link UI using real API contracts.
+- Changed: `docs/planning/phase-0-api-gap.md`, `frontend/src/api/*`,
+  `frontend/src/app/*`, `frontend/src/components/AppShell.tsx`,
+  `frontend/src/pages/*`, `frontend/src/types/domain.ts`, project context.
+- Verified: `npm.cmd run build` passed in `frontend/` after Phase 2.
+- Follow-up / blocker: Public share API supplies metadata only; audio playback
+  endpoint and real provider/browser E2E validation remain outstanding.
+
 ## 2026-09-30 — Frontend ↔ Backend Integration
 
 - Status: blocked

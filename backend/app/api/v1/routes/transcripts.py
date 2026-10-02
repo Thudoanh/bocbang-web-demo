@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Query, Request, status
 
 from app.api.v1.routes.auth import CurrentUserDependency
-from app.core.dependencies import get_database
-from app.db.session import Database
+from app.core.dependencies import DatabaseSessionDependency
 from app.schemas.transcript import (
     SegmentEditRequest,
     SegmentMergeRequest,
@@ -21,6 +19,7 @@ from app.schemas.transcript import (
     SpeakerUpdateRequest,
     TranscriptMutationResponse,
     TranscriptResponse,
+    TranscriptRollbackRequest,
     TranscriptVersionResponse,
 )
 from app.services.transcripts import TranscriptService
@@ -30,28 +29,56 @@ segments_router = APIRouter(prefix="/segments")
 speakers_router = APIRouter(prefix="/speakers")
 
 
-async def get_transcript_service(request: Request) -> AsyncIterator[TranscriptService]:
-    database: Database = get_database(request)
-    async with database.session() as session:
-        yield TranscriptService(session)
+async def get_transcript_service(session: DatabaseSessionDependency) -> TranscriptService:
+    return TranscriptService(session)
 
 
 TranscriptServiceDependency = Annotated[TranscriptService, Depends(get_transcript_service)]
 
 
 @meetings_router.get("/{meeting_id}/transcript", response_model=TranscriptResponse)
-async def current_transcript(meeting_id: UUID, user: CurrentUserDependency, service: TranscriptServiceDependency) -> TranscriptResponse:
-    return await service.current(meeting_id, user)
+async def current_transcript(
+    meeting_id: UUID,
+    user: CurrentUserDependency,
+    service: TranscriptServiceDependency,
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    cursor: str | None = None,
+) -> TranscriptResponse:
+    return await service.current(meeting_id, user, limit=limit, offset=offset, cursor=cursor)
 
 
 @meetings_router.get("/{meeting_id}/transcript/versions", response_model=list[TranscriptVersionResponse])
-async def transcript_versions(meeting_id: UUID, user: CurrentUserDependency, service: TranscriptServiceDependency) -> list[TranscriptVersionResponse]:
-    return await service.versions(meeting_id, user)
+async def transcript_versions(
+    meeting_id: UUID,
+    user: CurrentUserDependency,
+    service: TranscriptServiceDependency,
+    limit: int = Query(default=100, ge=1, le=250),
+    offset: int = Query(default=0, ge=0),
+) -> list[TranscriptVersionResponse]:
+    return await service.versions(meeting_id, user, limit=limit, offset=offset)
 
 
 @meetings_router.get("/{meeting_id}/transcript/versions/{version_id}", response_model=TranscriptResponse)
-async def transcript_version(meeting_id: UUID, version_id: UUID, user: CurrentUserDependency, service: TranscriptServiceDependency) -> TranscriptResponse:
-    return await service.version(meeting_id, version_id, user)
+async def transcript_version(
+    meeting_id: UUID,
+    version_id: UUID,
+    user: CurrentUserDependency,
+    service: TranscriptServiceDependency,
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> TranscriptResponse:
+    return await service.version(meeting_id, version_id, user, limit=limit, offset=offset)
+
+
+@meetings_router.post("/{meeting_id}/transcript/rollback", response_model=TranscriptMutationResponse)
+async def rollback_transcript(
+    meeting_id: UUID,
+    payload: TranscriptRollbackRequest,
+    user: CurrentUserDependency,
+    service: TranscriptServiceDependency,
+) -> TranscriptMutationResponse:
+    return await service.rollback(meeting_id, payload.target_version_id, user)
 
 
 @meetings_router.get("/{meeting_id}/speakers", response_model=list[SpeakerResponse])

@@ -1,8 +1,11 @@
 import asyncio
+from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from uuid import UUID
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import Settings
@@ -10,7 +13,7 @@ from app.db.base import Base
 from app.main import create_app
 from app.models.enums import MeetingPermission, MeetingSourceType, TranscriptVersionSource
 from app.models.meeting import Meeting, MeetingMember
-from app.models.transcript import SegmentVersion, Speaker, Transcript, TranscriptVersion
+from app.models.transcript import CurrentSegment, SegmentVersion, Speaker, Transcript, TranscriptEditEvent, TranscriptVersion
 from app.models.user import User
 
 
@@ -32,10 +35,23 @@ def test_get_current_transcript_and_history_are_ordered_and_immutable(tmp_path: 
         assert current.status_code == 200
         assert [item["text"] for item in current.json()["segments"]] == ["First segment", "Second segment"]
         assert current.json()["segments"][0]["id"] == seeded["first"]
+        first_page = client.get(
+            f"/api/v1/meetings/{seeded['meeting_id']}/transcript?limit=1",
+            headers=headers,
+        )
+        paged = client.get(
+            f"/api/v1/meetings/{seeded['meeting_id']}/transcript?limit=1&cursor={first_page.json()['next_cursor']}",
+            headers=headers,
+        )
+        assert [item["text"] for item in paged.json()["segments"]] == ["Second segment"]
         edited = client.patch(f"/api/v1/segments/{seeded['first']}", headers=headers, json={"text": "Edited"})
         assert edited.status_code == 200
         history = client.get(f"/api/v1/meetings/{seeded['meeting_id']}/transcript/versions", headers=headers)
         assert [item["version_no"] for item in history.json()] == [2, 1]
+        assert client.get(
+            f"/api/v1/meetings/{seeded['meeting_id']}/transcript/versions?limit=1",
+            headers=headers,
+        ).json()[0]["version_no"] == 2
         old = client.get(f"/api/v1/meetings/{seeded['meeting_id']}/transcript/versions/{seeded['version_id']}", headers=headers)
         assert old.json()["segments"][0]["text"] == "First segment"
 
@@ -94,12 +110,57 @@ def test_rejects_invalid_timestamps_and_cross_meeting_speaker(tmp_path: Path) ->
         one = _seed(url, UUID(owner["user"]["id"]))
         two = _seed(url, UUID(owner["user"]["id"]))
         headers = _headers(owner)
+        before = client.get(f"/api/v1/meetings/{one['meeting_id']}/transcript", headers=headers).json()["version_id"]
         invalid = client.patch(f"/api/v1/segments/{one['first']}", headers=headers, json={"start_ms": 1200, "end_ms": 1100})
         assert invalid.status_code == 422
+        assert client.get(f"/api/v1/meetings/{one['meeting_id']}/transcript", headers=headers).json()["version_id"] == before
         overlap = client.patch(f"/api/v1/segments/{one['second']}", headers=headers, json={"start_ms": 900})
         assert overlap.status_code == 422
         wrong_speaker = client.patch(f"/api/v1/segments/{one['first']}/speaker", headers=headers, json={"speaker_id": two["speaker_id"]})
         assert wrong_speaker.status_code == 404
+
+
+def test_projection_events_checkpoints_rollback_and_legacy_fallback(tmp_path: Path) -> None:
+    app, sender, url = _app(tmp_path)
+    with TestClient(app) as client:
+        owner = _session(client, sender, "projection@example.com")
+        headers = _headers(owner)
+        seeded = _seed(url, UUID(owner["user"]["id"]))
+        for index in range(25):
+            response = client.patch(
+                f"/api/v1/segments/{seeded['first']}", headers=headers, json={"text": f"Edit {index}"}
+            )
+            assert response.status_code == 200
+        checkpoint_version_id = response.json()["version_id"]
+        current = client.get(f"/api/v1/meetings/{seeded['meeting_id']}/transcript", headers=headers).json()
+        rollback = client.post(
+            f"/api/v1/meetings/{seeded['meeting_id']}/transcript/rollback",
+            headers=headers,
+            json={"target_version_id": seeded["version_id"]},
+        )
+        assert rollback.status_code == 200
+
+        async def verify() -> None:
+            engine = create_async_engine(url)
+            factory = async_sessionmaker(engine, expire_on_commit=False)
+            async with factory() as session:
+                events = list(await session.scalars(select(TranscriptEditEvent)))
+                assert all(event.actor_id is not None for event in events)
+                checkpoint = await session.get(TranscriptVersion, UUID(checkpoint_version_id))
+                assert checkpoint is not None and checkpoint.checkpointed_at is not None
+                version = await session.get(TranscriptVersion, UUID(rollback.json()["version_id"]))
+                assert version is not None and version.checkpointed_at is not None
+                rollback_event = next(event for event in events if event.version_id == version.id)
+                assert rollback_event.event_type == "rollback"
+                assert rollback_event.payload["target_version_id"] == seeded["version_id"]
+            await engine.dispose()
+
+        asyncio.run(verify())
+        assert current["segments"][0]["text"] == "Edit 24"
+
+        legacy = _seed(url, UUID(owner["user"]["id"]), projection=False)
+        assert client.get(f"/api/v1/meetings/{legacy['meeting_id']}/transcript", headers=headers).status_code == 200
+        assert client.patch(f"/api/v1/segments/{legacy['first']}", headers=headers, json={"text": "No"}).status_code == 409
 
 
 def _app(tmp_path: Path):
@@ -129,7 +190,7 @@ def _headers(session: dict) -> dict[str, str]:
     return {"Authorization": f"Bearer {session['access_token']}"}
 
 
-def _seed(url: str, owner_id: UUID, commenter_id: UUID | None = None) -> dict[str, str]:
+def _seed(url: str, owner_id: UUID, commenter_id: UUID | None = None, projection: bool = True) -> dict[str, str]:
     async def seed() -> dict[str, str]:
         engine = create_async_engine(url)
         factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -145,6 +206,13 @@ def _seed(url: str, owner_id: UUID, commenter_id: UUID | None = None) -> dict[st
             session.add_all((meeting, transcript, version, speaker, first, second))
             await session.flush()
             meeting.current_transcript_version_id = version.id
+            if projection:
+                transcript.current_projection_initialized_at = datetime.now(UTC)
+                version.checkpointed_at = datetime.now(UTC)
+                session.add_all((
+                    CurrentSegment(transcript_id=transcript.id, logical_segment_id=first.logical_segment_id, speaker_id=speaker.id, position=Decimal(1024), start_ms=0, end_ms=1000, text="First segment", original_stt_text="First segment"),
+                    CurrentSegment(transcript_id=transcript.id, logical_segment_id=second.logical_segment_id, speaker_id=speaker.id, position=Decimal(2048), start_ms=1000, end_ms=2000, text="Second segment", original_stt_text="Second segment"),
+                ))
             await session.commit()
             result = {"meeting_id": str(meeting.id), "version_id": str(version.id), "speaker_id": str(speaker.id), "first": str(first.logical_segment_id), "second": str(second.logical_segment_id)}
         await engine.dispose()

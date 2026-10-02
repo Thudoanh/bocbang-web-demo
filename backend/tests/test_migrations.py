@@ -25,6 +25,22 @@ def test_initial_migration_upgrades_and_downgrades_clean_database(tmp_path: Path
     try:
         tables = set(inspect(engine).get_table_names())
         assert {"users", "meetings", "transcripts", "transcript_versions", "summary_versions"} <= tables
+        inspector = inspect(engine)
+        assert "ix_meeting_members_user_id_meeting_id" in {
+            item["name"] for item in inspector.get_indexes("meeting_members")
+        }
+        assert "ix_meetings_owner_id_updated_at_created_at" in {
+            item["name"] for item in inspector.get_indexes("meetings")
+        }
+        assert "ix_comments_meeting_id_created_at_active" in {
+            item["name"] for item in inspector.get_indexes("comments")
+        }
+        assert "ix_email_otps_user_id_purpose_created_at_active" in {
+            item["name"] for item in inspector.get_indexes("email_otps")
+        }
+        assert "ix_segment_versions_logical_id_transcript_version_id" in {
+            item["name"] for item in inspector.get_indexes("segment_versions")
+        }
     finally:
         engine.dispose()
 

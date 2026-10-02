@@ -1,68 +1,77 @@
 # Current Status
 
-_Cập nhật lần cuối: 2026-09-30_
+_Cập nhật lần cuối: 2026-10-01_
 
 ## Done
 
-- Rebuild `frontend/` thành React + TypeScript + Vite, thay thế prototype
-  bundle bằng source maintainable.
-- Đã có typed REST client, auth flow, meeting/upload/transcript UI,
-  permission-aware controls, capability gating, WebSocket client và job
-  monitoring.
-- Đã chạy thành công `npm run check` và `npm run build` trong `frontend/`.
-- Đã bổ sung `project_context/` và quy ước handoff/cập nhật tiến độ cho agent.
-- Task 12 frontend integration: API client now covers auth recovery, meeting,
-  transcript mutation, speakers, comments, jobs and export downloads; the UI
-  uses real REST/WebSocket boundaries and has no fake success fallback.
-- Đã dựng FastAPI backend foundation: `/api/v1`, health/readiness,
-  environment settings, CORS, structured errors/request IDs, JSON logging,
-  database/Alembic foundation và provider-neutral contracts.
-- Đã implement SQLAlchemy async domain models, PostgreSQL Alembic initial
-  migration, và database-focused tests cho ERD v2, bao gồm transcript/summary
-  version snapshots và meeting ACL.
-- Đã implement authentication slice: email/password, OTP email verification và
-  reset password, signed JWT access/refresh, profile endpoint, SMTP boundary và
-  Google OAuth authorization-code flow.
-- Đã implement TASK 6 Meeting CRUD + ACL: meeting chỉ hiện cho owner hoặc
-  collaborator, có permission-aware read/edit/delete, owner-only member/share
-  management và token share chỉ lưu hash.
-- Đã implement TASK 7 media upload + job system: stream upload có limit,
-  ffprobe validation, filesystem storage boundary, media ACL và job persisted
-  (`queued/processing/completed/failed`) có progress/error metadata.
-- Đã implement TASK 8 realtime STT WebSocket: provider streaming capability
-  gate, JWT + meeting ACL, binary audio / pause-resume-stop protocol,
-  partial-only delivery, normalized final segment persistence, provider error
-  retryability và disconnect lifecycle.
-- Đã implement TASK 9 Transcript & Speaker API: immutable snapshot versions,
-  current/history/version retrieval, segment edit/split/merge/delete,
-  speaker CRUD/reassignment, ACL enforcement and a shared normalized STT
-  ingestion boundary used by realtime and future batch/upload workers.
-- Đã implement TASK 10 Translation + AI Summary: provider-neutral registries,
-  capability discovery, durable async AI jobs, segment-aligned translations,
-  structured summaries and immutable summary version regeneration.
+- Frontend React + TypeScript + Vite đã dùng REST/WebSocket backend thật, có
+  auth/OTP/recovery/Google OAuth, meeting ACL, realtime recording, upload job,
+  transcript versioning, comments và export download có xác thực.
+- UI shell đã được căn chỉnh theo BA references trong `docs/ui/references/`:
+  sidebar, app bar, auth shell, panel/form/button/status token và responsive
+  desktop-first layout.
+- Phase 0 đã hoàn tất: mapping BA/API/frontend, quyết định contract đang dùng
+  và các API gap được ghi tại `docs/planning/phase-0-api-gap.md`.
+- Phase 1 đã hoàn tất ở frontend:
+  - tách tạo meeting `realtime` và `upload`;
+  - realtime có timer, start/pause/resume/stop, partial/final transcript và
+    trạng thái lỗi/kết nối;
+  - upload theo dõi `queued/processing/completed/failed`, chỉ mở transcript
+    sau khi job hoàn tất;
+  - transcript sửa text/timestamp/speaker, split/merge, delete có confirm,
+    và cập nhật immutable version.
+- Phase 2 đã hoàn tất ở frontend:
+  - route theo meeting cho speaker management, translation, summary/minutes,
+    export/share;
+  - translation và summary tạo job thật, polling trạng thái và đọc kết quả từ
+    backend;
+  - export chọn format/options thực có, tải blob bằng Authorization;
+  - share link tạo từ backend và có public metadata page `/share/:token`.
+- Phase 3 đã hoàn tất cho contract/UI hiện có:
+  - `GET /meetings` nhận `q`, `status`, `source_type`; History gửi filter
+    lên server thay vì lọc toàn bộ dữ liệu trong browser;
+  - owner có thể xem/xóa tệp media riêng và xóa meeting qua confirmation;
+  - `PATCH /auth/me` cho phép cập nhật tên hồ sơ, đồng bộ session frontend.
+- Phase 4 đã hoàn tất ở mức code/build QA: shared SVG icon primitive thay cho
+  glyph navigation/auth, responsive/static reference checklist và acceptance
+  matrix tại `docs/planning/phase-4-qa.md`.
+- Backend hiện có FastAPI modular monolith, async SQLAlchemy/Alembic domain,
+  meeting ACL, auth, upload/media job, realtime STT boundary, immutable
+  transcript/speaker APIs, translation/summary, exports, share links và
+  performance instrumentation/audit tài liệu.
+- Xác minh frontend gần nhất: `npm.cmd run build` thành công sau Phase 2.
 
 ## In progress
 
-- Task 12 cannot meet end-to-end completion criteria yet: no real STT,
-  translation or LLM adapters are registered, and no batch media processor is
-  present. Upload jobs therefore remain queued by design.
+- Chưa có lượt kiểm thử browser/E2E với backend/provider thật cho các luồng
+  realtime, upload processing, translation, summary, export và public share.
 
 ## Next
 
-1. Implement/register a real streaming STT adapter and a separate batch media
-   processor: worker claim job, normalize bằng FFmpeg, gọi STT provider thật và
-   cập nhật transcript/job state through `TranscriptService.append_stt_final`.
-2. Register production TranslationProvider/LLMProvider adapters and move the
-   in-process AI dispatcher to a separately deployed queue worker for durable
-   multi-process execution.
-2. Consider replacing WebSocket query-token authentication with a short-lived
-   websocket ticket before production deployment.
-3. Chạy backend test/lint trên a standard CPython environment and run Alembic
-   against an isolated PostgreSQL database before deployment.
+1. Bổ sung pagination/count cho History nếu số lượng meeting tăng; API hiện có
+   `limit/offset` và server-side filtering nhưng chưa trả tổng số/cursor.
+2. Chốt và thiết kế migration/API cho default language, diarization, số điện
+   thoại, storage/retention metadata trước khi thêm các field settings còn lại.
+3. Mở rộng public share contract: endpoint capability-link hiện chỉ trả meeting
+   metadata + permission; cần read-only transcript/summary/translation scoped
+   by token để share page có thể hiển thị nội dung nhạy cảm an toàn.
+4. Bổ sung media playback/download endpoint hoặc signed playback URL; sau đó
+   implement `AudioPlayer` đồng bộ segment. Không fake player ở frontend.
+5. Register/configure STT streaming + batch, TranslationProvider và LLMProvider
+   thật; chạy worker/end-to-end tests với provider được chọn.
+6. Chạy backend `pytest`, `ruff check .`, Alembic migration validation và
+   browser E2E trên standard CPython + isolated PostgreSQL.
 
 ## Blockers / risks
 
-- Python hiện có trong workspace là MSYS/UCRT and does not include `pip`; backend
-  dependencies and test/lint tooling cannot be installed or run locally.
-- Registry hiện chưa bundled adapter; cần chọn/configure STT provider thật
-  trước khi có transcript production.
+- Chưa có provider production được cấu hình/đăng ký trong môi trường hiện tại;
+  capability-gated UI sẽ không thể thực hiện STT/AI thật cho tới khi có adapter
+  và credentials backend.
+- Public share chưa thể công khai transcript hoặc AI result vì backend không
+  cấp token-scoped result endpoints; không được mở endpoint authenticated hiện
+  có mà không thiết kế ACL riêng.
+- Audio playback BA vẫn bị chặn bởi thiếu media stream/download contract.
+- Backend test/lint có thể cần standard CPython và database độc lập tùy môi
+  trường local/deploy; không coi frontend build là E2E verification.
+- Browser automation was unavailable in the current agent environment; visual
+  comparison is recorded as static QA, not an interactive acceptance result.

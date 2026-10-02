@@ -6,6 +6,7 @@ import asyncio
 import json
 import math
 import os
+import subprocess
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -81,6 +82,11 @@ class MediaService:
                 storage_key=storage_key,
                 status="uploaded",
             )
+            self._session.add(media)
+            # Job only stores the media UUID, so SQLAlchemy has no mapped
+            # relationship from which to derive insert ordering. Flush the
+            # referenced row before adding its dependent job.
+            await self._session.flush()
             job = Job(
                 meeting_id=meeting.id,
                 media_file_id=media.id,
@@ -88,7 +94,7 @@ class MediaService:
                 status=JobStatus.QUEUED,
                 progress=0,
             )
-            self._session.add_all((media, job))
+            self._session.add(job)
             await self._session.commit()
             await self._session.refresh(job)
             return self._job_response(job)
@@ -215,27 +221,34 @@ class MediaService:
 
     async def _probe_duration(self, path: Path) -> int:
         try:
-            process = await asyncio.create_subprocess_exec(
-                "ffprobe",
-                "-v",
-                "error",
-                "-show_entries",
-                "format=duration",
-                "-of",
-                "json",
-                str(path),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+            # Uvicorn's Windows reload process uses SelectorEventLoop, which
+            # does not implement asyncio subprocess transports.  Running the
+            # short probe in a worker thread keeps local development and
+            # production behavior consistent.
+            process = await asyncio.to_thread(
+                subprocess.run,
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration",
+                    "-of",
+                    "json",
+                    str(path),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
             )
         except FileNotFoundError as exc:
             raise ApiError(
                 "MEDIA_PROBE_UNAVAILABLE", "Media validation is not configured.", 503
             ) from exc
-        stdout, _ = await process.communicate()
         if process.returncode != 0:
             raise ApiError("MEDIA_INVALID", "Media cannot be read by ffprobe.", 422)
         try:
-            duration_seconds = float(json.loads(stdout).get("format", {}).get("duration"))
+            duration_seconds = float(json.loads(process.stdout).get("format", {}).get("duration"))
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             raise ApiError("MEDIA_INVALID", "Media has no readable duration.", 422) from exc
         if not math.isfinite(duration_seconds):

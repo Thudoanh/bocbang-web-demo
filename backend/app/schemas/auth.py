@@ -21,6 +21,18 @@ class UserResponse(BaseModel):
     is_email_verified: bool
 
 
+class UserUpdateRequest(BaseModel):
+    full_name: str = Field(min_length=1, max_length=255)
+
+    @field_validator("full_name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Full name is required.")
+        return normalized
+
+
 class RegisterRequest(BaseModel):
     email: str = Field(min_length=3, max_length=320)
     password: str = Field(min_length=8, max_length=256)

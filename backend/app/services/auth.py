@@ -94,6 +94,12 @@ class AuthService:
             raise ApiError("AUTH_REQUIRED", "Authentication is required.", 401)
         return user
 
+    async def update_profile(self, user: User, full_name: str) -> User:
+        user.full_name = full_name
+        await self._session.commit()
+        await self._session.refresh(user)
+        return user
+
     async def google_user(self, subject: str, email: str, full_name: str) -> User:
         user = await self._session.scalar(select(User).where(User.google_subject == subject))
         if user is None:

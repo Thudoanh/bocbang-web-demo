@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import Boolean, BigInteger, DateTime, ForeignKey, String, Text
+from sqlalchemy import Boolean, BigInteger, DateTime, ForeignKey, Index, String, Text, desc
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -25,6 +25,14 @@ if TYPE_CHECKING:
 
 class Meeting(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "meetings"
+    __table_args__ = (
+        Index(
+            "ix_meetings_owner_id_updated_at_created_at",
+            "owner_id",
+            desc("updated_at"),
+            desc("created_at"),
+        ),
+    )
 
     owner_id: Mapped[UUID] = mapped_column(
         ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
@@ -82,6 +90,7 @@ class Meeting(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
 class MeetingMember(CreatedAtMixin, Base):
     __tablename__ = "meeting_members"
+    __table_args__ = (Index("ix_meeting_members_user_id_meeting_id", "user_id", "meeting_id"),)
 
     meeting_id: Mapped[UUID] = mapped_column(
         ForeignKey("meetings.id", ondelete="CASCADE"), primary_key=True

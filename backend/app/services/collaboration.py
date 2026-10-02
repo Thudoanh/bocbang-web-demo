@@ -21,12 +21,16 @@ class CollaborationService:
         self._session = session
         self._meetings = MeetingService(session)
 
-    async def list_comments(self, meeting_id: UUID, user: User) -> list[CommentResponse]:
+    async def list_comments(
+        self, meeting_id: UUID, user: User, *, limit: int = 100, offset: int = 0
+    ) -> list[CommentResponse]:
         await self._meetings.require_access(meeting_id, user, MeetingPermission.READ)
         rows = await self._session.scalars(
             select(Comment)
             .where(Comment.meeting_id == meeting_id, Comment.deleted_at.is_(None))
             .order_by(Comment.created_at.asc())
+            .offset(offset)
+            .limit(limit)
         )
         return [self._response(row) for row in rows]
 

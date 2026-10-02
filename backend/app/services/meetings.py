@@ -11,7 +11,7 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import ApiError
-from app.models.enums import MeetingPermission
+from app.models.enums import MeetingPermission, MeetingSourceType, MeetingStatus
 from app.models.meeting import Meeting, MeetingMember, ShareLink
 from app.models.user import User
 from app.schemas.auth import UserResponse
@@ -47,7 +47,10 @@ class MeetingService:
         await self._session.refresh(meeting)
         return self._meeting_response(meeting, "owner")
 
-    async def list_for_user(self, user: User) -> list[MeetingResponse]:
+    async def list_for_user(
+        self, user: User, *, limit: int = 100, offset: int = 0, query_text: str | None = None,
+        status: MeetingStatus | None = None, source_type: MeetingSourceType | None = None,
+    ) -> list[MeetingResponse]:
         query = (
             select(Meeting, MeetingMember.permission)
             .outerjoin(
@@ -59,7 +62,15 @@ class MeetingService:
             )
             .where(or_(Meeting.owner_id == user.id, MeetingMember.user_id.is_not(None)))
             .order_by(Meeting.updated_at.desc(), Meeting.created_at.desc())
+            .offset(offset)
+            .limit(limit)
         )
+        if query_text:
+            query = query.where(Meeting.title.ilike(f"%{query_text.strip()}%"))
+        if status is not None:
+            query = query.where(Meeting.status == status)
+        if source_type is not None:
+            query = query.where(Meeting.source_type == source_type)
         rows = (await self._session.execute(query)).all()
         return [
             self._meeting_response(meeting, "owner" if meeting.owner_id == user.id else permission)

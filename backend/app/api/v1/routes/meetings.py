@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request, Response, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 
 from app.api.v1.routes.auth import CurrentUserDependency
 from app.api.v1.routes.media import MediaServiceDependency
 from app.api.v1.routes.exports import ExportServiceDependency
-from app.core.dependencies import get_database
-from app.db.session import Database
+from app.core.dependencies import DatabaseSessionDependency
 from app.schemas.meeting import (
     MeetingCreateRequest,
     MeetingMemberCreateRequest,
@@ -25,15 +23,14 @@ from app.schemas.meeting import (
     ShareLinkResponse,
     ShareLinkUpdateRequest,
 )
+from app.models.enums import MeetingSourceType, MeetingStatus
 from app.services.meetings import MeetingService
 
 router = APIRouter(prefix="/meetings")
 
 
-async def get_meeting_service(request: Request) -> AsyncIterator[MeetingService]:
-    database: Database = get_database(request)
-    async with database.session() as session:
-        yield MeetingService(session)
+async def get_meeting_service(session: DatabaseSessionDependency) -> MeetingService:
+    return MeetingService(session)
 
 
 MeetingServiceDependency = Annotated[MeetingService, Depends(get_meeting_service)]
@@ -50,9 +47,15 @@ async def create_meeting(
 
 @router.get("", response_model=list[MeetingResponse])
 async def list_meetings(
-    user: CurrentUserDependency, service: MeetingServiceDependency
+    user: CurrentUserDependency,
+    service: MeetingServiceDependency,
+    limit: int = Query(default=100, ge=1, le=250),
+    offset: int = Query(default=0, ge=0),
+    q: str | None = Query(default=None, min_length=1, max_length=255),
+    status: MeetingStatus | None = Query(default=None),
+    source_type: MeetingSourceType | None = Query(default=None),
 ) -> list[MeetingResponse]:
-    return await service.list_for_user(user)
+    return await service.list_for_user(user, limit=limit, offset=offset, query_text=q, status=status, source_type=source_type)
 
 
 @router.get("/{meeting_id}", response_model=MeetingResponse)

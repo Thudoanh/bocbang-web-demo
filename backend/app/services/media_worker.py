@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
 import tempfile
 from pathlib import Path
 from uuid import UUID
@@ -88,13 +89,19 @@ class MediaProcessingWorker:
             with os.fdopen(source_fd, "wb") as destination:
                 destination.write(content)
             os.close(normalized_fd)
-            process = await asyncio.create_subprocess_exec(
-                "ffmpeg", "-y", "-v", "error", "-i", str(source), "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(normalized),
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            # See MediaService._probe_duration: Windows reload mode uses an
+            # event loop without asyncio subprocess support.
+            process = await asyncio.to_thread(
+                subprocess.run,
+                [
+                    "ffmpeg", "-y", "-v", "error", "-i", str(source), "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(normalized),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
             )
-            _, stderr = await process.communicate()
             if process.returncode != 0 or not normalized.is_file() or normalized.stat().st_size == 0:
-                raise ValueError(f"FFmpeg could not normalize the media: {stderr.decode(errors='replace')[:200]}")
+                raise ValueError(f"FFmpeg could not normalize the media: {process.stderr.decode(errors='replace')[:200]}")
             return source, normalized
         except Exception:
             for path in (source, normalized):

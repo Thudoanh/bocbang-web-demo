@@ -57,6 +57,7 @@ class TranscriptResponse(BaseModel):
     version_no: int
     language: str
     segments: list[SegmentResponse]
+    next_cursor: str | None = None
 
 
 class TranscriptVersionResponse(BaseModel):
@@ -101,3 +102,7 @@ class TranscriptMutationResponse(BaseModel):
     version_id: UUID
     version_no: int
     segment: SegmentResponse | None = None
+
+
+class TranscriptRollbackRequest(BaseModel):
+    target_version_id: UUID

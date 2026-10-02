@@ -30,7 +30,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         configure_logging(resolved_settings.log_level)
-        app.state.database = Database(resolved_settings.database_url)
+        app.state.database = Database(
+            resolved_settings.database_url,
+            query_timing_enabled=resolved_settings.performance_query_timing_enabled,
+            slow_query_ms=resolved_settings.performance_slow_query_ms,
+        )
         app.state.ai_job_dispatcher = AIJobDispatcher(
             app.state.database,
             resolved_settings,
@@ -67,15 +71,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.translation_provider = build_translation_provider(resolved_settings)
     app.state.llm_provider = build_llm_provider(resolved_settings)
     app.state.media_storage = FileSystemMediaStorage(resolved_settings.media_storage_path)
-    app.add_middleware(RequestContextMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(resolved_settings.frontend_origins),
         allow_credentials=True,
         allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
-        expose_headers=["X-Request-ID"],
+        expose_headers=["X-Request-ID", "X-Process-Time-Ms"],
     )
+    app.add_middleware(RequestContextMiddleware)
     register_exception_handlers(app)
     app.include_router(api_router, prefix=API_V1_PREFIX)
     return app

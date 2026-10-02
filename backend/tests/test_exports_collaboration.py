@@ -93,6 +93,10 @@ def test_exports_all_formats_and_collaboration_permissions(tmp_path: Path) -> No
             json={"body": "Có ghi chú"},
         )
         assert comment.status_code == 201
+        assert len(client.get(
+            f"/api/v1/meetings/{meeting_id}/comments?limit=1&offset=0",
+            headers=commenter_headers,
+        ).json()) == 1
         segment_id = client.get(
             f"/api/v1/meetings/{meeting_id}/transcript", headers=owner_headers
         ).json()["segments"][0]["logical_segment_id"]

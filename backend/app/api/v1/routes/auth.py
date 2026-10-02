@@ -3,19 +3,17 @@
 from __future__ import annotations
 
 import hmac
-from typing import Annotated, AsyncIterator, cast
+from typing import Annotated, cast
 from urllib.parse import urlencode
 
 import httpx
 from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.responses import RedirectResponse
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
-from app.core.dependencies import get_database, get_settings
+from app.core.dependencies import DatabaseSessionDependency, get_settings
 from app.core.errors import ApiError
-from app.db.session import Database
 from app.models.user import User
 from app.providers.email import EmailSender
 from app.schemas.auth import (
@@ -27,6 +25,7 @@ from app.schemas.auth import (
     RegisterResponse,
     ResetPasswordRequest,
     TokenRefreshRequest,
+    UserUpdateRequest,
     UserResponse,
 )
 from app.services.auth import AuthService
@@ -35,12 +34,10 @@ router = APIRouter(prefix="/auth")
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
-async def get_auth_service(request: Request) -> AsyncIterator[AuthService]:
-    database: Database = get_database(request)
+async def get_auth_service(request: Request, session: DatabaseSessionDependency) -> AuthService:
     settings: Settings = get_settings(request)
     email_sender = cast(EmailSender, request.app.state.email_sender)
-    async with database.session() as session:
-        yield AuthService(session, settings, email_sender)
+    return AuthService(session, settings, email_sender)
 
 
 AuthServiceDependency = Annotated[AuthService, Depends(get_auth_service)]
@@ -113,6 +110,15 @@ async def current_user(
     user: CurrentUserDependency,
 ) -> UserResponse:
     return UserResponse.model_validate(user)
+
+
+@router.patch("/me", response_model=UserResponse)
+async def update_current_user(
+    payload: UserUpdateRequest,
+    user: CurrentUserDependency,
+    service: AuthServiceDependency,
+) -> UserResponse:
+    return UserResponse.model_validate(await service.update_profile(user, payload.full_name))
 
 
 @router.get("/google/start", include_in_schema=False)

@@ -26,6 +26,8 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("APP_ENVIRONMENT", "ENVIRONMENT"),
     )
     log_level: str = "INFO"
+    performance_query_timing_enabled: bool = False
+    performance_slow_query_ms: float = 100.0
     frontend_origins: str | tuple[str, ...] = Field(
         default=("http://localhost:5173",),
         validation_alias=AliasChoices("FRONTEND_ORIGINS", "FRONTEND_ORIGIN"),
