@@ -133,6 +133,49 @@ The frontend is at `http://localhost:5173`, the API documentation is at
 `http://localhost:8000/api/v1/docs`, and health endpoints are exposed under
 `/api/v1/health`.
 
+### Two-terminal local demo
+
+For a shorter local demo setup, keep Redis running in Docker and use two
+visible PowerShell terminals. The worker runs as a background job in the API
+terminal; PostgreSQL, Redis, and the root `.env` configuration are still
+required.
+
+```powershell
+# Terminal 1 — API plus background queue worker
+cd backend
+.\.venv\Scripts\Activate.ps1
+alembic upgrade head
+
+$backendPath = (Get-Location).Path
+$worker = Start-Job -ArgumentList $backendPath -ScriptBlock {
+  param($backendPath)
+  Set-Location $backendPath
+  & .\.venv\Scripts\dramatiq.exe app.workers.worker
+}
+
+python -m uvicorn app.main:app --reload
+```
+
+```powershell
+# Terminal 2 — frontend
+cd frontend
+npm run dev
+```
+
+Open `http://localhost:5173`. After stopping the API with `Ctrl+C`, stop the
+background worker from Terminal 1:
+
+```powershell
+Stop-Job $worker
+Remove-Job $worker
+```
+
+The reconciler can be omitted for an ordinary local demo while Redis remains
+available. It is responsible for recovering queued jobs after an API or Redis
+interruption, so run it for the full four-process setup. If the worker is also
+omitted, the UI can load but uploads, AI processing, and exports will not
+complete.
+
 ### Local smoke test
 
 1. Register, verify the OTP delivered by the configured email provider, then log in.
