@@ -32,6 +32,7 @@ class MeetingStatus(StrEnum):
 class JobStatus(StrEnum):
     QUEUED = "queued"
     PROCESSING = "processing"
+    RETRYING = "retrying"
     COMPLETED = "completed"
     FAILED = "failed"
 

@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.models.enums import MeetingPermission
 from app.schemas.meeting import MeetingResponse
+from app.schemas.transcript import TranscriptResponse
 
 
 class CommentCreateRequest(BaseModel):
@@ -47,3 +48,9 @@ class CommentResponse(BaseModel):
 class ShareAccessResponse(BaseModel):
     meeting: MeetingResponse
     permission: MeetingPermission
+
+
+class ShareTranscriptResponse(ShareAccessResponse):
+    """Capability-link-safe view of the current transcript only."""
+
+    transcript: TranscriptResponse

@@ -1,6 +1,6 @@
 import { config } from "../app/config";
 import { apiClient } from "./client";
-import type { AuthSession, Capabilities, Comment, CreatedShareLink, ExportArtifact, ExportFormat, Job, Meeting, MeetingStatus, MediaFile, Permission, Segment, ShareLink, Speaker, Summary, SummaryTemplate, Transcript, Translation, User } from "../types/domain";
+import type { AuthSession, Capabilities, Comment, CreatedShareLink, ExportArtifact, ExportFormat, Job, Meeting, MeetingStatus, MediaFile, Permission, Segment, ShareLink, Speaker, SpeakerSample, Summary, SummaryTemplate, Transcript, Translation, User } from "../types/domain";
 
 type Page = { limit?: number; offset?: number; q?: string; status?: MeetingStatus; source_type?: Meeting["source_type"] };
 export type TranscriptMutation = { version_id: string; version_no: number; segment?: Segment };
@@ -35,6 +35,8 @@ export const meetingsApi = {
   remove: (id: string) => apiClient.delete<void>(`/meetings/${id}`),
   uploadMedia: (id: string, file: File) => { const data = new FormData(); data.append("file", file); return apiClient.post<Job>(`/meetings/${id}/media`, data); },
   media: (id: string) => apiClient.get<MediaFile[]>(`/meetings/${id}/media`),
+  playbackUrl: (meetingId: string, mediaId: string) => apiClient.post<{ url: string; expires_in_seconds: number }>(`/meetings/${meetingId}/media/${mediaId}/playback-url`),
+  streamMedia: (meetingId: string, mediaId: string) => apiClient.getBlob(`/meetings/${meetingId}/media/${mediaId}/stream`),
   deleteMedia: (meetingId: string, mediaId: string) => apiClient.delete<void>(`/meetings/${meetingId}/media/${mediaId}`),
   transcript: (id: string, page?: Page) => apiClient.get<Transcript>(`/meetings/${id}/transcript${pageQuery(page)}`),
   versions: (id: string, page?: Page) => apiClient.get<Array<{ id: string; version_no: number; source: string; created_at: string }>>(`/meetings/${id}/transcript/versions${pageQuery(page)}`),
@@ -44,6 +46,7 @@ export const meetingsApi = {
   mergeSegments: (first_segment_id: string, second_segment_id: string) => apiClient.post<TranscriptMutation>("/segments/merge", { first_segment_id, second_segment_id }),
   speakers: (id: string) => apiClient.get<Speaker[]>(`/meetings/${id}/speakers`),
   updateSpeaker: (id: string, body: Partial<Speaker>) => apiClient.patch<Speaker>(`/speakers/${id}`, body),
+  speakerSample: (id: string) => apiClient.get<SpeakerSample>(`/speakers/${id}/sample`),
   setSegmentSpeaker: (id: string, speaker_id: string | null) => apiClient.patch<TranscriptMutation>(`/segments/${id}/speaker`, { speaker_id }),
   createSpeaker: (meetingId: string, body: Pick<Speaker, "name"> & Partial<Pick<Speaker, "role" | "organization">>) => apiClient.post<Speaker>(`/meetings/${meetingId}/speakers`, body),
   addMember: (meetingId: string, email: string, permission: Exclude<Permission, "owner">) => apiClient.post<void>(`/meetings/${meetingId}/members`, { email, permission }),
@@ -63,4 +66,7 @@ export const meetingsApi = {
 };
 export const capabilitiesApi = { get: () => apiClient.get<Capabilities>("/capabilities") };
 export const jobsApi = { get: (id: string) => apiClient.get<Job>(`/jobs/${id}`) };
-export const sharesApi = { resolve: (token: string) => apiClient.get<{ meeting: Meeting; permission: Exclude<Permission, "owner"> }>(`/shares/${token}`) };
+export const sharesApi = {
+  resolve: (token: string) => apiClient.get<{ meeting: Meeting; permission: Exclude<Permission, "owner"> }>(`/shares/${token}`),
+  transcript: (token: string) => apiClient.get<{ meeting: Meeting; permission: Exclude<Permission, "owner">; transcript: Transcript }>(`/shares/${token}/transcript`),
+};

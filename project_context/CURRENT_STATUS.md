@@ -1,8 +1,13 @@
 # Current Status
 
-_Cập nhật lần cuối: 2026-10-01_
+_Cập nhật lần cuối: 2026-10-05_
 
 ## Done
+
+- Backend queue worker foundation now uses Dramatiq + Redis: durable Job
+  lifecycle fields and retry schedule, Redis-only enqueue after commit,
+  separate consumer and reconciliation entrypoints, and media/STT, AI, and
+  export execution outside the FastAPI process.
 
 - Frontend React + TypeScript + Vite đã dùng REST/WebSocket backend thật, có
   auth/OTP/recovery/Google OAuth, meeting ACL, realtime recording, upload job,
@@ -39,6 +44,12 @@ _Cập nhật lần cuối: 2026-10-01_
   meeting ACL, auth, upload/media job, realtime STT boundary, immutable
   transcript/speaker APIs, translation/summary, exports, share links và
   performance instrumentation/audit tài liệu.
+- Durable media, normalized media and exports now use a local/S3-compatible
+  storage boundary. Production uses private object storage and short-lived
+  presigned downloads; no persistent media depends on the API filesystem.
+- LLM summary và dịch segment VI ↔ EN có thể dùng Groq làm primary hoặc
+  fallback sau Gemini qua biến môi trường backend; key Groq không bao giờ được
+  gửi ra frontend.
 - Xác minh frontend gần nhất: `npm.cmd run build` thành công sau Phase 2.
 
 ## In progress
@@ -55,8 +66,8 @@ _Cập nhật lần cuối: 2026-10-01_
 3. Mở rộng public share contract: endpoint capability-link hiện chỉ trả meeting
    metadata + permission; cần read-only transcript/summary/translation scoped
    by token để share page có thể hiển thị nội dung nhạy cảm an toàn.
-4. Bổ sung media playback/download endpoint hoặc signed playback URL; sau đó
-   implement `AudioPlayer` đồng bộ segment. Không fake player ở frontend.
+4. Implement `AudioPlayer` đồng bộ segment against the authenticated local
+   proxy / short-lived S3 playback URL. Không fake player ở frontend.
 5. Register/configure STT streaming + batch, TranslationProvider và LLMProvider
    thật; chạy worker/end-to-end tests với provider được chọn.
 6. Chạy backend `pytest`, `ruff check .`, Alembic migration validation và

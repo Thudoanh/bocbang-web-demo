@@ -34,9 +34,17 @@ class Settings(BaseSettings):
     )
     database_url: str | None = None
     redis_url: str | None = None
+    queue_backend: str = "redis"
+    worker_max_retries: int = 3
+    worker_retry_min_backoff_ms: int = 10_000
+    worker_retry_max_backoff_ms: int = 60_000
+    worker_reconcile_interval_seconds: int = 15
+    worker_reconcile_batch_size: int = 100
+    worker_delivery_timeout_seconds: int = 300
     jwt_secret: str | None = None
     access_token_ttl_seconds: int = 900
     refresh_token_ttl_seconds: int = 2_592_000
+    media_playback_ticket_ttl_seconds: int = 300
     email_otp_ttl_seconds: int = 600
     email_otp_max_attempts: int = 5
     email_provider: str | None = None
@@ -52,7 +60,22 @@ class Settings(BaseSettings):
     google_redirect_uri: str | None = None
     max_upload_bytes: int = 524_288_000
     max_media_duration_seconds: int = 7_200
+    storage_backend: str = "local"
     media_storage_path: Path = REPOSITORY_ROOT / ".local-media"
+    s3_endpoint_url: str | None = Field(
+        default=None, validation_alias=AliasChoices("S3_ENDPOINT_URL", "S3_ENDPOINT")
+    )
+    s3_access_key_id: str | None = Field(
+        default=None, validation_alias=AliasChoices("S3_ACCESS_KEY_ID", "S3_ACCESS_KEY")
+    )
+    s3_secret_access_key: str | None = Field(
+        default=None, validation_alias=AliasChoices("S3_SECRET_ACCESS_KEY", "S3_SECRET_KEY")
+    )
+    s3_bucket_name: str | None = Field(
+        default=None, validation_alias=AliasChoices("S3_BUCKET_NAME", "S3_BUCKET")
+    )
+    s3_region: str = "auto"
+    storage_presigned_url_ttl_seconds: int = 300
     stt_provider: str | None = None
     stt_api_key: str | None = None
     stt_model: str = "universal-3-pro"
@@ -62,11 +85,16 @@ class Settings(BaseSettings):
     stt_poll_timeout_seconds: int = 1800
     translation_provider: str | None = None
     translation_api_key: str | None = None
+    translation_fallback_provider: str | None = None
     llm_provider: str | None = None
     llm_api_key: str | None = None
     llm_model: str | None = None
+    llm_fallback_provider: str | None = None
     gemini_model: str = "gemini-2.5-flash"
     gemini_api_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
+    groq_api_key: str | None = None
+    groq_model: str = "openai/gpt-oss-20b"
+    groq_api_base_url: str = "https://api.groq.com/openai/v1"
 
     @field_validator("frontend_origins", mode="before")
     @classmethod
@@ -89,6 +117,42 @@ class Settings(BaseSettings):
         if value.startswith("postgresql://"):
             return "postgresql+asyncpg://" + value.removeprefix("postgresql://")
         return value
+
+    @field_validator("storage_backend")
+    @classmethod
+    def validate_storage_backend(cls, value: str) -> str:
+        backend = value.strip().lower()
+        if backend not in {"local", "s3"}:
+            raise ValueError("STORAGE_BACKEND must be either 'local' or 's3'.")
+        return backend
+
+    @field_validator("queue_backend")
+    @classmethod
+    def validate_queue_backend(cls, value: str) -> str:
+        backend = value.strip().lower()
+        if backend != "redis":
+            raise ValueError("QUEUE_BACKEND must be 'redis'.")
+        return backend
+
+    @field_validator(
+        "worker_max_retries",
+        "worker_retry_min_backoff_ms",
+        "worker_retry_max_backoff_ms",
+        "worker_reconcile_interval_seconds",
+        "worker_reconcile_batch_size",
+        "worker_delivery_timeout_seconds",
+    )
+    @classmethod
+    def validate_positive_worker_setting(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("Worker retry, delivery, and reconciliation settings must be positive.")
+        return value
+
+    def require_queue_configuration(self) -> None:
+        if self.environment.lower() in {"production", "prod"} and not self.redis_url:
+            raise ValueError("REDIS_URL is required when APP_ENVIRONMENT is production.")
+        if not self.redis_url:
+            raise ValueError("REDIS_URL is required to enqueue background jobs.")
 
 
 @lru_cache

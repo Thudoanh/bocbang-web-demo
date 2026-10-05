@@ -33,7 +33,6 @@ class AssemblyAIProvider:
         if not settings.stt_api_key:
             raise ValueError("STT_API_KEY is required when STT_PROVIDER=assemblyai.")
         self._key = settings.stt_api_key
-        self._root = settings.media_storage_path.resolve()
         self._model = settings.stt_model
         self._api_base_url = settings.assemblyai_api_base_url.rstrip("/")
         self._streaming_base_url = settings.assemblyai_streaming_base_url.rstrip("/")
@@ -44,9 +43,8 @@ class AssemblyAIProvider:
     def capabilities(self) -> STTCapabilities:
         return STTCapabilities(True, True, True, True, True, frozenset({"vi", "en"}), True)
 
-    async def transcribe_file(self, media_key: str) -> TranscriptionResult:
-        path = (self._root / media_key).resolve()
-        if self._root not in path.parents or not path.is_file():
+    async def transcribe_file(self, source: Path) -> TranscriptionResult:
+        if not source.is_file():
             raise STTProviderError("Normalized media is unavailable.", code="STT_MEDIA_UNAVAILABLE", retryable=False)
         owns_client = self._client is None
         client = self._client or httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=15.0))
@@ -54,7 +52,7 @@ class AssemblyAIProvider:
             upload = await client.post(
                 f"{self._api_base_url}/upload",
                 headers={"authorization": self._key, "content-type": "application/octet-stream"},
-                content=await asyncio.to_thread(path.read_bytes),
+                content=await asyncio.to_thread(source.read_bytes),
             )
             upload_url = self._response_json(upload).get("upload_url")
             if not isinstance(upload_url, str):

@@ -12,7 +12,8 @@ from app.core.errors import ApiError
 from app.models.collaboration import Comment
 from app.models.enums import MeetingPermission
 from app.models.user import User
-from app.schemas.collaboration import CommentCreateRequest, CommentResponse, CommentUpdateRequest
+from app.schemas.collaboration import CommentCreateRequest, CommentResponse, CommentUpdateRequest, ShareTranscriptResponse
+from app.services.transcripts import TranscriptService
 from app.services.meetings import MeetingService
 
 
@@ -72,6 +73,15 @@ class CollaborationService:
             )
         comment.deleted_at = datetime.now(UTC)
         await self._session.commit()
+
+    async def shared_transcript(self, token: str) -> ShareTranscriptResponse:
+        meeting, permission = await self._meetings.resolve_share_entity(token)
+        transcript = await TranscriptService(self._session).current_for_shared_link(meeting)
+        return ShareTranscriptResponse(
+            meeting=self._meetings._meeting_response(meeting, permission),
+            permission=permission,
+            transcript=transcript,
+        )
 
     async def _comment(self, comment_id: UUID) -> Comment:
         comment = await self._session.get(Comment, comment_id)

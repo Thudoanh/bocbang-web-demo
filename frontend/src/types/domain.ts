@@ -1,6 +1,6 @@
 export type Permission = "read" | "comment" | "edit" | "owner";
 export type MeetingStatus = "created" | "recording" | "processing" | "completed" | "failed";
-export type JobStatus = "queued" | "processing" | "completed" | "failed";
+export type JobStatus = "queued" | "processing" | "retrying" | "completed" | "failed";
 export type SummaryTemplate = "general" | "briefing" | "voting";
 export type ExportFormat = "pdf" | "docx" | "txt" | "srt" | "vtt" | "json";
 
@@ -12,6 +12,7 @@ export interface Meeting {
   diarization_enabled: boolean; duration_ms?: number; created_at: string; updated_at: string;
 }
 export interface MediaFile { id: string; original_filename: string; size_bytes: number; duration_ms?: number; status: string }
+export interface SpeakerSample { media_id: string; start_ms: number; end_ms: number }
 export interface Speaker { id: string; meeting_id?: string; name: string; role?: string; organization?: string; is_identified: boolean }
 export interface Segment { logical_segment_id: string; start_ms: number; end_ms: number; text: string; speaker_id?: string; speaker_label?: string; confidence?: number }
 export interface Transcript { version_id: string; version_no: number; language: string; segments: Segment[]; next_cursor?: string | null }

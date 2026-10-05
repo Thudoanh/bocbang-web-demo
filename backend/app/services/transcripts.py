@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.errors import ApiError
 from app.models.enums import MeetingPermission, TranscriptVersionSource
 from app.models.meeting import Meeting
+from app.models.media import MediaFile
 from app.models.transcript import CurrentSegment, SegmentVersion, Speaker, Transcript, TranscriptEditEvent, TranscriptVersion
 from app.models.user import User
 from app.providers.contracts import TranscriptionSegment
@@ -23,6 +24,7 @@ from app.schemas.transcript import (
     SegmentSplitRequest,
     SegmentSpeakerRequest,
     SpeakerCreateRequest,
+    SpeakerSampleResponse,
     SpeakerResponse,
     SpeakerUpdateRequest,
     TranscriptMutationResponse,
@@ -47,6 +49,14 @@ class TranscriptService:
         if transcript.current_projection_initialized_at is not None:
             return await self._current_projection_response(meeting, transcript, version, limit, cursor)
         return await self._transcript_response_async(meeting, version, limit=limit, offset=offset)
+
+    async def current_for_shared_link(self, meeting: Meeting) -> TranscriptResponse:
+        """Return only the current transcript after a share token has been validated."""
+        version = await self._current_version(meeting)
+        transcript = await self._transcript_for_meeting(meeting.id)
+        if transcript.current_projection_initialized_at is not None:
+            return await self._current_projection_response(meeting, transcript, version, 500, None)
+        return await self._transcript_response_async(meeting, version, limit=500, offset=0)
 
     async def versions(
         self, meeting_id: UUID, user: User, *, limit: int = 100, offset: int = 0
@@ -121,6 +131,42 @@ class TranscriptService:
             select(Speaker).where(Speaker.meeting_id == meeting_id).order_by(Speaker.created_at, Speaker.id)
         )
         return [SpeakerResponse.model_validate(speaker) for speaker in speakers]
+
+    async def speaker_sample(self, speaker_id: UUID, user: User) -> SpeakerSampleResponse:
+        speaker = await self._session.get(Speaker, speaker_id)
+        if speaker is None:
+            raise ApiError("SPEAKER_NOT_FOUND", "Speaker was not found.", 404)
+        await self._meetings.require_access(speaker.meeting_id, user, MeetingPermission.READ)
+        media = await self._session.scalar(
+            select(MediaFile).where(
+                MediaFile.meeting_id == speaker.meeting_id,
+                MediaFile.deleted_at.is_(None),
+            ).order_by(MediaFile.created_at.desc()).limit(1)
+        )
+        if media is None:
+            raise ApiError("SPEAKER_SAMPLE_UNAVAILABLE", "No playable media is available for this speaker.", 404)
+        transcript = await self._session.scalar(select(Transcript).where(Transcript.meeting_id == speaker.meeting_id))
+        if transcript is None:
+            raise ApiError("SPEAKER_SAMPLE_UNAVAILABLE", "No transcript sample is available for this speaker.", 404)
+        if transcript.current_projection_initialized_at is not None:
+            segment = await self._session.scalar(
+                select(CurrentSegment).where(
+                    CurrentSegment.transcript_id == transcript.id, CurrentSegment.speaker_id == speaker.id
+                ).order_by((CurrentSegment.end_ms - CurrentSegment.start_ms).desc()).limit(1)
+            )
+        else:
+            meeting = await self._session.get(Meeting, speaker.meeting_id)
+            if meeting is None:
+                raise ApiError("SPEAKER_SAMPLE_UNAVAILABLE", "No meeting is available for this speaker.", 404)
+            version = await self._current_version(meeting)
+            segment = await self._session.scalar(
+                select(SegmentVersion).where(
+                    SegmentVersion.transcript_version_id == version.id, SegmentVersion.speaker_id == speaker.id
+                ).order_by(SegmentVersion.sequence).limit(1)
+            )
+        if segment is None:
+            raise ApiError("SPEAKER_SAMPLE_UNAVAILABLE", "No transcript sample is available for this speaker.", 404)
+        return SpeakerSampleResponse(media_id=media.id, start_ms=segment.start_ms, end_ms=segment.end_ms)
 
     async def create_speaker(
         self, meeting_id: UUID, user: User, payload: SpeakerCreateRequest
@@ -321,15 +367,18 @@ class TranscriptService:
                 .join(SegmentVersion, SegmentVersion.transcript_version_id == TranscriptVersion.id)
                 .where(SegmentVersion.logical_segment_id == logical_id)
             )
-            if legacy is not None and legacy.current_projection_initialized_at is None:
+            if legacy is not None:
+                meeting = await self._session.get(Meeting, legacy.meeting_id)
+                assert meeting is not None
+                await self._meetings.require_access(meeting.id, user, MeetingPermission.EDIT)
                 self._require_projection(legacy)
             raise ApiError("SEGMENT_NOT_FOUND", "Transcript segment was not found.", 404)
         transcript = await self._session.get(Transcript, segment.transcript_id)
         assert transcript is not None
-        self._require_projection(transcript)
         meeting = await self._session.scalar(select(Meeting).where(Meeting.id == transcript.meeting_id).with_for_update())
         assert meeting is not None
         await self._meetings.require_access(meeting.id, user, MeetingPermission.EDIT)
+        self._require_projection(transcript)
         return meeting, segment, transcript
 
     @staticmethod

@@ -39,6 +39,8 @@ def test_media_upload_creates_queue_job_and_respects_acl(tmp_path: Path) -> None
         )
     )
     app.state.email_sender = sender
+    queued_job_ids: list[object] = []
+    app.state.enqueue_job = lambda job_id, _settings: queued_job_ids.append(str(job_id))
     original_probe = MediaService._probe_duration
 
     async def valid_probe(_: MediaService, __: Path) -> int:
@@ -64,11 +66,17 @@ def test_media_upload_creates_queue_job_and_respects_acl(tmp_path: Path) -> None
                 headers=owner_headers,
                 files={"file": ("recording.mp3", b"audio", "audio/mpeg")},
             )
-            assert uploaded.status_code == 201
+            assert uploaded.status_code == 202
             job = uploaded.json()
+            assert queued_job_ids == [job["id"]]
             assert job["status"] == "queued"
             assert job["progress"] == 0
             assert job["media_file_id"]
+            stored_files = [path for path in (tmp_path / "objects").rglob("*") if path.is_file()]
+            assert len(stored_files) == 1
+            assert stored_files[0].relative_to(tmp_path / "objects").as_posix().startswith(
+                f"media/meetings/{meeting_id}/"
+            )
 
             job_lookup = client.get(f"/api/v1/jobs/{job['id']}", headers=reader_headers)
             assert job_lookup.status_code == 200
@@ -95,6 +103,7 @@ def test_media_upload_creates_queue_job_and_respects_acl(tmp_path: Path) -> None
                 client.get(f"/api/v1/meetings/{meeting_id}/media", headers=owner_headers).json()
                 == []
             )
+            assert not [path for path in (tmp_path / "objects").rglob("*") if path.is_file()]
             deleted_job = client.get(f"/api/v1/jobs/{job['id']}", headers=owner_headers)
             assert deleted_job.json()["status"] == "failed"
             assert deleted_job.json()["error"]["code"] == "MEDIA_DELETED"

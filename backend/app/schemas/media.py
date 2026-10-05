@@ -23,6 +23,11 @@ class MediaFileResponse(BaseModel):
     created_at: datetime
 
 
+class MediaPlaybackResponse(BaseModel):
+    url: str
+    expires_in_seconds: int
+
+
 class JobErrorResponse(BaseModel):
     code: str
     message: str

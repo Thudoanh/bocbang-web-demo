@@ -53,5 +53,9 @@ class Job(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_retryable: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     payload: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     meeting: Mapped[Meeting] = relationship(back_populates="jobs")

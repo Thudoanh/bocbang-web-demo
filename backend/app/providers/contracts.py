@@ -1,6 +1,7 @@
 """Normalized contracts that keep vendor SDKs out of domain services."""
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal, Protocol
 
 
@@ -78,7 +79,7 @@ class STTStream(Protocol):
 class STTProvider(Protocol):
     def capabilities(self) -> STTCapabilities: ...
 
-    async def transcribe_file(self, media_key: str) -> TranscriptionResult: ...
+    async def transcribe_file(self, source: Path) -> TranscriptionResult: ...
 
     async def open_stream(self, options: StreamingOptions) -> STTStream: ...
 

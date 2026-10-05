@@ -170,9 +170,15 @@ thì streaming. Provider có thể đổi mà không thay public frontend API.
   immutable STT transcript version only after a valid normalized response.
 - `TRANSLATION_PROVIDER=gemini` registers Gemini segment-aligned VI ↔ EN
   translation. Output count must match the input segment count.
+- `TRANSLATION_PROVIDER=groq` registers Groq segment-aligned VI ↔ EN
+  translation. `TRANSLATION_FALLBACK_PROVIDER=groq` tries it only if the
+  configured primary translator fails.
 - `LLM_PROVIDER=gemini` registers Gemini structured summaries for `general`,
   `briefing`, and `voting`; the adapter asks Gemini for the normalized summary
   JSON schema and the service remains responsible for validation/persistence.
+- `LLM_PROVIDER=groq` registers Groq structured summaries. Set
+  `LLM_FALLBACK_PROVIDER=groq` with `GROQ_API_KEY` to use it only after the
+  configured primary LLM provider fails; provider credentials remain backend-only.
 
 For realtime AssemblyAI, browser audio is resampled to 16 kHz mono PCM16 and
 sent to this API WebSocket. The API opens the upstream WebSocket with the API

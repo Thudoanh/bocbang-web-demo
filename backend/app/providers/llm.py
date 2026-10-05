@@ -3,7 +3,7 @@
 from collections.abc import Callable
 
 from app.core.config import Settings
-from app.providers.contracts import LLMProvider
+from app.providers.contracts import LLMCapabilities, LLMProvider, LLMProviderError
 
 LLMProviderFactory = Callable[[Settings], LLMProvider]
 
@@ -15,6 +15,9 @@ class LLMProviderRegistry:
     def register(self, name: str, factory: LLMProviderFactory) -> None:
         self._factories[name.strip().lower()] = factory
 
+    def factory_for(self, name: str) -> LLMProviderFactory | None:
+        return self._factories.get(name.strip().lower())
+
     def build(self, settings: Settings) -> LLMProvider | None:
         if not settings.llm_provider:
             return None
@@ -22,12 +25,45 @@ class LLMProviderRegistry:
         return factory(settings) if factory else None
 
 
+class FallbackLLMProvider:
+    """Try a secondary provider only after the primary provider returns an error."""
+
+    def __init__(self, primary: LLMProvider, fallback: LLMProvider) -> None:
+        self._primary, self._fallback = primary, fallback
+
+    def capabilities(self) -> LLMCapabilities:
+        primary = self._primary.capabilities()
+        fallback = self._fallback.capabilities()
+        return LLMCapabilities(
+            structured_output=primary.structured_output or fallback.structured_output,
+            max_context_tokens=primary.max_context_tokens or fallback.max_context_tokens,
+        )
+
+    async def generate_summary(self, transcript: str, template: str) -> dict[str, object]:
+        try:
+            return await self._primary.generate_summary(transcript, template)
+        except LLMProviderError:
+            return await self._fallback.generate_summary(transcript, template)
+
+
 llm_provider_registry = LLMProviderRegistry()
 
 from app.providers.gemini import build_gemini_summary_provider  # noqa: E402
+from app.providers.groq import build_groq_summary_provider  # noqa: E402
 
 llm_provider_registry.register("gemini", build_gemini_summary_provider)
+llm_provider_registry.register("groq", build_groq_summary_provider)
 
 
 def build_llm_provider(settings: Settings) -> LLMProvider | None:
-    return llm_provider_registry.build(settings)
+    primary = llm_provider_registry.build(settings)
+    if primary is None or not settings.llm_fallback_provider:
+        return primary
+    fallback_name = settings.llm_fallback_provider.strip().lower()
+    primary_name = settings.llm_provider.strip().lower() if settings.llm_provider else ""
+    if fallback_name == primary_name:
+        raise ValueError("LLM_FALLBACK_PROVIDER must be different from LLM_PROVIDER.")
+    factory = llm_provider_registry.factory_for(fallback_name)
+    if factory is None:
+        raise ValueError(f"Unsupported LLM fallback provider: {settings.llm_fallback_provider}.")
+    return FallbackLLMProvider(primary, factory(settings))

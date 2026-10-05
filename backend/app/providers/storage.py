@@ -1,4 +1,4 @@
-"""Storage boundary with a local filesystem adapter for development and tests."""
+"""Private object-storage boundary for durable media and exports."""
 
 from __future__ import annotations
 
@@ -7,23 +7,33 @@ import shutil
 from pathlib import Path
 from typing import Protocol
 
+from app.core.config import Settings
 
-class MediaStorage(Protocol):
+
+class StorageError(Exception):
+    """A storage operation failed without exposing provider credentials."""
+
+
+class StorageNotFoundError(StorageError):
+    """The requested object does not exist."""
+
+
+class StorageBackend(Protocol):
     async def put_file(self, source: Path, key: str) -> None: ...
-
     async def delete(self, key: str) -> None: ...
-
     async def put_bytes(self, content: bytes, key: str) -> None: ...
-
     async def get_bytes(self, key: str) -> bytes: ...
+    async def get_range(self, key: str, start: int, end: int) -> bytes: ...
+    async def download_file(self, key: str, destination: Path) -> None: ...
+    async def presigned_get_url(self, key: str, expires_in: int, *, content_type: str | None = None, content_disposition: str | None = None) -> str | None: ...
 
 
-class FileSystemMediaStorage:
-    """Stores opaque object keys below one configured directory.
+# Compatibility alias for existing service imports.
+MediaStorage = StorageBackend
 
-    The adapter intentionally exposes no URL semantics; production can replace it
-    with an S3-compatible implementation without changing media use cases.
-    """
+
+class LocalStorageBackend:
+    """Stores opaque object keys below one configured local development root."""
 
     def __init__(self, root: Path) -> None:
         self._root = root.resolve()
@@ -44,10 +54,102 @@ class FileSystemMediaStorage:
         await asyncio.to_thread(destination.write_bytes, content)
 
     async def get_bytes(self, key: str) -> bytes:
-        return await asyncio.to_thread(self._path_for(key).read_bytes)
+        try:
+            return await asyncio.to_thread(self._path_for(key).read_bytes)
+        except FileNotFoundError as exc:
+            raise StorageNotFoundError("Object was not found.") from exc
+
+    async def get_range(self, key: str, start: int, end: int) -> bytes:
+        path = self._path_for(key)
+        def read() -> bytes:
+            with path.open("rb") as source:
+                source.seek(start)
+                return source.read(end - start + 1)
+        try:
+            return await asyncio.to_thread(read)
+        except FileNotFoundError as exc:
+            raise StorageNotFoundError("Object was not found.") from exc
+
+    async def download_file(self, key: str, destination: Path) -> None:
+        await asyncio.to_thread(destination.parent.mkdir, parents=True, exist_ok=True)
+        try:
+            await asyncio.to_thread(shutil.copyfile, self._path_for(key), destination)
+        except FileNotFoundError as exc:
+            raise StorageNotFoundError("Object was not found.") from exc
+
+    async def presigned_get_url(self, key: str, expires_in: int, **_: object) -> str | None:
+        return None
 
     def _path_for(self, key: str) -> Path:
         candidate = (self._root / key).resolve()
         if self._root != candidate and self._root not in candidate.parents:
-            raise ValueError("Storage key resolves outside the configured media root.")
+            raise StorageError("Storage key resolves outside the configured media root.")
         return candidate
+
+
+class S3StorageBackend:
+    """Synchronous boto3 client isolated behind async application operations."""
+
+    def __init__(self, *, endpoint_url: str | None, access_key_id: str, secret_access_key: str, bucket_name: str, region: str) -> None:
+        try:
+            import boto3
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError("boto3 is required when STORAGE_BACKEND=s3.") from exc
+        self._bucket_name = bucket_name
+        self._client = boto3.client("s3", endpoint_url=endpoint_url, aws_access_key_id=access_key_id, aws_secret_access_key=secret_access_key, region_name=region)
+
+    async def put_file(self, source: Path, key: str) -> None:
+        await self._call(self._client.upload_file, str(source), self._bucket_name, key)
+
+    async def delete(self, key: str) -> None:
+        await self._call(self._client.delete_object, Bucket=self._bucket_name, Key=key)
+
+    async def put_bytes(self, content: bytes, key: str) -> None:
+        await self._call(self._client.put_object, Bucket=self._bucket_name, Key=key, Body=content)
+
+    async def get_bytes(self, key: str) -> bytes:
+        response = await self._call(self._client.get_object, Bucket=self._bucket_name, Key=key)
+        return await asyncio.to_thread(response["Body"].read)
+
+    async def get_range(self, key: str, start: int, end: int) -> bytes:
+        response = await self._call(self._client.get_object, Bucket=self._bucket_name, Key=key, Range=f"bytes={start}-{end}")
+        return await asyncio.to_thread(response["Body"].read)
+
+    async def download_file(self, key: str, destination: Path) -> None:
+        await asyncio.to_thread(destination.parent.mkdir, parents=True, exist_ok=True)
+        await self._call(self._client.download_file, self._bucket_name, key, str(destination))
+
+    async def presigned_get_url(self, key: str, expires_in: int, *, content_type: str | None = None, content_disposition: str | None = None) -> str:
+        parameters: dict[str, str] = {"Bucket": self._bucket_name, "Key": key}
+        if content_type:
+            parameters["ResponseContentType"] = content_type
+        if content_disposition:
+            parameters["ResponseContentDisposition"] = content_disposition
+        return await self._call(self._client.generate_presigned_url, "get_object", Params=parameters, ExpiresIn=expires_in)
+
+    async def _call(self, function: object, /, *args: object, **kwargs: object):
+        try:
+            return await asyncio.to_thread(function, *args, **kwargs)  # type: ignore[arg-type]
+        except Exception as exc:
+            code = _client_error_code(exc)
+            if code in {"404", "NoSuchKey", "NoSuchBucket", "NotFound"}:
+                raise StorageNotFoundError("Object was not found.") from exc
+            raise StorageError("S3-compatible storage operation failed.") from exc
+
+
+def build_storage_backend(settings: Settings) -> StorageBackend:
+    if settings.storage_backend == "local":
+        return LocalStorageBackend(settings.media_storage_path)
+    missing = [name for name, value in {"S3_ACCESS_KEY_ID": settings.s3_access_key_id, "S3_SECRET_ACCESS_KEY": settings.s3_secret_access_key, "S3_BUCKET_NAME": settings.s3_bucket_name}.items() if not value]
+    if missing:
+        raise ValueError("STORAGE_BACKEND=s3 requires " + ", ".join(missing) + ".")
+    return S3StorageBackend(endpoint_url=settings.s3_endpoint_url, access_key_id=settings.s3_access_key_id, secret_access_key=settings.s3_secret_access_key, bucket_name=settings.s3_bucket_name, region=settings.s3_region)
+
+
+def _client_error_code(error: Exception) -> str | None:
+    response = getattr(error, "response", None)
+    details = response.get("Error") if isinstance(response, dict) else None
+    return str(details.get("Code")) if isinstance(details, dict) and details.get("Code") else None
+
+
+FileSystemMediaStorage = LocalStorageBackend

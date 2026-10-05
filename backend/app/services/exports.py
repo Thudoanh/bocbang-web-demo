@@ -6,6 +6,8 @@ import io
 import json
 import os
 import re
+import tempfile
+from pathlib import Path
 from uuid import UUID
 
 from sqlalchemy import select
@@ -20,7 +22,7 @@ from app.models.summary import Summary, SummaryVersion
 from app.models.transcript import SegmentVersion, Speaker, TranscriptVersion
 from app.models.translation import Translation, TranslationSegment
 from app.models.user import User
-from app.providers.storage import MediaStorage
+from app.providers.storage import MediaStorage, StorageError
 from app.schemas.export import ExportCreateRequest, ExportResponse
 from app.services.meetings import MeetingService
 
@@ -73,8 +75,24 @@ class ExportService:
             raise ApiError("EXPORT_NOT_READY", "The export is not ready to download.", 409)
         try:
             return await self._storage.get_bytes(export.storage_key), export
-        except OSError as exc:
+        except (OSError, StorageError) as exc:
             raise ApiError("EXPORT_STORAGE_ERROR", "The export file is unavailable.", 503) from exc
+
+    async def presigned_download_url(self, export_id: UUID, user: User, expires_in: int) -> str | None:
+        export = await self._export_for_read(export_id, user)
+        job = await self._job(export.id)
+        if job is None or job.status != JobStatus.COMPLETED or not export.storage_key:
+            raise ApiError("EXPORT_NOT_READY", "The export is not ready to download.", 409)
+        disposition = f'attachment; filename="{export.filename or "meeting-export"}"'
+        try:
+            return await self._storage.presigned_get_url(
+                export.storage_key,
+                expires_in,
+                content_type=export.content_type,
+                content_disposition=disposition,
+            )
+        except StorageError as exc:
+            raise ApiError("EXPORT_STORAGE_ERROR", "The export URL could not be created.", 503) from exc
 
     async def purge_meeting_storage(self, meeting_id: UUID) -> None:
         keys = list(
@@ -84,8 +102,11 @@ class ExportService:
                 )
             )
         )
-        for key in keys:
-            await self._storage.delete(key)
+        try:
+            for key in keys:
+                await self._storage.delete(key)
+        except StorageError as exc:
+            raise ApiError("EXPORT_STORAGE_ERROR", "Meeting exports could not be deleted.", 502) from exc
 
     async def _current_version(self, meeting: Meeting) -> TranscriptVersion:
         if meeting.current_transcript_version_id is None:
@@ -172,8 +193,20 @@ class ExportJobRunner:
         document = _document(meeting, export, segments, speakers, translation, summary, options)
         content = _render(export.format, document)
         filename = _filename(meeting.title, export.format)
-        key = f"exports/{meeting.id}/{export.id}.{export.format.value}"
-        await self._storage.put_bytes(content, key)
+        key = f"exports/meetings/{meeting.id}/{export.id}.{export.format.value}"
+        # Export binaries can be large. Keep the object-storage boundary
+        # streaming-friendly and avoid assuming an API/worker shared volume.
+        descriptor, temporary_name = tempfile.mkstemp(prefix="bocbang-export-", suffix=f".{export.format.value}")
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "wb") as output:
+                output.write(content)
+            await self._storage.put_file(temporary, key)
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
         export.storage_key, export.filename, export.content_type = (
             key,
             filename,

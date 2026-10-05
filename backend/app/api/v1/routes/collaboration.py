@@ -13,6 +13,7 @@ from app.schemas.collaboration import (
     CommentResponse,
     CommentUpdateRequest,
     ShareAccessResponse,
+    ShareTranscriptResponse,
 )
 from app.services.collaboration import CollaborationService
 
@@ -73,3 +74,8 @@ async def delete_comment(
 async def resolve_share(token: str, service: MeetingServiceDependency) -> ShareAccessResponse:
     meeting, permission = await service.resolve_share(token)
     return ShareAccessResponse(meeting=meeting, permission=permission)
+
+
+@shares_router.get("/{token}/transcript", response_model=ShareTranscriptResponse)
+async def shared_transcript(token: str, service: CollaborationServiceDependency) -> ShareTranscriptResponse:
+    return await service.shared_transcript(token)

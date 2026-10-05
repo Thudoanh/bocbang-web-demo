@@ -15,6 +15,7 @@ from app.schemas.transcript import (
     SegmentSpeakerRequest,
     SegmentSplitRequest,
     SpeakerCreateRequest,
+    SpeakerSampleResponse,
     SpeakerResponse,
     SpeakerUpdateRequest,
     TranscriptMutationResponse,
@@ -119,3 +120,8 @@ async def set_segment_speaker(logical_segment_id: UUID, payload: SegmentSpeakerR
 @speakers_router.patch("/{speaker_id}", response_model=SpeakerResponse)
 async def update_speaker(speaker_id: UUID, payload: SpeakerUpdateRequest, user: CurrentUserDependency, service: TranscriptServiceDependency) -> SpeakerResponse:
     return await service.update_speaker(speaker_id, user, payload)
+
+
+@speakers_router.get("/{speaker_id}/sample", response_model=SpeakerSampleResponse)
+async def speaker_sample(speaker_id: UUID, user: CurrentUserDependency, service: TranscriptServiceDependency) -> SpeakerSampleResponse:
+    return await service.speaker_sample(speaker_id, user)

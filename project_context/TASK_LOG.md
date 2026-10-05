@@ -12,6 +12,62 @@ Mục mới nhất được thêm ở đầu file. Dùng format ngắn dưới �
 - Follow-up / blocker: ...
 ```
 
+## 2026-10-05 — Queue delivery reconciliation
+
+- Status: done (static verification; runtime dependencies unavailable locally)
+- Scope: Added at-least-once recovery for jobs committed before a Redis publish failure or process crash, while preserving retry backoff.
+- Changed: `backend/app/workers/reconciler.py`, job lifecycle/model/migration, queue settings, deployment and runbook documentation.
+- Verified: Python syntax compilation and diff whitespace checks; pytest/Ruff require project dependencies unavailable in this environment.
+- Follow-up / blocker: Deploy the reconciler as a separate process with the API/worker database and Redis configuration; execute migration `20261005_0009` before enabling it.
+
+## 2026-10-05 — Durable Redis/Dramatiq worker architecture
+
+- Status: done (static verification; runtime dependencies unavailable locally)
+- Scope: Replaced API-process media/STT, translation, summary, and export dispatch with Redis-backed Dramatiq job delivery and a standalone worker.
+- Changed: `backend/app/workers/*`, job lifecycle model/migration, API enqueue routes, runners, queue config/dependency/docs.
+- Verified: Python compile and diff whitespace checks; pytest/Ruff remain unavailable in bundled Python.
+- Follow-up / blocker: Run migrations and worker/API integration against managed Redis, PostgreSQL, object storage, FFmpeg, and configured providers.
+
+## 2026-10-05 — S3-compatible durable media storage
+
+- Status: done
+- Scope: Added local/S3 storage backends, private signed downloads, object-key-only media/export persistence, and worker temporary-file compatibility.
+- Changed: `backend/app/providers/storage.py`, storage wiring/config, media/export/worker/provider flows, storage tests, environment and deployment docs.
+- Verified: `python -m compileall -q app tests alembic` and `git diff --check` passed; pytest/Ruff are unavailable in the bundled Python environment.
+- Follow-up / blocker: Real S3/R2/MinIO and pytest verification require deployment credentials and a standard Python environment with dependencies installed.
+
+## 2026-10-02 — UI/UX Audit Phase 2: UX & Control Flow Polish
+
+- Status: done
+- Scope: Implemented Phase 2 of UI/UX audit remediation plan including tabbed side panel organization for meeting detail, confirmation dialogs for split/merge, mm:ss segment timestamp formatting, and expanded Vietnamese section label mapping for AI summaries.
+- Changed: `frontend/src/pages/MeetingPage.tsx`, `frontend/src/pages/SummaryPage.tsx`, `frontend/src/utils/time.ts`, project context docs.
+- Verified: `npm.cmd run build` passed in `frontend/`.
+- Follow-up / blocker: End-to-end browser QA with backend media stream playback.
+
+## 2026-10-02 — Groq translation fallback
+
+- Status: done
+- Scope: Extended the Groq adapter and backend configuration so Groq can
+  translate segment-aligned VI ↔ EN output as a primary or fallback provider.
+- Changed: `backend/app/providers/groq.py`, translation registry/config,
+  adapter tests, `.env` examples and provider docs.
+- Verified: static Python compilation and diff whitespace checks.
+- Follow-up / blocker: Provider-backed E2E requires configured credentials and
+  a standard Python environment with pytest/project dependencies.
+
+## 2026-10-02 — Groq fallback for Gemini summaries
+
+- Status: done
+- Scope: Added a Groq structured-summary provider and opt-in fallback when the
+  configured primary LLM provider fails.
+- Changed: `backend/app/providers/groq.py`, `backend/app/providers/llm.py`,
+  LLM configuration, adapter tests, deployment examples and provider docs.
+- Verified: `python -m compileall -q backend/app backend/tests` passed;
+  `pytest` could not run because the bundled Python lacks pytest/project deps.
+- Follow-up / blocker: A real provider-backed E2E run still needs deployment
+  credentials and a standard Python environment; Groq is only used when
+  `LLM_FALLBACK_PROVIDER=groq` is set.
+
 ## 2026-10-01 — Frontend BA Phase 4: Polish and QA Record
 
 - Status: done

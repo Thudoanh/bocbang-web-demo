@@ -12,66 +12,66 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import Database
-from app.models.enums import JobStatus, MeetingStatus
+from app.core.config import Settings
+from app.models.enums import MeetingStatus
 from app.models.media import Job, MediaFile
 from app.models.meeting import Meeting
 from app.providers.contracts import STTProvider, STTProviderError
 from app.providers.storage import MediaStorage
 from app.services.transcripts import TranscriptService
+from app.workers import lifecycle
 
 
 class MediaProcessingWorker:
-    """Claims one queued media job. Safe to run from web or a dedicated worker."""
+    """Media/STT runner invoked only by a dedicated queue worker."""
 
-    def __init__(self, database: Database, storage: MediaStorage, stt: STTProvider | None) -> None:
-        self._database, self._storage, self._stt = database, storage, stt
-        self._tasks: set[asyncio.Task[None]] = set()
+    def __init__(self, database: Database, storage: MediaStorage, stt: STTProvider | None, settings: Settings) -> None:
+        self._database, self._storage, self._stt, self._settings = database, storage, stt, settings
 
-    def enqueue(self, job_id: UUID) -> None:
-        task = asyncio.create_task(self.run(job_id))
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
-
-    async def run(self, job_id: UUID) -> None:
+    async def run(self, job_id: UUID) -> bool:
+        """Return whether Dramatiq should retry this persisted execution."""
         async with self._database.session() as session:
             job = await session.get(Job, job_id)
-            if job is None or job.job_type != "media_processing" or job.status != JobStatus.QUEUED:
-                return
+            if job is None or job.job_type != "media_processing" or not await lifecycle.start(session, job):
+                return False
             media = await session.get(MediaFile, job.media_file_id)
             meeting = await session.get(Meeting, job.meeting_id)
             if media is None or meeting is None or media.deleted_at is not None:
                 await self._fail(session, job, "MEDIA_DELETED", "The source media was deleted before processing.", False)
-                return
+                return False
             if self._stt is None or not self._stt.capabilities().batch:
                 await self._fail(session, job, "PROVIDER_CAPABILITY_UNAVAILABLE", "Batch transcription is not configured.", False)
-                return
-            job.status, job.progress, media.status, meeting.status = JobStatus.PROCESSING, 10, "processing", MeetingStatus.PROCESSING
+                return False
+            media.status, meeting.status = "processing", MeetingStatus.PROCESSING
             await session.commit()
             source: Path | None = None
             normalized: Path | None = None
             try:
-                source, normalized = await self._normalize(media)
-                normalized_key = f"meetings/{meeting.id}/media/{media.id}.normalized.wav"
-                await self._storage.put_file(normalized, normalized_key)
-                media.normalized_storage_key, job.progress = normalized_key, 45
-                await session.commit()
-                result = await self._stt.transcribe_file(normalized_key)
+                if media.normalized_storage_key:
+                    normalized = await self._download_normalized(media.normalized_storage_key)
+                else:
+                    source, normalized = await self._normalize(media)
+                    normalized_key = f"processed/meetings/{meeting.id}/{media.id}.wav"
+                    await self._storage.put_file(normalized, normalized_key)
+                    media.normalized_storage_key, job.progress = normalized_key, 45
+                    await session.commit()
+                result = await self._stt.transcribe_file(normalized)
                 if not result.segments:
                     raise ValueError("STT provider returned no transcript segments.")
                 await TranscriptService(session).replace_stt_batch(
                     meeting, meeting.owner_id, result.segments
                 )
                 meeting.duration_ms = media.duration_ms
-                meeting.status, media.status, job.status, job.progress = MeetingStatus.COMPLETED, "completed", JobStatus.COMPLETED, 100
-                job.error_code = job.error_message = None
-                job.error_retryable = None
+                meeting.status, media.status = MeetingStatus.COMPLETED, "completed"
                 await session.commit()
+                await lifecycle.completed(session, job)
+                return False
             except STTProviderError as exc:
-                await self._fail(session, job, exc.code, str(exc), exc.retryable)
+                return await self._fail(session, job, exc.code, str(exc), exc.retryable)
             except ValueError as exc:
-                await self._fail(session, job, "STT_RESULT_INVALID", str(exc), False)
+                return await self._fail(session, job, "MEDIA_PROCESSING_FAILED", str(exc), False)
             except Exception:
-                await self._fail(session, job, "MEDIA_PROCESSING_ERROR", "Media processing could not complete.", True)
+                return await self._fail(session, job, "MEDIA_PROCESSING_FAILED", "Media processing could not complete.", True)
             finally:
                 for path in (source, normalized):
                     if path:
@@ -81,13 +81,12 @@ class MediaProcessingWorker:
                             pass
 
     async def _normalize(self, media: MediaFile) -> tuple[Path, Path]:
-        content = await self._storage.get_bytes(media.storage_key)
         source_fd, source_name = tempfile.mkstemp(prefix="bocbang-source-", suffix=Path(media.original_filename).suffix)
         normalized_fd, normalized_name = tempfile.mkstemp(prefix="bocbang-normalized-", suffix=".wav")
         source, normalized = Path(source_name), Path(normalized_name)
         try:
-            with os.fdopen(source_fd, "wb") as destination:
-                destination.write(content)
+            os.close(source_fd)
+            await self._storage.download_file(media.storage_key, source)
             os.close(normalized_fd)
             # See MediaService._probe_duration: Windows reload mode uses an
             # event loop without asyncio subprocess support.
@@ -111,18 +110,41 @@ class MediaProcessingWorker:
                     pass
             raise
 
-    @staticmethod
-    async def _fail(session: AsyncSession, job: Job, code: str, message: str, retryable: bool) -> None:
+    async def _download_normalized(self, key: str) -> Path:
+        descriptor, name = tempfile.mkstemp(prefix="bocbang-normalized-", suffix=".wav")
+        path = Path(name)
+        try:
+            os.close(descriptor)
+            await self._storage.download_file(key, path)
+            return path
+        except Exception:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+
+    async def _fail(self, session: AsyncSession, job: Job, code: str, message: str, retryable: bool) -> bool:
         job_id = job.id
         await session.rollback()
         job = await session.get(Job, job_id)
         assert job is not None
         media = await session.get(MediaFile, job.media_file_id)
         meeting = await session.get(Meeting, job.meeting_id)
-        job.status, job.progress = JobStatus.FAILED, 100
-        job.error_code, job.error_message, job.error_retryable = code, message, retryable
         if media is not None and media.deleted_at is None:
             media.status = "failed"
         if meeting is not None:
             meeting.status = MeetingStatus.FAILED
         await session.commit()
+        if retryable and job.attempts <= self._settings.worker_max_retries:
+            await lifecycle.retrying(
+                session,
+                job,
+                code,
+                message,
+                min_backoff_ms=self._settings.worker_retry_min_backoff_ms,
+                max_backoff_ms=self._settings.worker_retry_max_backoff_ms,
+            )
+            return True
+        await lifecycle.failed(session, job, code, message, retryable)
+        return False

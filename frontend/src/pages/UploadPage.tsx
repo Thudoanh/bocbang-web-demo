@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { config } from "../app/config";
 import { ApiError } from "../api/client";
 import { meetingsApi } from "../api/endpoints";
+import { useAsync } from "../hooks/useAsync";
 import { useJobMonitor } from "../state/useJobMonitor";
 import { Button, PageHeading, Status } from "../components/ui";
 
@@ -9,6 +10,7 @@ const accepted = ["mp3", "wav", "m4a", "aac", "flac", "ogg", "opus", "webm", "mp
 
 export function UploadPage({ meetingId }: { meetingId: string }) {
   const input = useRef<HTMLInputElement>(null);
+  const recent = useAsync(() => meetingsApi.list({ limit: 3, source_type: "upload" }), []);
   const [file, setFile] = useState<File>();
   const [message, setMessage] = useState("");
   const [uploading, setUploading] = useState(false);
@@ -47,5 +49,6 @@ export function UploadPage({ meetingId }: { meetingId: string }) {
     {job && <section className={`upload-job ${job.status}`}><div><strong>Đang xử lý bản ghi</strong><Status value={job.status}>{job.status}</Status></div><p>{job.status === "completed" ? "Đã tạo transcript. Đang mở kết quả…" : job.status === "failed" ? job.error?.message ?? "Xử lý tệp thất bại." : "Tệp đã được tải lên; hệ thống đang tạo transcript."}</p>{job.status !== "failed" && <div className="job-progress" aria-label={`Tiến độ ${job.progress ?? 0}%`}><i style={{ width: `${job.progress ?? 0}%` }} /></div>}{job.status === "failed" && <Button onClick={retry}>Chọn tệp khác</Button>}</section>}
     {message && <div className="form-error">{message}</div>}
     <div className="form-actions"><a className="btn btn-light" href={`/meetings/${meetingId}`}>Quay lại</a>{!terminal && <Button tone="dark" disabled={!file || uploading || Boolean(job)} onClick={() => void upload()}>{uploading ? "Đang tải lên…" : job ? "Đang xử lý…" : "Tải lên và xử lý"}</Button>}{job?.status === "failed" && <Button tone="dark" disabled={!file} onClick={() => void upload()}>Thử tải lại</Button>}</div>
+    {recent.data?.length ? <section className="upload-recent"><div className="section-title"><h2>Bản ghi đã xử lý gần đây</h2></div><div className="meeting-list">{recent.data.filter((item) => item.id !== meetingId).map((item) => <article className="meeting-row" key={item.id}><div className="avatar">{item.title.slice(0, 2).toUpperCase()}</div><div><strong>{item.title}</strong><p>{item.duration_ms ? `${Math.round(item.duration_ms / 60000)} phút` : "Đang chờ thời lượng"} · {item.language_mode.toUpperCase()}</p></div><Status value={item.status}>{item.status}</Status><a className="btn btn-light" href={`/meetings/${item.id}`}>Mở bản ghi</a></article>)}</div></section> : null}
   </>;
 }

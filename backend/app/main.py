@@ -15,10 +15,9 @@ from app.db.session import Database
 from app.providers.email import build_email_sender
 from app.providers.llm import build_llm_provider
 from app.providers.stt import build_stt_provider
-from app.providers.storage import FileSystemMediaStorage
+from app.providers.storage import build_storage_backend
 from app.providers.translation import build_translation_provider
-from app.services.ai import AIJobDispatcher
-from app.services.media_worker import MediaProcessingWorker
+from app.workers.broker import enqueue_job
 
 logger = get_logger(__name__)
 
@@ -26,6 +25,10 @@ logger = get_logger(__name__)
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Create an application instance with explicit, testable dependencies."""
     resolved_settings = settings or get_settings()
+    if resolved_settings.environment.lower() in {"production", "prod"}:
+        # A web service that accepts jobs without a broker would durably create
+        # work it cannot deliver, so fail during production construction.
+        resolved_settings.require_queue_configuration()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -34,16 +37,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             resolved_settings.database_url,
             query_timing_enabled=resolved_settings.performance_query_timing_enabled,
             slow_query_ms=resolved_settings.performance_slow_query_ms,
-        )
-        app.state.ai_job_dispatcher = AIJobDispatcher(
-            app.state.database,
-            resolved_settings,
-            app.state.translation_provider,
-            app.state.llm_provider,
-            app.state.media_storage,
-        )
-        app.state.media_worker = MediaProcessingWorker(
-            app.state.database, app.state.media_storage, app.state.stt_provider
         )
         logger.info(
             "application_started",
@@ -70,7 +63,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.stt_provider = build_stt_provider(resolved_settings)
     app.state.translation_provider = build_translation_provider(resolved_settings)
     app.state.llm_provider = build_llm_provider(resolved_settings)
-    app.state.media_storage = FileSystemMediaStorage(resolved_settings.media_storage_path)
+    # This validates S3 configuration during app construction and never falls
+    # back to an ephemeral filesystem when object storage is requested.
+    app.state.media_storage = build_storage_backend(resolved_settings)
+    # Tests may replace this narrow boundary with a stub; production always
+    # uses Redis/Dramatiq and has no in-process execution fallback.
+    app.state.enqueue_job = enqueue_job
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(resolved_settings.frontend_origins),

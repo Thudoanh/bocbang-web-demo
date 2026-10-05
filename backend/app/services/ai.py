@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -36,6 +35,7 @@ from app.schemas.ai import (
 from app.schemas.media import JobErrorResponse, JobResponse
 from app.services.meetings import MeetingService
 from app.services.exports import ExportJobRunner
+from app.workers import lifecycle
 
 
 class AIService:
@@ -154,25 +154,18 @@ class AIService:
 
 
 class AIJobDispatcher:
-    """In-process durable job runner; deployments may invoke ``run`` from a worker."""
+    """Translation, summary, and export runner invoked by the queue worker."""
 
     def __init__(self, database: Database, settings: Settings, translation: TranslationProvider | None, llm: LLMProvider | None, storage: MediaStorage) -> None:
         self._database, self._settings, self._translation, self._llm = database, settings, translation, llm
         self._exports = ExportJobRunner(storage)
-        self._tasks: set[asyncio.Task[None]] = set()
 
-    def enqueue(self, job_id: UUID) -> None:
-        task = asyncio.create_task(self.run(job_id))
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
-
-    async def run(self, job_id: UUID) -> None:
+    async def run(self, job_id: UUID) -> bool:
+        """Run a durable job and return whether the actor must retry it."""
         async with self._database.session() as session:
             job = await session.get(Job, job_id)
-            if job is None or job.status != JobStatus.QUEUED:
-                return
-            job.status, job.progress = JobStatus.PROCESSING, 10
-            await session.commit()
+            if job is None or not await lifecycle.start(session, job):
+                return False
             try:
                 if job.job_type == "translation":
                     await self._run_translation(session, job)
@@ -182,16 +175,16 @@ class AIJobDispatcher:
                     await self._exports.run(session, job)
                 else:
                     raise ValueError("Unsupported AI job type.")
-                job.status, job.progress = JobStatus.COMPLETED, 100
-                job.error_code = job.error_message = None
-                job.error_retryable = None
                 await session.commit()
+                await lifecycle.completed(session, job)
+                return False
             except (TranslationProviderError, LLMProviderError) as exc:
-                await self._fail(session, job, exc.code, str(exc), exc.retryable)
+                return await self._fail(session, job, exc.code, str(exc), exc.retryable)
             except ValueError as exc:
-                await self._fail(session, job, "AI_RESULT_INVALID", str(exc), False)
+                return await self._fail(session, job, "AI_RESULT_INVALID", str(exc), False)
             except Exception:
-                await self._fail(session, job, "AI_PROVIDER_ERROR", "The AI provider could not complete the job.", True)
+                code = "EXPORT_GENERATION_FAILED" if job.job_type == "export" else "AI_PROVIDER_ERROR"
+                return await self._fail(session, job, code, "The job could not complete.", True)
 
     async def _run_translation(self, session: AsyncSession, job: Job) -> None:
         if self._translation is None:
@@ -229,15 +222,19 @@ class AIJobDispatcher:
         session.add(SummaryVersion(summary_id=summary.id, version_no=version_no, content=content, provider=self._settings.llm_provider or self._llm.__class__.__name__, model=self._settings.llm_model or "configured-default", created_by=actor_id))
         job.payload = {**payload, "summary_id": str(summary.id)}
 
-    @staticmethod
-    async def _fail(session: AsyncSession, job: Job, code: str, message: str, retryable: bool) -> None:
-        job_id = job.id
-        await session.rollback()
-        job = await session.get(Job, job_id)
-        assert job is not None
-        job.status, job.progress = JobStatus.FAILED, 100
-        job.error_code, job.error_message, job.error_retryable = code, message, retryable
-        await session.commit()
+    async def _fail(self, session: AsyncSession, job: Job, code: str, message: str, retryable: bool) -> bool:
+        if retryable and job.attempts <= self._settings.worker_max_retries:
+            await lifecycle.retrying(
+                session,
+                job,
+                code,
+                message,
+                min_backoff_ms=self._settings.worker_retry_min_backoff_ms,
+                max_backoff_ms=self._settings.worker_retry_max_backoff_ms,
+            )
+            return True
+        await lifecycle.failed(session, job, code, message, retryable)
+        return False
 
 
 async def _valid_segments(session: AsyncSession, version_id: UUID) -> list[SegmentVersion]:

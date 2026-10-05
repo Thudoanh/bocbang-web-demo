@@ -114,6 +114,9 @@ revokes the link (rather than hard-deleting its audit record).
 ``` text
 POST   /meetings/{id}/media
 GET    /meetings/{id}/media
+POST   /meetings/{id}/media/{media_id}/playback-url
+GET    /meetings/{id}/media/{media_id}/stream
+GET    /meetings/{id}/media/{media_id}/download
 DELETE /meetings/{id}/media/{media_id}
 ```
 
@@ -130,6 +133,11 @@ media requires ownership. The upload response is a durable `Job` with the
 linked `media_file_id`, initially `queued` at progress `0`. It remains queued
 until a configured worker claims it; the API never reports a fabricated result.
 Deleting a media file fails any queued or processing job tied to that source.
+Stream and download require `read` access. Stream accepts a single HTTP `Range`
+and returns `206` plus `Content-Range`, enabling seeking without exposing a
+storage path or public object URL. With S3-compatible storage, playback and
+download resolve to short-lived private presigned GET URLs only after the same
+ACL check; local development retains the authenticated proxy behavior.
 
 ## 5. Provider capability endpoint
 
@@ -165,7 +173,7 @@ features.
 GET /jobs/{id}
 ```
 
-States: `queued | processing | completed | failed`.
+States: `queued | processing | retrying | completed | failed`.
 
 Jobs expose `id`, `meeting_id`, optional `media_file_id`, `job_type`, `status`,
 `progress` (0–100), optional `{code, message}` error, and timestamps. A caller
@@ -201,12 +209,16 @@ contiguous adjacent segments assigned to the same speaker.
 GET   /meetings/{id}/speakers
 POST  /meetings/{id}/speakers
 PATCH /speakers/{id}
+GET   /speakers/{id}/sample
 PATCH /segments/{logical_segment_id}/speaker
 ```
 
 Speaker records are meeting-scoped. Creating/updating speaker metadata does
 not assert real-world identity. Assigning (including unassigning) a speaker to
 a segment creates a transcript snapshot revision.
+`GET /speakers/{id}/sample` requires `read` access and returns an existing
+media ID plus a real transcript interval (`start_ms`, `end_ms`). It returns
+`SPEAKER_SAMPLE_UNAVAILABLE` when no retained media or matching segment exists.
 
 ## 9. Comments
 
@@ -216,7 +228,13 @@ POST   /meetings/{id}/comments
 PATCH  /comments/{id}
 DELETE /comments/{id}
 GET    /shares/{token}
+GET    /shares/{token}/transcript
 ```
+
+`GET /shares/{token}/transcript` validates the high-entropy capability token,
+including revocation and expiry, then returns only the current transcript
+snapshot and share-safe meeting metadata. It does not grant access to internal
+comments, versions, exports, media, or storage URLs.
 
 ## 10. Translation
 

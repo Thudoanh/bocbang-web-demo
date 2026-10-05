@@ -20,7 +20,8 @@ from app.schemas.ai import (
     TranslationResponse,
 )
 from app.schemas.media import JobResponse
-from app.services.ai import AIJobDispatcher, AIService
+from app.services.ai import AIService
+from app.workers.lifecycle import fail_enqueue
 
 meetings_router = APIRouter(prefix="/meetings")
 translations_router = APIRouter(prefix="/translations")
@@ -43,7 +44,12 @@ AIServiceDependency = Annotated[AIService, Depends(get_ai_service)]
 @meetings_router.post("/{meeting_id}/translations", response_model=JobResponse, status_code=status.HTTP_202_ACCEPTED)
 async def create_translation(meeting_id: UUID, payload: TranslationCreateRequest, user: CurrentUserDependency, service: AIServiceDependency, request: Request) -> JobResponse:
     job = await service.request_translation(meeting_id, user, payload)
-    cast(AIJobDispatcher, request.app.state.ai_job_dispatcher).enqueue(job.id)
+    try:
+        request.app.state.enqueue_job(job.id, request.app.state.settings)
+    except Exception:
+        await fail_enqueue(get_database(request), job.id)
+        from app.core.errors import ApiError
+        raise ApiError("QUEUE_ENQUEUE_FAILED", "The translation job could not be queued.", 503)
     return job
 
 
@@ -60,7 +66,12 @@ async def get_translation(translation_id: UUID, user: CurrentUserDependency, ser
 @meetings_router.post("/{meeting_id}/summaries", response_model=JobResponse, status_code=status.HTTP_202_ACCEPTED)
 async def create_summary(meeting_id: UUID, payload: SummaryCreateRequest, user: CurrentUserDependency, service: AIServiceDependency, request: Request) -> JobResponse:
     job = await service.request_summary(meeting_id, user, payload)
-    cast(AIJobDispatcher, request.app.state.ai_job_dispatcher).enqueue(job.id)
+    try:
+        request.app.state.enqueue_job(job.id, request.app.state.settings)
+    except Exception:
+        await fail_enqueue(get_database(request), job.id)
+        from app.core.errors import ApiError
+        raise ApiError("QUEUE_ENQUEUE_FAILED", "The summary job could not be queued.", 503)
     return job
 
 

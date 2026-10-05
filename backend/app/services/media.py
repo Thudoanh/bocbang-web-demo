@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import quote
 from uuid import UUID, uuid4
 
 from fastapi import UploadFile
@@ -18,10 +19,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.core.errors import ApiError
+from app.core.logging import get_logger
 from app.models.enums import JobStatus, MeetingPermission
 from app.models.media import Job, MediaFile
 from app.models.user import User
-from app.providers.storage import MediaStorage
+from app.providers.storage import MediaStorage, StorageError, StorageNotFoundError
 from app.schemas.media import JobErrorResponse, JobResponse, MediaFileResponse
 from app.services.meetings import MeetingService
 
@@ -44,6 +46,7 @@ _ALLOWED_EXTENSIONS = frozenset(
     }
 )
 _UPLOAD_CHUNK_BYTES = 1024 * 1024
+logger = get_logger(__name__)
 
 
 class MediaService:
@@ -70,7 +73,7 @@ class MediaService:
                     {"max_duration_seconds": self._settings.max_media_duration_seconds},
                 )
             media_id = uuid4()
-            storage_key = f"meetings/{meeting.id}/media/{media_id}.{extension}"
+            storage_key = f"media/meetings/{meeting.id}/{media_id}.{extension}"
             await self._storage.put_file(temp_path, storage_key)
             media = MediaFile(
                 id=media_id,
@@ -98,13 +101,21 @@ class MediaService:
             await self._session.commit()
             await self._session.refresh(job)
             return self._job_response(job)
+        except StorageError as exc:
+            await self._session.rollback()
+            if storage_key is not None:
+                try:
+                    await self._storage.delete(storage_key)
+                except StorageError:
+                    logger.warning("storage_cleanup_failed", extra={"storage_key": storage_key})
+            raise ApiError("MEDIA_STORAGE_ERROR", "Media could not be stored.", 503) from exc
         except Exception:
             await self._session.rollback()
             if storage_key is not None:
                 try:
                     await self._storage.delete(storage_key)
-                except OSError:
-                    pass
+                except (OSError, StorageError):
+                    logger.warning("storage_cleanup_failed", extra={"storage_key": storage_key})
             raise
         finally:
             if temp_path is not None:
@@ -123,6 +134,63 @@ class MediaService:
         )
         return [MediaFileResponse.model_validate(item) for item in media]
 
+    async def read_media_range(
+        self, meeting_id: UUID, media_id: UUID, user: User, start: int, end: int
+    ) -> tuple[bytes, MediaFile]:
+        """Return an ACL-checked inclusive byte range for browser playback/download."""
+        await self._meetings.require_access(meeting_id, user, MeetingPermission.READ)
+        media = await self._session.get(MediaFile, media_id)
+        if media is None or media.meeting_id != meeting_id or media.deleted_at is not None:
+            raise ApiError("MEDIA_NOT_FOUND", "Media was not found.", 404)
+        if start < 0 or end < start or start >= media.size_bytes:
+            raise ApiError("MEDIA_RANGE_INVALID", "The requested media range is invalid.", 416)
+        try:
+            return await self._storage.get_range(media.storage_key, start, min(end, media.size_bytes - 1)), media
+        except (FileNotFoundError, StorageNotFoundError) as exc:
+            raise ApiError("MEDIA_UNAVAILABLE", "Media is no longer available.", 404) from exc
+        except (OSError, StorageError) as exc:
+            raise ApiError("MEDIA_STORAGE_ERROR", "Media could not be read.", 503) from exc
+
+    async def media_for_playback_ticket(self, meeting_id: UUID, media_id: UUID) -> MediaFile:
+        """Resolve media named by a ticket that was issued after an ACL check."""
+        media = await self._session.get(MediaFile, media_id)
+        if media is None or media.meeting_id != meeting_id or media.deleted_at is not None:
+            raise ApiError("MEDIA_NOT_FOUND", "Media was not found.", 404)
+        return media
+
+    async def read_ticket_media_range(self, media: MediaFile, start: int, end: int) -> bytes:
+        if start < 0 or end < start or start >= media.size_bytes:
+            raise ApiError("MEDIA_RANGE_INVALID", "The requested media range is invalid.", 416)
+        try:
+            return await self._storage.get_range(media.storage_key, start, min(end, media.size_bytes - 1))
+        except (FileNotFoundError, StorageNotFoundError) as exc:
+            raise ApiError("MEDIA_UNAVAILABLE", "Media is no longer available.", 404) from exc
+        except (OSError, StorageError) as exc:
+            raise ApiError("MEDIA_STORAGE_ERROR", "Media could not be read.", 503) from exc
+
+    async def presigned_url(
+        self, meeting_id: UUID, media_id: UUID, user: User, expires_in: int, *, download: bool = False
+    ) -> str | None:
+        """Return a private S3 URL only after the normal meeting ACL check."""
+        await self._meetings.require_access(meeting_id, user, MeetingPermission.READ)
+        media = await self._session.get(MediaFile, media_id)
+        if media is None or media.meeting_id != meeting_id or media.deleted_at is not None:
+            raise ApiError("MEDIA_NOT_FOUND", "Media was not found.", 404)
+        disposition = (
+            f"attachment; filename*=UTF-8''{quote(media.original_filename, safe='')}"
+            if download
+            else None
+        )
+        try:
+            return await self._storage.presigned_get_url(
+                media.storage_key,
+                expires_in,
+                content_type=media.mime_type,
+                content_disposition=disposition,
+            )
+        except StorageError as exc:
+            raise ApiError("MEDIA_STORAGE_ERROR", "Media URL could not be created.", 503) from exc
+
     async def delete_media(self, meeting_id: UUID, media_id: UUID, user: User) -> None:
         await self._meetings.require_access(meeting_id, user, "owner")
         media = await self._session.get(MediaFile, media_id)
@@ -132,12 +200,12 @@ class MediaService:
             await self._storage.delete(media.storage_key)
             if media.normalized_storage_key is not None:
                 await self._storage.delete(media.normalized_storage_key)
-        except OSError as exc:
+        except (OSError, StorageError) as exc:
             raise ApiError("MEDIA_STORAGE_ERROR", "Media could not be deleted.", 502) from exc
         pending_jobs = await self._session.scalars(
             select(Job).where(
                 Job.media_file_id == media.id,
-                Job.status.in_((JobStatus.QUEUED, JobStatus.PROCESSING)),
+                Job.status.in_((JobStatus.QUEUED, JobStatus.PROCESSING, JobStatus.RETRYING)),
             )
         )
         for job in pending_jobs:
@@ -158,7 +226,7 @@ class MediaService:
                 await self._storage.delete(media.storage_key)
                 if media.normalized_storage_key is not None:
                     await self._storage.delete(media.normalized_storage_key)
-        except OSError as exc:
+        except (OSError, StorageError) as exc:
             raise ApiError(
                 "MEDIA_STORAGE_ERROR", "Meeting media could not be deleted.", 502
             ) from exc

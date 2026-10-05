@@ -42,15 +42,14 @@ the API or sent through WebSocket messages.
 
 `POST /api/v1/meetings/{id}/translations` and `/summaries` validate `edit`
 access, the immutable current transcript snapshot, and provider capability,
-then return a durable `202` Job. The in-process dispatcher claims the job,
+then return a durable `202` Job. A separate Dramatiq worker claims the job,
 persists only normalized successful output, and records a stable failed state
 with retryability otherwise. Translation output is segment-aligned and stored
 separately; summary regeneration appends an immutable `SummaryVersion`.
 
 Register deployment adapters in `app/providers/translation.py` and
-`app/providers/llm.py`. The dispatcher is intentionally a local worker boundary
-for this demo; production should run its `run(job_id)` operation through a
-durable external queue/worker.
+`app/providers/llm.py`. The API never executes provider calls itself. Run the
+independent worker with `dramatiq app.workers.worker`.
 
 ## Authentication configuration
 
@@ -79,17 +78,50 @@ hard-deletes a link.
 
 ## Media upload and jobs
 
-`POST /meetings/{id}/media` streams a multipart file to temporary storage,
+`POST /meetings/{id}/media` returns `202 Accepted` after streaming a multipart file to temporary storage,
 enforces `MAX_UPLOAD_BYTES`, validates its readable duration with the `ffprobe`
-binary, and stores valid media through a filesystem storage adapter. Configure
-`MEDIA_STORAGE_PATH` for local development. Production should provide an
-S3-compatible adapter behind the same `MediaStorage` boundary.
+binary, then persists it through the storage boundary. `STORAGE_BACKEND=local`
+uses `MEDIA_STORAGE_PATH` for development and tests. `STORAGE_BACKEND=s3` uses
+the configured private S3-compatible bucket (AWS S3, Cloudflare R2, or MinIO)
+and fails at startup if its required settings are missing. Database fields store
+opaque object keys, never container paths.
 
-The endpoint creates a persisted `media_processing` job in `queued` state;
-`GET /api/v1/jobs/{id}` exposes its live persisted status, progress, and error.
-No worker or STT provider is implemented in this slice, so jobs intentionally
-remain queued until a later processor claims them. Ensure `ffprobe` is on the
-service PATH before enabling uploads.
+For S3 storage, set `S3_ENDPOINT_URL` (optional for AWS),
+`S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_BUCKET_NAME`, and `S3_REGION`
+(use `auto` for R2). Keep the bucket private and put these values only in the
+backend deployment environment; never use `VITE_*` variables. Authenticated
+playback/download requests return short-lived signed GET URLs in S3 mode; local
+development continues to proxy the existing authenticated stream/download flow.
+
+The endpoint commits a persisted `media_processing` job before publishing only
+its ID to Redis. `GET /api/v1/jobs/{id}` exposes canonical PostgreSQL state:
+`queued`, `processing`, `retrying`, `completed`, or `failed`. A queue publish
+failure remains a queued `QUEUE_ENQUEUE_FAILED` job so it can be recovered,
+rather than silently discarding durable work.
+Ensure `ffprobe` is on the API PATH and both `ffprobe` and `ffmpeg` are on the
+worker PATH before enabling uploads.
+
+## Queue worker
+
+Set backend-only `REDIS_URL` and `QUEUE_BACKEND=redis` for both API and worker.
+Production rejects a missing Redis URL; there is no inline fallback. Use
+`WORKER_MAX_RETRIES` (default 3) and bounded backoff settings for transient
+retry delivery. Queue messages contain only `job_id`; workers load inputs from
+PostgreSQL and private object storage and use temporary local files only while
+processing. The worker needs the same database, storage, provider secrets, and
+FFmpeg runtime as the API image, but never a shared filesystem.
+
+Run the recovery loop as a companion production process:
+
+```powershell
+python -m app.workers.reconciler
+```
+
+It scans bounded batches every `WORKER_RECONCILE_INTERVAL_SECONDS` (15 seconds
+by default), republishing queued work after the delivery visibility timeout
+(`WORKER_DELIVERY_TIMEOUT_SECONDS`, 300 seconds by default) and only retryable
+work whose `next_attempt_at` is due. Delivery is at-least-once; durable
+lifecycle claims make duplicate messages safe no-ops.
 
 ## Realtime transcription
 
@@ -109,17 +141,23 @@ complete upload jobs.
 ## Production provider adapters
 
 Set `STT_PROVIDER=assemblyai` and `STT_API_KEY` to enable AssemblyAI batch and
-realtime STT. The media worker normalizes uploads to mono PCM WAV at 16 kHz
-using `ffmpeg`, stores the normalized object, and persists normalized STT
+realtime STT. The media worker downloads an object to a temporary file,
+normalizes it to mono PCM WAV at 16 kHz using `ffmpeg`, stores the normalized object, and persists normalized STT
 segments and speaker labels. The browser sends 16 kHz mono PCM16 over the API
 WebSocket; the AssemblyAI credential always stays on the server. `ffmpeg` and
 `ffprobe` must both be present on PATH.
 
 Set `TRANSLATION_PROVIDER=gemini` with `TRANSLATION_API_KEY` (or `LLM_API_KEY`)
-for segment-aligned VI ↔ EN translations. Set `LLM_PROVIDER=gemini` with
+for segment-aligned VI ↔ EN translations. To fall back to Groq for translation,
+set `TRANSLATION_FALLBACK_PROVIDER=groq` with `GROQ_API_KEY`; Groq is called
+only after the primary translator returns an error. Set `LLM_PROVIDER=gemini` with
 `LLM_API_KEY` for structured `general`, `briefing`, and `voting` summaries.
 `GEMINI_MODEL` defaults to `gemini-2.5-flash`; `LLM_MODEL` overrides it for
 summary generation. Provider keys are backend-only values.
+To fall back from Gemini to Groq, set `LLM_FALLBACK_PROVIDER=groq` and provide
+`GROQ_API_KEY`. Groq is called only after the primary provider returns an
+error. `GROQ_MODEL` defaults to `openai/gpt-oss-20b` and can be overridden.
+Groq may also be the primary summary provider with `LLM_PROVIDER=groq`.
 `ASSEMBLYAI_API_BASE_URL`, `ASSEMBLYAI_STREAMING_BASE_URL`, and
-`GEMINI_API_BASE_URL` default to their official endpoints and may be overridden
-for a regional endpoint, proxy, or integration test.
+`GEMINI_API_BASE_URL` / `GROQ_API_BASE_URL` default to their official endpoints
+and may be overridden for a regional endpoint, proxy, or integration test.

@@ -98,6 +98,13 @@ Backend:
 ``` text
 DATABASE_URL
 REDIS_URL
+QUEUE_BACKEND=redis
+WORKER_MAX_RETRIES=3
+WORKER_RETRY_MIN_BACKOFF_MS=10000
+WORKER_RETRY_MAX_BACKOFF_MS=60000
+WORKER_RECONCILE_INTERVAL_SECONDS=15
+WORKER_RECONCILE_BATCH_SIZE=100
+WORKER_DELIVERY_TIMEOUT_SECONDS=300
 FRONTEND_ORIGIN
 JWT_SECRET
 
@@ -109,10 +116,12 @@ EMAIL_PROVIDER
 EMAIL_API_KEY
 EMAIL_FROM
 
-S3_ENDPOINT
-S3_BUCKET
-S3_ACCESS_KEY
-S3_SECRET_KEY
+STORAGE_BACKEND=s3
+S3_ENDPOINT_URL
+S3_BUCKET_NAME
+S3_ACCESS_KEY_ID
+S3_SECRET_ACCESS_KEY
+S3_REGION=auto
 
 STT_PROVIDER
 STT_API_KEY
@@ -127,6 +136,23 @@ LLM_MODEL
 MAX_UPLOAD_BYTES=524288000
 MAX_MEDIA_DURATION_SECONDS=7200
 ```
+
+The object bucket must remain private. Store S3 credentials only as backend
+deployment secrets; do not expose them through `VITE_*`. The API issues
+short-lived presigned GET URLs after meeting ACL checks. For local development,
+set `STORAGE_BACKEND=local` and `MEDIA_STORAGE_PATH=.local-media`.
+If the frontend fetches a signed object directly, allow only the frontend
+origin in the bucket's CORS policy; this does not require public bucket access.
+
+Run the API service with `uvicorn app.main:app --host 0.0.0.0 --port 8000`,
+the separate worker service with `dramatiq app.workers.worker`, and a queue
+reconciler with `python -m app.workers.reconciler`. They need PostgreSQL and
+the same managed Redis URL; workers need private object storage and provider
+secrets. Install FFmpeg and FFprobe in the worker image. The reconciler scans
+durable queued/due-retrying jobs on a bounded interval, repairing an API crash
+or Redis outage between DB commit and broker publish. Redis carries delivery
+only; PostgreSQL remains the job-state source of truth. No shared API/worker
+filesystem is required.
 
 ## 6. Deploy gate
 

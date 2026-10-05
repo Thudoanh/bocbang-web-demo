@@ -69,6 +69,24 @@ class TokenService:
         )
 
     def verify(self, token: str, expected_kind: str) -> UUID:
+        payload = self._verify_payload(token, expected_kind)
+        try:
+            return UUID(payload["sub"])
+        except (KeyError, TypeError, ValueError):
+            raise ApiError("AUTH_REQUIRED", "Authentication is required.", 401) from None
+
+    def issue_media_playback_ticket(self, user_id: UUID, meeting_id: UUID, media_id: UUID, ttl_seconds: int) -> str:
+        """Issue a short-lived, media-scoped ticket rather than exposing an access token."""
+        return self._issue(user_id, "media_playback", ttl_seconds, {"meeting_id": str(meeting_id), "media_id": str(media_id)})
+
+    def verify_media_playback_ticket(self, token: str) -> tuple[UUID, UUID, UUID]:
+        payload = self._verify_payload(token, "media_playback")
+        try:
+            return UUID(payload["sub"]), UUID(payload["meeting_id"]), UUID(payload["media_id"])
+        except (KeyError, TypeError, ValueError):
+            raise ApiError("AUTH_REQUIRED", "Authentication is required.", 401) from None
+
+    def _verify_payload(self, token: str, expected_kind: str) -> dict[str, Any]:
         if self._secret is None:
             raise ApiError("AUTH_NOT_CONFIGURED", "Authentication is not configured.", 503)
         try:
@@ -83,7 +101,7 @@ class TokenService:
                 raise ValueError("header")
             if payload["kind"] != expected_kind or int(payload["exp"]) <= int(_now().timestamp()):
                 raise ValueError("claims")
-            return UUID(payload["sub"])
+            return payload
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             raise ApiError("AUTH_REQUIRED", "Authentication is required.", 401) from None
 
@@ -93,7 +111,7 @@ class TokenService:
     def verify_oauth_state(self, state: str) -> None:
         self.verify(state, "google_oauth_state")
 
-    def _issue(self, user_id: UUID, kind: str, ttl_seconds: int) -> str:
+    def _issue(self, user_id: UUID, kind: str, ttl_seconds: int, extra: dict[str, str] | None = None) -> str:
         if self._secret is None:
             raise ApiError("AUTH_NOT_CONFIGURED", "Authentication is not configured.", 503)
         now = _now()
@@ -108,6 +126,7 @@ class TokenService:
                     "iat": int(now.timestamp()),
                     "exp": int((now + timedelta(seconds=ttl_seconds)).timestamp()),
                     "jti": str(uuid4()),
+                    **(extra or {}),
                 },
                 separators=(",", ":"),
             ).encode()

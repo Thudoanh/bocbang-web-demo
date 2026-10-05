@@ -242,6 +242,10 @@ class MeetingService:
             await self._session.commit()
 
     async def resolve_share(self, token: str) -> tuple[MeetingResponse, MeetingPermission]:
+        meeting, permission = await self.resolve_share_entity(token)
+        return self._meeting_response(meeting, permission), permission
+
+    async def resolve_share_entity(self, token: str) -> tuple[Meeting, MeetingPermission]:
         token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
         share = await self._session.scalar(select(ShareLink).where(ShareLink.token_hash == token_hash))
         if share is None or share.revoked_at is not None or (share.expires_at is not None and share.expires_at <= _now()):
@@ -249,7 +253,7 @@ class MeetingService:
         meeting = await self._session.get(Meeting, share.meeting_id)
         if meeting is None:
             raise ApiError("SHARE_INVALID", "This share link is invalid, expired, or revoked.", 404)
-        return self._meeting_response(meeting, share.permission), share.permission
+        return meeting, share.permission
 
     async def _member_target(self, payload: MeetingMemberCreateRequest) -> User:
         target = (

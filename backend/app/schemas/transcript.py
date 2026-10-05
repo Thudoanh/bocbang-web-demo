@@ -24,6 +24,14 @@ class SpeakerResponse(BaseModel):
     updated_at: datetime
 
 
+class SpeakerSampleResponse(BaseModel):
+    """A real meeting-media interval; the client fetches media through its ACL route."""
+
+    media_id: UUID
+    start_ms: int
+    end_ms: int
+
+
 class SpeakerCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     role: str | None = Field(default=None, max_length=255)
@@ -58,6 +66,22 @@ class TranscriptResponse(BaseModel):
     language: str
     segments: list[SegmentResponse]
     next_cursor: str | None = None
+
+
+class SharedSegmentResponse(BaseModel):
+    logical_segment_id: UUID
+    start_ms: int
+    end_ms: int
+    text: str
+    speaker_label: str | None = None
+    confidence: float | None = None
+
+
+class SharedTranscriptResponse(BaseModel):
+    version_id: UUID
+    version_no: int
+    language: str
+    segments: list[SharedSegmentResponse]
 
 
 class TranscriptVersionResponse(BaseModel):
