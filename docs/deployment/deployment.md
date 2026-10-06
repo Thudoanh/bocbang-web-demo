@@ -185,3 +185,29 @@ delete meeting cascade
 `render.yaml` là deployment adapter, không phải domain architecture.
 Backend vẫn chạy local Docker hoặc platform khác chỉ bằng env/dependency
 URLs.
+
+## 9. Local Docker Compose
+
+The root `compose.yaml` provides the React frontend, PostgreSQL, Redis, a one-off
+Alembic migration, FastAPI, a Dramatiq worker and the queue reconciler. All Python services use
+`docker/backend.Dockerfile`, which includes FFmpeg/ffprobe and DejaVu fonts for
+Unicode PDF exports and runs as an unprivileged user. Database health and
+successful migration gate application startup; Redis health gates the queue
+consumers and API.
+
+Create the root `.env` from `.env.example`, set `JWT_SECRET` and needed provider
+credentials, then run `docker compose up --build -d`. No host Node.js/Python
+installation is required. `docker/frontend.Dockerfile` installs locked npm
+dependencies and builds with Node.js; its final Nginx stage serves static files
+with SPA fallback for deep links. Only explicit public Vite build arguments are
+passed to the frontend, and `frontend/.dockerignore` excludes local env files.
+The browser connects directly to `localhost:8000` for REST/WebSocket and Google
+OAuth. Changing frontend build arguments requires a rebuild. See the root README
+for commands and troubleshooting.
+
+This development stack overrides database/Redis URLs and selects local storage.
+The API and worker share `media_data`; PostgreSQL and Redis have their own
+persistent volumes. The frontend is published on `127.0.0.1:5173` after the API
+becomes healthy; the API is published on `127.0.0.1:8000`. Its database
+credentials are local defaults. Production continues to use managed databases,
+private S3-compatible storage and deployment secrets as described above.

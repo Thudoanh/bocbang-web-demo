@@ -12,6 +12,41 @@ Mục mới nhất được thêm ở đầu file. Dùng format ngắn dưới �
 - Follow-up / blocker: ...
 ```
 
+## 2026-10-06 — Frontend added to Docker Compose
+
+- Status: done
+- Scope: Added a frontend service on localhost:5173, built using locked npm
+  dependencies in Node and served by Nginx. SPA fallback supports direct links
+  and OAuth callbacks; frontend waits for API readiness. Only public Vite build
+  arguments are passed; env files and host dependencies are excluded.
+- Changed: `compose.yaml`, `docker/frontend.Dockerfile`, `frontend/.dockerignore`,
+  `frontend/nginx.conf`, `README.md`, deployment docs and current status.
+- Verified: Frontend Compose assertions (port, readiness dependency, public args,
+  no backend environment, Dockerfile path); `docker compose build frontend`
+  including TypeScript/Vite build; temporary container Nginx syntax, HTTP root,
+  SPA/deep-link/callback fallback, CSS/JS assets and missing asset 404 checks;
+  scoped `git diff --check`.
+- Follow-up / blocker: Full backend/provider end-to-end testing remains pending.
+  Rebuild after changing frontend source or public configuration. Docker Engine
+  was reachable with elevated access for the image build and container checks.
+
+## 2026-10-06 — Local Docker Compose backend and worker
+
+- Status: done (Compose validated; container runtime verification pending)
+- Scope: Added PostgreSQL, Redis, migration, API, worker and reconciler services
+  with health/migration startup gates and persistent shared local media storage.
+  Backend image runs as an unprivileged user and includes FFmpeg/ffprobe and
+  DejaVu fonts for Vietnamese PDF exports.
+- Changed: `compose.yaml`, `docker/backend.Dockerfile`, `backend/.dockerignore`,
+  `README.md`, `docs/deployment/deployment.md`, project context.
+- Verified: `docker compose config --quiet`; parsed Compose configuration
+  assertions for services, migration/health gates, container URLs, shared volume,
+  localhost-only API publishing and Dockerfile path; missing `JWT_SECRET`
+  rejection; scoped `git diff --check`.
+- Follow-up / blocker: Docker CLI is available but Docker Engine is not running.
+  Build/start with `docker compose up --build -d` and smoke-test migrations,
+  readiness, real job processing and persistence once Docker Desktop is running.
+
 ## 2026-10-05 — Queue delivery reconciliation
 
 - Status: done (static verification; runtime dependencies unavailable locally)

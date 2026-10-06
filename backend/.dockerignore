@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+.venv*
+venv
+__pycache__
+**/__pycache__
+*.pyc
+**/*.pyc
+.pytest_cache
+.pytest_tmp
+.ruff_cache
+.local-media
+tests
+scripts

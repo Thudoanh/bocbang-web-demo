@@ -1,0 +1,119 @@
+# Local development stack. Provider credentials are read from the root .env.
+x-backend: &backend
+  build:
+    context: ./backend
+    dockerfile: ../docker/backend.Dockerfile
+  image: bocbang-backend:local
+  env_file:
+    - .env
+  environment:
+    APP_ENVIRONMENT: development
+    DATABASE_URL: postgresql+asyncpg://bocbang:bocbang-local@postgres:5432/bocbang
+    REDIS_URL: redis://redis:6379/0
+    QUEUE_BACKEND: redis
+    JWT_SECRET: ${JWT_SECRET:?Set a long random JWT_SECRET in the root .env}
+    STORAGE_BACKEND: local
+    MEDIA_STORAGE_PATH: /data/media
+  volumes:
+    - media_data:/data/media
+  restart: unless-stopped
+
+x-runtime-dependencies: &runtime-dependencies
+  postgres:
+    condition: service_healthy
+  redis:
+    condition: service_healthy
+  migrate:
+    condition: service_completed_successfully
+
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: ../docker/frontend.Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000/api/v1}
+        VITE_WS_BASE_URL: ${VITE_WS_BASE_URL:-ws://localhost:8000/api/v1}
+        VITE_MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-524288000}
+        VITE_MAX_MEDIA_DURATION_SECONDS: ${MAX_MEDIA_DURATION_SECONDS:-7200}
+    image: bocbang-frontend:local
+    ports:
+      - "127.0.0.1:5173:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-bookworm
+    environment:
+      POSTGRES_USER: bocbang
+      POSTGRES_PASSWORD: bocbang-local
+      POSTGRES_DB: bocbang
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4-bookworm
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  migrate:
+    <<: *backend
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    <<: *backend
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on: *runtime-dependencies
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import json, urllib.request; response = urllib.request.urlopen('http://127.0.0.1:8000/api/v1/ready', timeout=5); assert json.load(response)['status'] == 'ready'"
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+
+  worker:
+    <<: *backend
+    command: ["dramatiq", "app.workers.worker", "--processes", "1", "--threads", "4"]
+    depends_on: *runtime-dependencies
+    stop_grace_period: 2m
+
+  reconciler:
+    <<: *backend
+    command: ["python", "-m", "app.workers.reconciler"]
+    depends_on: *runtime-dependencies
+
+volumes:
+  postgres_data:
+  redis_data:
+  media_data:

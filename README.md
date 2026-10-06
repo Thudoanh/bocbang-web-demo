@@ -26,12 +26,95 @@ See [agent guidance](agent/README_AGENT.md) before making implementation changes
 
 ## Running locally
 
+### Recommended: run the whole application with Docker Compose
+
+Install Docker Desktop with the Linux container engine running. With the source
+and root `.env` configuration, this is all another machine needs: frontend,
+backend, PostgreSQL, Redis, Python/Node dependencies and FFmpeg/ffprobe run in
+containers. The first build needs internet access to download images/packages.
+
+From the repository root, create `.env` if it does not already exist:
+
+```powershell
+if (!(Test-Path .env)) { Copy-Item .env.example .env }
+```
+
+Set a long random `JWT_SECRET` in `.env`. Keep
+`FRONTEND_ORIGIN=http://localhost:5173` and configure your Google OAuth, email
+and AI provider credentials there as needed. To generate a secret without a
+local Python installation:
+
+```powershell
+$jwtBytes = New-Object byte[] 48
+$jwtRng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+$jwtRng.GetBytes($jwtBytes)
+[Convert]::ToBase64String($jwtBytes)
+$jwtRng.Dispose()
+```
+
+Copy the generated value into `JWT_SECRET`, then start the stack:
+
+```powershell
+docker compose up --build -d
+docker compose ps -a
+docker compose logs -f frontend api worker reconciler
+```
+
+Compose starts PostgreSQL and Redis, runs `alembic upgrade head` in a one-off
+`migrate` container, then starts the API, Dramatiq worker and reconciler.
+The frontend starts after the API readiness check passes and serves the built
+React application with Nginx at `http://localhost:5173`.
+`migrate` exiting with code 0 is expected. If migration fails, inspect
+`docker compose logs migrate`; application services wait for it to succeed.
+
+Compose overrides `DATABASE_URL`, `REDIS_URL`, `QUEUE_BACKEND`,
+`APP_ENVIRONMENT`, `STORAGE_BACKEND` and `MEDIA_STORAGE_PATH` for this local
+stack, so the database/queue URLs in `.env` can remain blank. It uses a new
+container database rather than importing an existing host database. The API
+is exposed at `http://localhost:8000`; PostgreSQL and Redis remain internal
+to the Compose network. API and worker share a persistent volume for uploads,
+normalized audio and exports. Database and Redis data also persist in volumes.
+The bundled database credentials are for this local stack only.
+
+No separate frontend terminal or `frontend/.env` is needed for Compose.
+The frontend image receives only public build arguments from the root `.env`:
+`VITE_API_BASE_URL` (default `http://localhost:8000/api/v1`),
+`VITE_WS_BASE_URL` (default `ws://localhost:8000/api/v1`), and upload/duration
+limits from `MAX_UPLOAD_BYTES` / `MAX_MEDIA_DURATION_SECONDS`. Blank endpoint
+values also use these defaults. These URLs are accessed by the browser, so use
+`localhost`, not the Docker service name `api`. Backend secrets and local
+`frontend/.env` files are excluded from the frontend image.
+
+Open `http://localhost:5173`; API docs are at
+`http://localhost:8000/api/v1/docs`. Check API/database readiness with
+`http://localhost:8000/api/v1/ready`. Provider credentials are still required
+for real STT/AI processing and email delivery; Docker supplies the runtime
+dependencies only. If SMTP runs on the host machine, use
+`EMAIL_SMTP_HOST=host.docker.internal` with Docker Desktop.
+
+After frontend/backend source or dependency changes, rebuild with
+`docker compose up --build -d`. To explicitly apply new migrations to an
+existing stack, run `docker compose run --rm migrate` before restarting the
+application services. After changing backend settings in `.env`, run
+`docker compose up -d` to recreate affected containers. Frontend configuration
+is baked into the bundle, so after changing its URLs or upload limits run
+`docker compose up --build -d`. This setup serves a built frontend; source edits
+require a rebuild. For live frontend editing, use the manual Vite setup below
+and stop the Compose frontend with `docker compose stop frontend` first to
+release port 5173. Stop the stack with `docker compose down`;
+this keeps the data. `docker compose down -v` **deletes the local database,
+queue and uploaded/exported files**.
+
+### Alternative: run the application directly on the host
+
+The following sections describe the manual setup without the Compose stack.
+
 ### Prerequisites
 
 - Python 3.11 or newer (a standard CPython installation with `pip`)
 - Node.js with npm
 - PostgreSQL reachable from the machine
-- `ffprobe` on `PATH` to accept media uploads
+- FFmpeg and `ffprobe` on `PATH` to validate uploads and normalize audio
 
 A Redis-compatible queue, separate worker, and queue reconciler are required
 to process asynchronous jobs. The API never processes media or AI jobs inline.

@@ -1,8 +1,19 @@
 # Current Status
 
-_Cập nhật lần cuối: 2026-10-05_
+_Cập nhật lần cuối: 2026-10-06_
 
 ## Done
+
+- Added a local Docker Compose stack for the React frontend, PostgreSQL, Redis,
+  Alembic migrations, API, worker and reconciler. Another machine needs only
+  Docker, source and the root `.env`. Frontend uses a Node build stage and Nginx
+  with SPA fallback; public build arguments are isolated from backend secrets.
+  Shared backend image includes FFmpeg/ffprobe and
+  Unicode PDF fonts; local media and database/queue data persist in volumes.
+  README documents setup, rebuilds, environment overrides and shutdown.
+  Compose configuration and startup/storage assertions passed. Frontend image
+  build and container HTTP/SPA/assets smoke checks passed; full backend/provider
+  integration checks remain pending.
 
 - Backend queue worker foundation now uses Dramatiq + Redis: durable Job
   lifecycle fields and retry schedule, Redis-only enqueue after commit,
@@ -74,6 +85,10 @@ _Cập nhật lần cuối: 2026-10-05_
    browser E2E trên standard CPython + isolated PostgreSQL.
 
 ## Blockers / risks
+
+- Docker Engine is now reachable with elevated Docker access; the frontend
+  container is verified. Full-stack migration/API/worker/upload/export runtime
+  checks remain pending.
 
 - Chưa có provider production được cấu hình/đăng ký trong môi trường hiện tại;
   capability-gated UI sẽ không thể thực hiện STT/AI thật cho tới khi có adapter
