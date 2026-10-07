@@ -39,11 +39,13 @@ class FallbackLLMProvider:
             max_context_tokens=primary.max_context_tokens or fallback.max_context_tokens,
         )
 
-    async def generate_summary(self, transcript: str, template: str) -> dict[str, object]:
+    async def generate_summary(
+        self, transcript: str, template: str, output_language: str
+    ) -> dict[str, object]:
         try:
-            return await self._primary.generate_summary(transcript, template)
+            return await self._primary.generate_summary(transcript, template, output_language)
         except LLMProviderError:
-            return await self._fallback.generate_summary(transcript, template)
+            return await self._fallback.generate_summary(transcript, template, output_language)
 
 
 llm_provider_registry = LLMProviderRegistry()

@@ -180,6 +180,8 @@ thì streaming. Provider có thể đổi mà không thay public frontend API.
   `LLM_FALLBACK_PROVIDER=groq` with `GROQ_API_KEY` to use it only after the
   configured primary LLM provider fails; provider credentials remain backend-only.
 
-For realtime AssemblyAI, browser audio is resampled to 16 kHz mono PCM16 and
-sent to this API WebSocket. The API opens the upstream WebSocket with the API
-key, so no provider secret is exposed to the browser.
+For realtime AssemblyAI, an AudioWorklet captures browser audio as 16 kHz mono
+PCM16 chunks and sends them to this API WebSocket. The API opens the upstream
+WebSocket with the API key, pins `language_codes` to the meeting language, and
+uses the configured streaming model/mode. No provider secret is exposed to the
+browser.

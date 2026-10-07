@@ -7,25 +7,32 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import ApiError
 from app.models.enums import MeetingPermission, TranscriptVersionSource
-from app.models.meeting import Meeting
 from app.models.media import MediaFile
-from app.models.transcript import CurrentSegment, SegmentVersion, Speaker, Transcript, TranscriptEditEvent, TranscriptVersion
+from app.models.meeting import Meeting
+from app.models.transcript import (
+    CurrentSegment,
+    SegmentVersion,
+    Speaker,
+    Transcript,
+    TranscriptEditEvent,
+    TranscriptVersion,
+)
 from app.models.user import User
 from app.providers.contracts import TranscriptionSegment
 from app.schemas.transcript import (
     SegmentEditRequest,
     SegmentMergeRequest,
     SegmentResponse,
-    SegmentSplitRequest,
     SegmentSpeakerRequest,
+    SegmentSplitRequest,
     SpeakerCreateRequest,
-    SpeakerSampleResponse,
     SpeakerResponse,
+    SpeakerSampleResponse,
     SpeakerUpdateRequest,
     TranscriptMutationResponse,
     TranscriptResponse,
@@ -249,7 +256,7 @@ class TranscriptService:
             for item in segments
         ):
             raise ValueError("Batch transcript result is invalid.")
-        if any(right.start_ms < left.end_ms for left, right in zip(segments, segments[1:])):
+        if any(right.start_ms < left.end_ms for left, right in zip(segments, segments[1:], strict=False)):
             raise ValueError("Batch transcript segments overlap.")
         transcript = await self._ensure_transcript(meeting.id)
         previous = await self._current_version_or_none(meeting)
@@ -277,6 +284,9 @@ class TranscriptService:
             )
         meeting.current_transcript_version_id = version.id
         await self._session.flush()
+        await self._session.execute(
+            delete(CurrentSegment).where(CurrentSegment.transcript_id == transcript.id)
+        )
         for sequence, segment in enumerate(await self._segments(version.id), start=1):
             self._session.add(CurrentSegment(transcript_id=transcript.id, logical_segment_id=segment.logical_segment_id, speaker_id=segment.speaker_id, position=Decimal(sequence * 1024), start_ms=segment.start_ms, end_ms=segment.end_ms, text=segment.text, original_stt_text=segment.original_stt_text, confidence=segment.confidence))
         version.checkpointed_at = datetime.now(UTC)
@@ -295,9 +305,9 @@ class TranscriptService:
             raise ApiError("TRANSCRIPT_VERSION_NOT_FOUND", "Transcript version was not found.", 404)
         state = await self._reconstruct(target)
         version = await self._new_user_version(meeting, transcript, user)
-        rows = await self._session.scalars(select(CurrentSegment).where(CurrentSegment.transcript_id == transcript.id))
-        for row in rows:
-            await self._session.delete(row)
+        await self._session.execute(
+            delete(CurrentSegment).where(CurrentSegment.transcript_id == transcript.id)
+        )
         for item in state:
             self._session.add(CurrentSegment(transcript_id=transcript.id, logical_segment_id=item["logical_segment_id"], speaker_id=item["speaker_id"], position=item["position"], start_ms=item["start_ms"], end_ms=item["end_ms"], text=item["text"], original_stt_text=item.get("original_stt_text"), confidence=item.get("confidence")))
         await self._session.flush()

@@ -158,6 +158,13 @@ To fall back from Gemini to Groq, set `LLM_FALLBACK_PROVIDER=groq` and provide
 `GROQ_API_KEY`. Groq is called only after the primary provider returns an
 error. `GROQ_MODEL` defaults to `openai/gpt-oss-20b` and can be overridden.
 Groq may also be the primary summary provider with `LLM_PROVIDER=groq`.
+`ASSEMBLYAI_STREAMING_MODEL` defaults to `universal-3-6-pro` and is independent
+from the batch `STT_MODEL`. `ASSEMBLYAI_STREAMING_MODE` defaults to `balanced`
+and accepts `min_latency`, `balanced`, or `max_accuracy`. Realtime sessions send
+the meeting language as a single `language_codes` value and retain a
+language-specific transcription prompt, preventing a Vietnamese meeting from
+silently falling back to English-biased automatic recognition. Summary requests
+require `output_language` set to `vi` or `en`.
 `ASSEMBLYAI_API_BASE_URL`, `ASSEMBLYAI_STREAMING_BASE_URL`, and
 `GEMINI_API_BASE_URL` / `GROQ_API_BASE_URL` default to their official endpoints
 and may be overridden for a regional endpoint, proxy, or integration test.

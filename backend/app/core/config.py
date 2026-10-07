@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -81,6 +82,8 @@ class Settings(BaseSettings):
     stt_model: str = "universal-3-pro"
     assemblyai_api_base_url: str = "https://api.assemblyai.com/v2"
     assemblyai_streaming_base_url: str = "wss://streaming.assemblyai.com/v3/ws"
+    assemblyai_streaming_model: str = "universal-3-6-pro"
+    assemblyai_streaming_mode: Literal["min_latency", "balanced", "max_accuracy"] = "balanced"
     stt_poll_interval_seconds: float = 2.0
     stt_poll_timeout_seconds: int = 1800
     translation_provider: str | None = None

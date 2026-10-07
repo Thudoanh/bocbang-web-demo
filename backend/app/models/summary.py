@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import ForeignKey, Integer, JSON, String, UniqueConstraint
+from sqlalchemy import JSON, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -20,6 +20,15 @@ if TYPE_CHECKING:
 
 class Summary(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     __tablename__ = "summaries"
+    __table_args__ = (
+        UniqueConstraint(
+            "meeting_id",
+            "transcript_version_id",
+            "template_type",
+            "output_language",
+            name="uq_summary_transcript_template_language",
+        ),
+    )
 
     meeting_id: Mapped[UUID] = mapped_column(
         ForeignKey("meetings.id", ondelete="CASCADE"), nullable=False, index=True
@@ -30,6 +39,7 @@ class Summary(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     template_type: Mapped[SummaryTemplateType] = mapped_column(
         domain_enum(SummaryTemplateType, "summary_template_type"), nullable=False
     )
+    output_language: Mapped[str] = mapped_column(String(2), nullable=False)
 
     meeting: Mapped[Meeting] = relationship(back_populates="summaries")
     transcript_version: Mapped[TranscriptVersion] = relationship(back_populates="summaries")

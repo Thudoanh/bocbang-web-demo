@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
@@ -38,6 +39,7 @@ class TranslationResponse(BaseModel):
 
 class SummaryCreateRequest(BaseModel):
     template: SummaryTemplateType
+    output_language: Literal["vi", "en"]
 
 
 class SummaryVersionResponse(BaseModel):
@@ -55,4 +57,5 @@ class SummaryResponse(BaseModel):
     meeting_id: UUID
     transcript_version_id: UUID
     template: SummaryTemplateType
+    output_language: Literal["vi", "en"]
     current_version: SummaryVersionResponse

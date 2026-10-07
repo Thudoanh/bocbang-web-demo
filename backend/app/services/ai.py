@@ -33,8 +33,8 @@ from app.schemas.ai import (
     TranslationSegmentResponse,
 )
 from app.schemas.media import JobErrorResponse, JobResponse
-from app.services.meetings import MeetingService
 from app.services.exports import ExportJobRunner
+from app.services.meetings import MeetingService
 from app.workers import lifecycle
 
 
@@ -74,7 +74,7 @@ class AIService:
             job_type="summary",
             status=JobStatus.QUEUED,
             progress=0,
-            payload={"transcript_version_id": str(version.id), "template": payload.template.value, "actor_id": str(user.id)},
+            payload={"transcript_version_id": str(version.id), "template": payload.template.value, "output_language": payload.output_language, "actor_id": str(user.id)},
         )
         self._session.add(job)
         await self._session.commit()
@@ -133,7 +133,7 @@ class AIService:
         current = await self._session.scalar(select(SummaryVersion).where(SummaryVersion.summary_id == summary.id).order_by(SummaryVersion.version_no.desc()).limit(1))
         if current is None:
             raise ApiError("SUMMARY_NOT_FOUND", "Summary is not complete.", 404)
-        return SummaryResponse(id=summary.id, meeting_id=summary.meeting_id, transcript_version_id=summary.transcript_version_id, template=summary.template_type, current_version=self._summary_version_response(current))
+        return SummaryResponse(id=summary.id, meeting_id=summary.meeting_id, transcript_version_id=summary.transcript_version_id, template=summary.template_type, output_language=summary.output_language, current_version=self._summary_version_response(current))
 
     async def _summary_for_read(self, summary_id: UUID, user: User) -> Summary:
         summary = await self._session.get(Summary, summary_id)
@@ -210,12 +210,13 @@ class AIJobDispatcher:
         payload = job.payload or {}
         version_id, actor_id = UUID(str(payload["transcript_version_id"])), UUID(str(payload["actor_id"]))
         template = str(payload["template"])
+        output_language = str(payload["output_language"])
         originals = await _valid_segments(session, version_id)
-        content = _normalize_summary(await self._llm.generate_summary("\n".join(item.text for item in originals), template))
-        summary = await session.scalar(select(Summary).where(Summary.meeting_id == job.meeting_id, Summary.transcript_version_id == version_id, Summary.template_type == template))
+        content = _normalize_summary(await self._llm.generate_summary("\n".join(item.text for item in originals), template, output_language))
+        summary = await session.scalar(select(Summary).where(Summary.meeting_id == job.meeting_id, Summary.transcript_version_id == version_id, Summary.template_type == template, Summary.output_language == output_language))
         if summary is None:
             from app.models.enums import SummaryTemplateType
-            summary = Summary(meeting_id=job.meeting_id, transcript_version_id=version_id, template_type=SummaryTemplateType(template))
+            summary = Summary(meeting_id=job.meeting_id, transcript_version_id=version_id, template_type=SummaryTemplateType(template), output_language=output_language)
             session.add(summary)
             await session.flush()
         version_no = int(await session.scalar(select(func.coalesce(func.max(SummaryVersion.version_no), 0) + 1).where(SummaryVersion.summary_id == summary.id)))

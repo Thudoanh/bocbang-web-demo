@@ -71,9 +71,17 @@ class GeminiSummaryProvider(_GeminiBase):
     def capabilities(self) -> LLMCapabilities:
         return LLMCapabilities(structured_output=True, max_context_tokens=None)
 
-    async def generate_summary(self, transcript: str, template: str) -> dict[str, object]:
+    async def generate_summary(
+        self, transcript: str, template: str, output_language: str
+    ) -> dict[str, object]:
         schema: dict[str, object] = {"type": "object", "properties": {"overview": {"type": "string"}, **{key: {"type": "array", "items": {"type": "string"}} for key in _SUMMARY_KEYS[1:]}}, "required": list(_SUMMARY_KEYS)}
-        prompt = f"Create a faithful {template} meeting summary from the transcript. Never invent facts. For voting, emphasize decisions and votes; for briefing, make actions concise. Return JSON only.\n\nTranscript:\n{transcript}"
+        language_name = {"vi": "Vietnamese", "en": "English"}[output_language]
+        prompt = (
+            f"Create a faithful {template} meeting summary from the transcript. Never invent facts. "
+            "For voting, emphasize decisions and votes; for briefing, make actions concise. "
+            f"Write every human-readable value in {language_name}. Keep the JSON property names unchanged. "
+            f"Return JSON only.\n\nTranscript:\n{transcript}"
+        )
         return await self._generate(prompt, schema)
 
 

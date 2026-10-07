@@ -92,6 +92,12 @@ for real STT/AI processing and email delivery; Docker supplies the runtime
 dependencies only. If SMTP runs on the host machine, use
 `EMAIL_SMTP_HOST=host.docker.internal` with Docker Desktop.
 
+Realtime AssemblyAI defaults to `universal-3-6-pro` in `balanced` mode. The
+backend sends the selected meeting language as `language_codes` and the browser
+captures mono PCM16 audio through an AudioWorklet. Override the provider model
+or latency/accuracy preset with `ASSEMBLYAI_STREAMING_MODEL` and
+`ASSEMBLYAI_STREAMING_MODE` in the root `.env`.
+
 After frontend/backend source or dependency changes, rebuild with
 `docker compose up --build -d`. To explicitly apply new migrations to an
 existing stack, run `docker compose run --rm migrate` before restarting the

@@ -42,5 +42,6 @@ async def capabilities(request: Request) -> dict[str, object]:
         "stt": stt,
         "translation": {"languages": sorted({language for pair in pairs for language in pair}), "language_pairs": [list(pair) for pair in pairs]},
         "summary_templates": ["general", "briefing", "voting"] if llm_provider and llm_provider.capabilities().structured_output else [],
+        "summary_languages": ["vi", "en"] if llm_provider and llm_provider.capabilities().structured_output else [],
         "exports": ["pdf", "docx", "txt", "srt", "vtt", "json"],
     }

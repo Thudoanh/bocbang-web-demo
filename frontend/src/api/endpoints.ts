@@ -1,6 +1,6 @@
 import { config } from "../app/config";
 import { apiClient } from "./client";
-import type { AuthSession, Capabilities, Comment, CreatedShareLink, ExportArtifact, ExportFormat, Job, Meeting, MeetingStatus, MediaFile, Permission, Segment, ShareLink, Speaker, SpeakerSample, Summary, SummaryTemplate, Transcript, Translation, User } from "../types/domain";
+import type { AuthSession, Capabilities, Comment, CreatedShareLink, ExportArtifact, ExportFormat, Job, Meeting, MeetingStatus, MediaFile, Permission, Segment, ShareLink, Speaker, SpeakerSample, Summary, SummaryLanguage, SummaryTemplate, Transcript, Translation, User } from "../types/domain";
 
 type Page = { limit?: number; offset?: number; q?: string; status?: MeetingStatus; source_type?: Meeting["source_type"] };
 export type TranscriptMutation = { version_id: string; version_no: number; segment?: Segment };
@@ -52,7 +52,7 @@ export const meetingsApi = {
   addMember: (meetingId: string, email: string, permission: Exclude<Permission, "owner">) => apiClient.post<void>(`/meetings/${meetingId}/members`, { email, permission }),
   translation: (id: string, source_language: string, target_language: string) => apiClient.post<Job>(`/meetings/${id}/translations`, { source_language, target_language }),
   translations: (id: string) => apiClient.get<Translation[]>(`/meetings/${id}/translations`),
-  summary: (id: string, template: SummaryTemplate) => apiClient.post<Job>(`/meetings/${id}/summaries`, { template }),
+  summary: (id: string, template: SummaryTemplate, output_language: SummaryLanguage) => apiClient.post<Job>(`/meetings/${id}/summaries`, { template, output_language }),
   summaries: (id: string) => apiClient.get<Summary[]>(`/meetings/${id}/summaries`),
   comments: (id: string, page?: Page) => apiClient.get<Comment[]>(`/meetings/${id}/comments${pageQuery(page)}`),
   addComment: (id: string, body: string, segment_logical_id?: string) => apiClient.post<Comment>(`/meetings/${id}/comments`, { body, segment_logical_id }),

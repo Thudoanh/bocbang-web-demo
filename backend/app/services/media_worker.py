@@ -9,10 +9,11 @@ import tempfile
 from pathlib import Path
 from uuid import UUID
 
+from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.session import Database
 from app.core.config import Settings
+from app.db.session import Database
 from app.models.enums import MeetingStatus
 from app.models.media import Job, MediaFile
 from app.models.meeting import Meeting
@@ -55,7 +56,7 @@ class MediaProcessingWorker:
                     await self._storage.put_file(normalized, normalized_key)
                     media.normalized_storage_key, job.progress = normalized_key, 45
                     await session.commit()
-                result = await self._stt.transcribe_file(normalized)
+                result = await self._stt.transcribe_file(normalized, meeting.language_mode)
                 if not result.segments:
                     raise ValueError("STT provider returned no transcript segments.")
                 await TranscriptService(session).replace_stt_batch(
@@ -125,7 +126,7 @@ class MediaProcessingWorker:
             raise
 
     async def _fail(self, session: AsyncSession, job: Job, code: str, message: str, retryable: bool) -> bool:
-        job_id = job.id
+        job_id = (inspect(job).identity or (job.id,))[0]
         await session.rollback()
         job = await session.get(Job, job_id)
         assert job is not None

@@ -13,10 +13,10 @@ from app.main import create_app
 from app.models.meeting import Meeting
 from app.models.transcript import SegmentVersion, TranscriptVersion
 from app.providers.contracts import (
-    STTCapabilities,
-    STTProviderError,
     StreamingOptions,
     StreamingTranscriptionEvent,
+    STTCapabilities,
+    STTProviderError,
     TranscriptionSegment,
 )
 
@@ -85,7 +85,9 @@ class FakeProvider:
             multilingual_auto_detect=True,
         )
 
-    async def transcribe_file(self, media_key: str):  # pragma: no cover - protocol completeness
+    async def transcribe_file(
+        self, media_key: str, language: str | None = None
+    ):  # pragma: no cover - protocol completeness
         raise NotImplementedError
 
     async def open_stream(self, options: StreamingOptions) -> FakeStream:
@@ -147,6 +149,36 @@ def test_realtime_rejects_provider_without_streaming_capability(tmp_path: Path) 
             with pytest.raises(WebSocketDisconnect):
                 websocket.receive_json()
 
+
+def test_realtime_retryable_provider_error_closes_for_reconnect_without_failing_meeting(tmp_path: Path) -> None:
+    app, sender, database_url = _app(tmp_path)
+    app.state.stt_provider = FakeProvider(
+        error=STTProviderError("Temporary streaming interruption.", retryable=True)
+    )
+    with TestClient(app) as client:
+        session = _verified_session(client, sender)
+        meeting_id = _create_realtime_meeting(client, session["access_token"])
+        with client.websocket_connect(
+            f"/api/v1/realtime/{meeting_id}?access_token={session['access_token']}"
+        ) as websocket:
+            assert websocket.receive_json()["type"] == "session.ready"
+            websocket.send_bytes(b"audio-chunk")
+            error = websocket.receive_json()
+            assert error["code"] == "STT_PROVIDER_ERROR"
+            assert error["retryable"] is True
+            with pytest.raises(WebSocketDisconnect) as closed:
+                websocket.receive_json()
+            assert closed.value.code == 1013
+
+    async def verify() -> None:
+        engine = create_async_engine(database_url)
+        session_factory = async_sessionmaker(engine)
+        async with session_factory() as session:
+            meeting = (await session.scalars(select(Meeting))).one()
+        await engine.dispose()
+        assert meeting.status == "recording"
+
+    asyncio.run(verify())
 
 def test_realtime_non_retryable_provider_error_fails_meeting_not_completed(tmp_path: Path) -> None:
     app, sender, database_url = _app(tmp_path)

@@ -68,7 +68,9 @@ class GroqSummaryProvider(_GroqBase):
     def capabilities(self) -> LLMCapabilities:
         return LLMCapabilities(structured_output=True, max_context_tokens=131_072)
 
-    async def generate_summary(self, transcript: str, template: str) -> dict[str, object]:
+    async def generate_summary(
+        self, transcript: str, template: str, output_language: str
+    ) -> dict[str, object]:
         schema: dict[str, object] = {
             "type": "object",
             "properties": {
@@ -78,9 +80,11 @@ class GroqSummaryProvider(_GroqBase):
             "required": list(_SUMMARY_KEYS),
             "additionalProperties": False,
         }
+        language_name = {"vi": "Vietnamese", "en": "English"}[output_language]
         prompt = (
             f"Create a faithful {template} meeting summary from the transcript. Never invent facts. "
             "For voting, emphasize decisions and votes; for briefing, make actions concise. "
+            f"Write every human-readable value in {language_name}. Keep the JSON property names unchanged. "
             f"Return JSON only.\n\nTranscript:\n{transcript}"
         )
         return await self._generate(prompt, schema)

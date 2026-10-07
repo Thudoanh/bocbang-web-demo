@@ -303,7 +303,8 @@ Server events: `session.ready`, `transcript.partial`, `transcript.final`,
 `confidence`; final events also include `logical_segment_id`. Error events use
 `{type:"error", code, message, retryable}`.
 
-Client sends binary audio chunks and JSON commands
+Client sends raw PCM16 little-endian binary audio chunks at 16 kHz mono and
+JSON commands
 `{"type":"recording.pause"}`, `{"type":"recording.resume"}`, or
 `{"type":"recording.stop"}`. A partial is never persisted. A final is stored
 as a `SegmentVersion` in a new/current STT transcript version. Stop or client

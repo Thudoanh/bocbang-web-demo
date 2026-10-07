@@ -1,6 +1,7 @@
 import asyncio
 import time
 from pathlib import Path
+from threading import Thread
 from uuid import UUID
 
 from fastapi.testclient import TestClient
@@ -16,10 +17,11 @@ from app.models.transcript import SegmentVersion, Transcript, TranscriptVersion
 from app.providers.contracts import (
     LLMCapabilities,
     LLMProviderError,
+    TranscriptionSegment,
     TranslationCapabilities,
     TranslationProviderError,
-    TranscriptionSegment,
 )
+from app.services.ai import AIJobDispatcher
 
 
 class CapturingEmailSender:
@@ -50,10 +52,10 @@ class FakeLLM:
     def capabilities(self) -> LLMCapabilities:
         return LLMCapabilities(structured_output=True, max_context_tokens=4096)
 
-    async def generate_summary(self, transcript: str, template: str) -> dict[str, object]:
+    async def generate_summary(self, transcript: str, template: str, output_language: str) -> dict[str, object]:
         if self.fail:
             raise LLMProviderError("Fake LLM unavailable.", retryable=True)
-        return {"overview": f"{template}: {transcript}", "key_points": [template], "action_items": [], "decisions": [], "risks_notes": []}
+        return {"overview": f"{output_language}:{template}: {transcript}", "key_points": [template], "action_items": [], "decisions": [], "risks_notes": []}
 
 
 def test_vi_en_and_en_vi_translation_preserve_source_and_segment_mapping(tmp_path: Path) -> None:
@@ -88,23 +90,50 @@ def test_translation_capability_empty_input_and_permissions(tmp_path: Path) -> N
         assert ["en", "vi"] in capabilities["translation"]["language_pairs"]
 
 
-def test_summary_templates_and_regeneration_versions(tmp_path: Path) -> None:
+def test_summary_templates_languages_and_regeneration_versions(tmp_path: Path) -> None:
     app, sender, url = _app(tmp_path)
     app.state.translation_provider, app.state.llm_provider = FakeTranslation(), FakeLLM()
     with TestClient(app) as client:
         owner = _session(client, sender, "summary@example.com")
         seed, headers = _seed(url, UUID(owner["user"]["id"])), _headers(owner)
-        for template in ("general", "briefing", "voting"):
-            job = client.post(f"/api/v1/meetings/{seed['meeting_id']}/summaries", headers=headers, json={"template": template})
-            assert _job(client, headers, job.json()["id"])["status"] == "completed"
-        summaries = client.get(f"/api/v1/meetings/{seed['meeting_id']}/summaries", headers=headers).json()
-        general = next(item for item in summaries if item["template"] == "general")
-        regenerate = client.post(f"/api/v1/meetings/{seed['meeting_id']}/summaries", headers=headers, json={"template": "general"})
-        assert _job(client, headers, regenerate.json()["id"])["status"] == "completed"
-        versions = client.get(f"/api/v1/summaries/{general['id']}/versions", headers=headers).json()
-        assert [item["version_no"] for item in versions] == [2, 1]
-        assert client.get(f"/api/v1/summaries/{general['id']}/versions/{versions[1]['id']}", headers=headers).status_code == 200
+        endpoint = f"/api/v1/meetings/{seed['meeting_id']}/summaries"
 
+        assert client.post(endpoint, headers=headers, json={"template": "general"}).status_code == 422
+        assert client.post(endpoint, headers=headers, json={"template": "general", "output_language": "fr"}).status_code == 422
+
+        for template in ("general", "briefing", "voting"):
+            job = client.post(
+                endpoint,
+                headers=headers,
+                json={"template": template, "output_language": "vi"},
+            )
+            assert _job(client, headers, job.json()["id"])["status"] == "completed"
+        english = client.post(
+            endpoint,
+            headers=headers,
+            json={"template": "general", "output_language": "en"},
+        )
+        assert _job(client, headers, english.json()["id"])["status"] == "completed"
+
+        summaries = client.get(endpoint, headers=headers).json()
+        general_vi = next(item for item in summaries if item["template"] == "general" and item["output_language"] == "vi")
+        general_en = next(item for item in summaries if item["template"] == "general" and item["output_language"] == "en")
+        assert general_vi["id"] != general_en["id"]
+        assert general_vi["current_version"]["content"]["overview"].startswith("vi:")
+        assert general_en["current_version"]["content"]["overview"].startswith("en:")
+
+        regenerate = client.post(
+            endpoint,
+            headers=headers,
+            json={"template": "general", "output_language": "vi"},
+        )
+        assert _job(client, headers, regenerate.json()["id"])["status"] == "completed"
+        vi_versions = client.get(f"/api/v1/summaries/{general_vi['id']}/versions", headers=headers).json()
+        en_versions = client.get(f"/api/v1/summaries/{general_en['id']}/versions", headers=headers).json()
+        assert [item["version_no"] for item in vi_versions] == [2, 1]
+        assert [item["version_no"] for item in en_versions] == [1]
+        assert client.get(f"/api/v1/summaries/{general_vi['id']}/versions/{vi_versions[1]['id']}", headers=headers).status_code == 200
+        assert client.get("/api/v1/capabilities").json()["summary_languages"] == ["vi", "en"]
 
 def test_provider_failure_marks_job_failed_with_retryability(tmp_path: Path) -> None:
     app, sender, url = _app(tmp_path)
@@ -115,7 +144,7 @@ def test_provider_failure_marks_job_failed_with_retryability(tmp_path: Path) -> 
         translation = client.post(f"/api/v1/meetings/{seed['meeting_id']}/translations", headers=headers, json={"source_language": "vi", "target_language": "en"})
         failed_translation = _job(client, headers, translation.json()["id"])
         assert failed_translation["status"] == "failed" and failed_translation["error"]["retryable"] is False
-        summary = client.post(f"/api/v1/meetings/{seed['meeting_id']}/summaries", headers=headers, json={"template": "general"})
+        summary = client.post(f"/api/v1/meetings/{seed['meeting_id']}/summaries", headers=headers, json={"template": "general", "output_language": "vi"})
         failed_summary = _job(client, headers, summary.json()["id"])
         assert failed_summary["status"] == "failed" and failed_summary["error"]["retryable"] is True
 
@@ -129,7 +158,7 @@ def test_summary_requires_available_structured_provider(tmp_path: Path) -> None:
         response = client.post(
             f"/api/v1/meetings/{seed['meeting_id']}/summaries",
             headers=_headers(owner),
-            json={"template": "general"},
+            json={"template": "general", "output_language": "vi"},
         )
         assert response.status_code == 503
 
@@ -143,7 +172,27 @@ def _app(tmp_path: Path):
         await engine.dispose()
     asyncio.run(create_schema())
     app = create_app(Settings(_env_file=None, database_url=url, jwt_secret="test-secret", frontend_origins="http://localhost:5173", translation_provider="fake", llm_provider="fake"))
-    sender = CapturingEmailSender(); app.state.email_sender = sender
+    sender = CapturingEmailSender()
+    app.state.email_sender = sender
+
+    def enqueue(job_id, _settings) -> None:
+        def execute() -> None:
+            async def run_until_terminal() -> None:
+                dispatcher = AIJobDispatcher(
+                    app.state.database,
+                    app.state.settings,
+                    app.state.translation_provider,
+                    app.state.llm_provider,
+                    app.state.media_storage,
+                )
+                while await dispatcher.run(UUID(str(job_id))):
+                    pass
+
+            asyncio.run(run_until_terminal())
+
+        Thread(target=execute, daemon=True).start()
+
+    app.state.enqueue_job = enqueue
     return app, sender, url
 
 

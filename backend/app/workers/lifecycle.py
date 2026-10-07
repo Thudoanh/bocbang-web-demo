@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import Database
@@ -48,8 +49,9 @@ async def retrying(
     min_backoff_ms: int,
     max_backoff_ms: int,
 ) -> None:
+    job_id = (inspect(job).identity or (job.id,))[0]
     await session.rollback()
-    refreshed = await session.get(Job, job.id)
+    refreshed = await session.get(Job, job_id)
     assert refreshed is not None
     refreshed.status = JobStatus.RETRYING
     backoff_ms = min(max_backoff_ms, min_backoff_ms * (2 ** max(0, refreshed.attempts - 1)))
@@ -60,8 +62,9 @@ async def retrying(
 
 
 async def failed(session: AsyncSession, job: Job, code: str, message: str, retryable: bool) -> None:
+    job_id = (inspect(job).identity or (job.id,))[0]
     await session.rollback()
-    refreshed = await session.get(Job, job.id)
+    refreshed = await session.get(Job, job_id)
     assert refreshed is not None
     refreshed.status, refreshed.progress, refreshed.completed_at = JobStatus.FAILED, 100, _now()
     refreshed.next_attempt_at = None

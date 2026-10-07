@@ -12,6 +12,25 @@ Mục mới nhất được thêm ở đầu file. Dùng format ngắn dưới �
 - Follow-up / blocker: ...
 ```
 
+## 2026-10-07 — Vietnamese realtime STT steering and audio capture
+
+- Status: done (live provider accuracy smoke test pending)
+- Scope: Pinned realtime STT to the meeting language, upgraded the default
+  AssemblyAI realtime model to Universal 3.6 balanced mode, and replaced the
+  browser's nearest-sample ScriptProcessor capture with an AudioWorklet PCM16
+  pipeline.
+- Changed: `backend/app/providers/assemblyai.py`, backend settings/tests,
+  `frontend/src/realtime/*`, `frontend/src/pages/MeetingPage.tsx`, environment
+  examples and provider/runtime documentation.
+- Verified: frontend TypeScript/Vite Docker build; 18 focused
+  provider/realtime tests; API and frontend health checks; runtime settings
+  report `universal-3-6-pro` / `balanced`; full backend suite reports 50 passed
+  and one unrelated existing export test failure because its test app has no
+  Redis enqueue configuration.
+- Follow-up / blocker: Run a real Vietnamese microphone session to assess
+  provider accuracy. Repository-wide Ruff remains red on pre-existing style
+  debt and is not a clean quality gate for this task.
+
 ## 2026-10-06 — Frontend added to Docker Compose
 
 - Status: done

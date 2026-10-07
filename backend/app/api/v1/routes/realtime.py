@@ -15,11 +15,11 @@ from app.db.session import Database
 from app.models.enums import MeetingPermission
 from app.models.user import User
 from app.providers.contracts import (
+    StreamingOptions,
+    StreamingTranscriptionEvent,
     STTProvider,
     STTProviderError,
     STTStream,
-    StreamingOptions,
-    StreamingTranscriptionEvent,
 )
 from app.services.meetings import MeetingService
 from app.services.realtime import RealtimeTranscriptService
@@ -34,6 +34,7 @@ async def realtime_transcription(websocket: WebSocket, meeting_id: UUID) -> None
     stream: STTStream | None = None
     transcript_service: RealtimeTranscriptService | None = None
     terminal_failure = False
+    retryable_interruption = False
     try:
         settings = cast(Settings, websocket.app.state.settings)
         provider = cast(STTProvider | None, getattr(websocket.app.state, "stt_provider", None))
@@ -66,9 +67,9 @@ async def realtime_transcription(websocket: WebSocket, meeting_id: UUID) -> None
             try:
                 stream = await provider.open_stream(options)
             except STTProviderError as exc:
-                await _handle_provider_error(websocket, exc)
                 if not exc.retryable:
                     await RealtimeTranscriptService(session, meeting, user.id).recording_failed()
+                await _handle_provider_error(websocket, exc)
                 return
             except Exception:
                 await _handle_provider_error(
@@ -101,17 +102,20 @@ async def realtime_transcription(websocket: WebSocket, meeting_id: UUID) -> None
                         await _emit_events(websocket, transcript_service, events)
                     except STTProviderError as exc:
                         terminal_failure = not exc.retryable
-                        await _handle_provider_error(websocket, exc)
+                        retryable_interruption = exc.retryable
                         if terminal_failure:
                             await transcript_service.recording_failed()
-                            return
+                        await _handle_provider_error(websocket, exc)
+                        return
                     except ValueError as exc:
                         await _send_error(websocket, "STT_RESULT_INVALID", str(exc), False)
                     except Exception:
+                        retryable_interruption = True
                         await _handle_provider_error(
                             websocket,
                             STTProviderError("The STT provider could not process this audio chunk."),
                         )
+                        return
                     continue
                 if message.get("text") is None:
                     await _send_error(websocket, "INVALID_MESSAGE", "Audio chunks must be binary.", False)
@@ -136,17 +140,20 @@ async def realtime_transcription(websocket: WebSocket, meeting_id: UUID) -> None
                         return
                 except STTProviderError as exc:
                     terminal_failure = not exc.retryable
-                    await _handle_provider_error(websocket, exc)
+                    retryable_interruption = exc.retryable
                     if terminal_failure:
                         await transcript_service.recording_failed()
-                        return
+                    await _handle_provider_error(websocket, exc)
+                    return
                 except ValueError as exc:
                     await _send_error(websocket, "STT_RESULT_INVALID", str(exc), False)
                 except Exception:
+                    retryable_interruption = True
                     await _handle_provider_error(
                         websocket,
                         STTProviderError("The STT provider could not process this realtime command."),
                     )
+                    return
     except WebSocketDisconnect:
         pass
     except ApiError as exc:
@@ -163,7 +170,7 @@ async def realtime_transcription(websocket: WebSocket, meeting_id: UUID) -> None
                     await _emit_events(websocket, transcript_service, events, send_client=False)
             except (STTProviderError, RuntimeError, ValueError):
                 pass
-        if transcript_service is not None and not terminal_failure:
+        if transcript_service is not None and not terminal_failure and not retryable_interruption:
             try:
                 await transcript_service.recording_ended()
             except RuntimeError:
@@ -240,5 +247,7 @@ async def _error_and_close(
 
 async def _handle_provider_error(websocket: WebSocket, error: STTProviderError) -> None:
     await _send_error(websocket, error.code, str(error), error.retryable)
-    if not error.retryable:
-        await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
+    await websocket.close(
+        code=1013 if error.retryable else status.WS_1011_INTERNAL_ERROR,
+        reason=error.code,
+    )

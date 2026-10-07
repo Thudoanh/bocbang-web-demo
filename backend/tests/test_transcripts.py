@@ -13,8 +13,16 @@ from app.db.base import Base
 from app.main import create_app
 from app.models.enums import MeetingPermission, MeetingSourceType, TranscriptVersionSource
 from app.models.meeting import Meeting, MeetingMember
-from app.models.transcript import CurrentSegment, SegmentVersion, Speaker, Transcript, TranscriptEditEvent, TranscriptVersion
-from app.models.user import User
+from app.models.transcript import (
+    CurrentSegment,
+    SegmentVersion,
+    Speaker,
+    Transcript,
+    TranscriptEditEvent,
+    TranscriptVersion,
+)
+from app.providers.contracts import TranscriptionSegment
+from app.services.transcripts import TranscriptService
 
 
 class CapturingEmailSender:
@@ -118,6 +126,43 @@ def test_rejects_invalid_timestamps_and_cross_meeting_speaker(tmp_path: Path) ->
         assert overlap.status_code == 422
         wrong_speaker = client.patch(f"/api/v1/segments/{one['first']}/speaker", headers=headers, json={"speaker_id": two["speaker_id"]})
         assert wrong_speaker.status_code == 404
+
+
+def test_replace_stt_batch_replaces_existing_projection(tmp_path: Path) -> None:
+    app, sender, url = _app(tmp_path)
+    with TestClient(app) as client:
+        owner = _session(client, sender, "batch-replace@example.com")
+        seeded = _seed(url, UUID(owner["user"]["id"]))
+
+        async def replace() -> None:
+            engine = create_async_engine(url)
+            factory = async_sessionmaker(engine, expire_on_commit=False)
+            async with factory() as session:
+                meeting = await session.get(Meeting, UUID(seeded["meeting_id"]))
+                assert meeting is not None
+                await TranscriptService(session).replace_stt_batch(
+                    meeting,
+                    UUID(owner["user"]["id"]),
+                    (
+                        TranscriptionSegment(0, 700, "Xin chào"),
+                        TranscriptionSegment(700, 1400, "Việt Nam"),
+                    ),
+                )
+                await session.commit()
+                transcript = await session.scalar(
+                    select(Transcript).where(Transcript.meeting_id == meeting.id)
+                )
+                assert transcript is not None
+                current = list(await session.scalars(
+                    select(CurrentSegment)
+                    .where(CurrentSegment.transcript_id == transcript.id)
+                    .order_by(CurrentSegment.position)
+                ))
+                assert [item.text for item in current] == ["Xin chào", "Việt Nam"]
+                assert [item.position for item in current] == [Decimal(1024), Decimal(2048)]
+            await engine.dispose()
+
+        asyncio.run(replace())
 
 
 def test_projection_events_checkpoints_rollback_and_legacy_fallback(tmp_path: Path) -> None:

@@ -1,8 +1,17 @@
 # Current Status
 
-_Cập nhật lần cuối: 2026-10-06_
+_Cập nhật lần cuối: 2026-10-07_
 
 ## Done
+
+- Realtime AssemblyAI now steers every stream to the meeting language with a
+  single `language_codes` value, keeps the language-specific verbatim prompt,
+  and defaults to Universal 3.6 in `balanced` mode. Unsupported languages fail
+  before an upstream connection is opened. Browser microphone capture now uses
+  AudioWorklet, mono 16 kHz PCM16 chunks, browser audio cleanup constraints,
+  stateful resampling and explicit pause/stop flushing. Docker frontend/API
+  builds, 18 focused provider/realtime tests and HTTP readiness smoke checks
+  passed; the full backend suite has one unrelated export/queue test failure.
 
 - Added a local Docker Compose stack for the React frontend, PostgreSQL, Redis,
   Alembic migrations, API, worker and reconciler. Another machine needs only
@@ -79,8 +88,8 @@ _Cập nhật lần cuối: 2026-10-06_
    by token để share page có thể hiển thị nội dung nhạy cảm an toàn.
 4. Implement `AudioPlayer` đồng bộ segment against the authenticated local
    proxy / short-lived S3 playback URL. Không fake player ở frontend.
-5. Register/configure STT streaming + batch, TranslationProvider và LLMProvider
-   thật; chạy worker/end-to-end tests với provider được chọn.
+5. Chạy browser/microphone E2E với AssemblyAI thật trên các mẫu tiếng Việt rõ,
+   có tiếng ồn nhẹ và có thuật ngữ tiếng Anh xen kẽ; ghi nhận accuracy/latency.
 6. Chạy backend `pytest`, `ruff check .`, Alembic migration validation và
    browser E2E trên standard CPython + isolated PostgreSQL.
 
@@ -90,9 +99,9 @@ _Cập nhật lần cuối: 2026-10-06_
   container is verified. Full-stack migration/API/worker/upload/export runtime
   checks remain pending.
 
-- Chưa có provider production được cấu hình/đăng ký trong môi trường hiện tại;
-  capability-gated UI sẽ không thể thực hiện STT/AI thật cho tới khi có adapter
-  và credentials backend.
+- Provider credentials đã được cấu hình trong môi trường local, nhưng chưa chạy
+  browser/microphone E2E có tính phí với AssemblyAI sau thay đổi language
+  steering; không coi unit tests hoặc handshake giả lập là xác minh accuracy.
 - Public share chưa thể công khai transcript hoặc AI result vì backend không
   cấp token-scoped result endpoints; không được mở endpoint authenticated hiện
   có mà không thiết kế ACL riêng.

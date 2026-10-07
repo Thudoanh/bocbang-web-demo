@@ -63,6 +63,7 @@ def test_async_session_persists_versioned_transcript_and_summary() -> None:
                 meeting=meeting,
                 transcript_version=version,
                 template_type=SummaryTemplateType.GENERAL,
+                output_language="vi",
             )
             summary_version = SummaryVersion(
                 summary=summary,
