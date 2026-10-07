@@ -1,5 +1,7 @@
 import asyncio
+import time
 from pathlib import Path
+from threading import Thread
 from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
@@ -11,6 +13,7 @@ from app.main import create_app
 from app.models.enums import MeetingPermission, MeetingSourceType, TranscriptVersionSource
 from app.models.meeting import Meeting, MeetingMember
 from app.models.transcript import SegmentVersion, Speaker, Transcript, TranscriptVersion
+from app.services.ai import AIJobDispatcher
 
 
 class Sender:
@@ -41,6 +44,27 @@ def test_exports_all_formats_and_collaboration_permissions(tmp_path: Path) -> No
         )
     )
     app.state.email_sender = sender
+
+    def enqueue(job_id: UUID, _settings: Settings) -> None:
+        def execute() -> None:
+            async def run_until_terminal() -> None:
+                dispatcher = AIJobDispatcher(
+                    app.state.database,
+                    app.state.settings,
+                    app.state.translation_provider,
+                    app.state.llm_provider,
+                    app.state.media_storage,
+                )
+                while await dispatcher.run(UUID(str(job_id))):
+                    pass
+
+            asyncio.run(run_until_terminal())
+
+        Thread(target=execute, daemon=True).start()
+
+    # Keep this integration test independent from REDIS_URL inherited from the
+    # host/container. A live Dramatiq worker cannot read this test's SQLite DB.
+    app.state.enqueue_job = enqueue
     with TestClient(app) as client:
         owner = _session(client, sender, "owner@example.com")
         commenter = _session(client, sender, "comment@example.com")
@@ -129,6 +153,7 @@ def _wait_export(client: TestClient, headers: dict[str, str], export_id: str) ->
         if value["status"] in {"completed", "failed"}:
             assert value["status"] == "completed", value
             return value
+        time.sleep(0.02)
     raise AssertionError("export job did not complete")
 
 

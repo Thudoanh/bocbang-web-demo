@@ -1,12 +1,13 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { configureApiAuth } from "../api/client";
+import { ApiError, apiClient, configureApiAuth } from "../api/client";
 import { authApi } from "../api/endpoints";
+import { config } from "../app/config";
 import type { AuthSession, User } from "../types/domain";
 
 type AuthContextValue = {
   user: User | null; ready: boolean; login(email: string, password: string): Promise<void>;
   register(email: string, password: string, name: string): Promise<void>; verifyOtp(email: string, code: string): Promise<void>;
-  logout(): Promise<void>; googleLogin(): void; updateProfile(fullName: string): Promise<void>; accessToken: string | null;
+  logout(): Promise<void>; googleLogin(): Promise<void>; updateProfile(fullName: string): Promise<void>; accessToken: string | null;
 };
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 const KEY = "bocbang.session";
@@ -35,7 +36,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     verifyOtp: async (email, code) => persist(await authApi.verifyOtp(email, code)),
     logout: async () => { try { await authApi.logout(); } finally { persist(null); } },
     updateProfile: async (fullName) => { if (!sessionRef.current) return; const user = await authApi.updateProfile(fullName); persist({ ...sessionRef.current, user }); },
-    googleLogin: () => { window.location.assign(`${import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api/v1"}${authApi.googleUrl()}`); },
+    googleLogin: async () => {
+      try {
+        await apiClient.get<{ status: string }>("/ready");
+      } catch {
+        throw new ApiError(0, "API_UNAVAILABLE", "Máy chủ chưa sẵn sàng. Hãy khởi động backend rồi thử đăng nhập Google lại.");
+      }
+      window.location.assign(`${config.apiBaseUrl}${authApi.googleUrl()}`);
+    },
   }), [persist, ready, session?.user]);
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

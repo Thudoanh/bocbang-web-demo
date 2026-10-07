@@ -15,7 +15,7 @@ from app.core.config import Settings
 from app.core.errors import ApiError
 from app.core.security import TokenService
 from app.db.session import Database
-from app.models.enums import MeetingPermission
+from app.models.enums import MeetingPermission, MeetingSourceType, MeetingStatus
 from app.models.user import User
 from app.providers.contracts import (
     StreamingOptions,
@@ -89,9 +89,33 @@ async def realtime_transcription(websocket: WebSocket, meeting_id: UUID) -> None
             meeting, _ = await MeetingService(session).require_access(
                 meeting_id, user, MeetingPermission.EDIT
             )
+            if meeting.source_type != MeetingSourceType.REALTIME:
+                await _error_and_close(
+                    websocket,
+                    send_json,
+                    "MEETING_SOURCE_TYPE_MISMATCH",
+                    "Realtime transcription is only available for realtime meetings.",
+                    retryable=False,
+                )
+                return
+            if meeting.status == MeetingStatus.COMPLETED:
+                await _error_and_close(
+                    websocket,
+                    send_json,
+                    "MEETING_ALREADY_COMPLETED",
+                    "This realtime meeting has already been completed.",
+                    retryable=False,
+                )
+                return
             options = StreamingOptions(
                 language=meeting.language_mode,
                 diarization=meeting.diarization_enabled,
+                context=". ".join(
+                    item.strip()
+                    for item in (meeting.title, meeting.description or "")
+                    if item.strip()
+                ),
+                keyterms=(meeting.title,),
             )
             try:
                 stream = await provider.open_stream(options)
@@ -264,8 +288,8 @@ async def realtime_transcription(websocket: WebSocket, meeting_id: UUID) -> None
                         if translation_session is not None:
                             await translation_session.flush()
                             await translation_session.close()
-                        await transcript_service.recording_ended()
-                        await send_json({"type": "meeting.status", "status": "processing"})
+                        await transcript_service.recording_completed()
+                        await send_json({"type": "meeting.status", "status": "completed"})
                         await websocket.close(code=status.WS_1000_NORMAL_CLOSURE)
                         return
                 except STTProviderError as exc:
@@ -384,6 +408,19 @@ async def _emit_events(
 ) -> None:
     for event in events:
         segment = event.segment
+        if event.type == "speaker_revision":
+            logical_segment_id = await transcript_service.revise_speaker(
+                event.provider_segment_id, segment.speaker_label
+            )
+            if send_client and logical_segment_id is not None:
+                await send_json(
+                    {
+                        "type": "transcript.speaker_revision",
+                        "logical_segment_id": str(logical_segment_id),
+                        "speaker_label": segment.speaker_label,
+                    }
+                )
+            continue
         payload = {
             "type": f"transcript.{event.type}",
             "language": event.language,
@@ -395,7 +432,9 @@ async def _emit_events(
         }
         logical_segment_id: UUID | None = None
         if event.type == "final":
-            stored = await transcript_service.persist_final(segment)
+            stored = await transcript_service.persist_final(
+                segment, event.provider_segment_id
+            )
             logical_segment_id = stored.logical_segment_id
             payload["logical_segment_id"] = str(logical_segment_id)
         if send_client:

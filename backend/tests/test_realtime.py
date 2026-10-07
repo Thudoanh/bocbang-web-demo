@@ -13,8 +13,9 @@ from app.core.config import Settings
 from app.db.base import Base
 from app.main import create_app
 from app.models.meeting import Meeting
-from app.models.transcript import SegmentVersion, TranscriptVersion
+from app.models.transcript import SegmentVersion, Speaker, TranscriptVersion
 from app.providers.contracts import (
+    BatchTranscriptionOptions,
     StreamingOptions,
     StreamingTranscriptionEvent,
     STTCapabilities,
@@ -39,6 +40,7 @@ class FakeStream:
         self.paused = False
         self.resumed = False
         self.closed = False
+        self.close_events: tuple[StreamingTranscriptionEvent, ...] = ()
 
     async def send_audio(self, chunk: bytes) -> tuple[StreamingTranscriptionEvent, ...]:
         if self.error:
@@ -56,6 +58,7 @@ class FakeStream:
                 segment=TranscriptionSegment(
                     0, 900, "Bản cuối được lưu", speaker_label="speaker_1", confidence=0.97
                 ),
+                provider_segment_id="0",
             ),
         )
 
@@ -69,7 +72,7 @@ class FakeStream:
 
     async def close(self) -> tuple[StreamingTranscriptionEvent, ...]:
         self.closed = True
-        return ()
+        return self.close_events
 
 
 class FakeProvider:
@@ -90,7 +93,7 @@ class FakeProvider:
         )
 
     async def transcribe_file(
-        self, media_key: str, language: str | None = None
+        self, media_key: str, options: BatchTranscriptionOptions
     ):  # pragma: no cover - protocol completeness
         raise NotImplementedError
 
@@ -149,7 +152,7 @@ def test_realtime_persists_finals_but_never_partials_and_handles_pause_resume(
             assert final["type"] == "transcript.final"
             assert final["text"] == "Bản cuối được lưu"
             websocket.send_text('{"type":"recording.stop"}')
-            assert websocket.receive_json() == {"type": "meeting.status", "status": "processing"}
+            assert websocket.receive_json() == {"type": "meeting.status", "status": "completed"}
 
     async def verify() -> None:
         engine = create_async_engine(database_url)
@@ -162,11 +165,128 @@ def test_realtime_persists_finals_but_never_partials_and_handles_pause_resume(
         assert len(versions) == 1
         assert len(segments) == 1
         assert segments[0].text == "Bản cuối được lưu"
-        assert meeting.status == "processing"
+        assert meeting.status == "completed"
 
     asyncio.run(verify())
     assert provider.options is not None and provider.options.diarization is True
     assert provider.stream.paused and provider.stream.resumed and provider.stream.closed
+
+
+def test_realtime_applies_final_speaker_revision_before_completion(tmp_path: Path) -> None:
+    app, sender, database_url = _app(tmp_path)
+    provider = FakeProvider()
+    provider.stream.close_events = (
+        StreamingTranscriptionEvent(
+            type="speaker_revision",
+            language="vi",
+            segment=TranscriptionSegment(
+                0, 900, "Bản cuối được lưu", speaker_label="speaker_2"
+            ),
+            provider_segment_id="0",
+        ),
+    )
+    app.state.stt_provider = provider
+    with TestClient(app) as client:
+        session = _verified_session(client, sender)
+        meeting_id = _create_realtime_meeting(client, session["access_token"])
+        with client.websocket_connect(
+            f"/api/v1/realtime/{meeting_id}?access_token={session['access_token']}"
+        ) as websocket:
+            websocket.receive_json()
+            websocket.send_bytes(b"audio-chunk")
+            websocket.receive_json()
+            final = websocket.receive_json()
+            websocket.send_text('{"type":"recording.stop"}')
+            revision = websocket.receive_json()
+            assert revision == {
+                "type": "transcript.speaker_revision",
+                "logical_segment_id": final["logical_segment_id"],
+                "speaker_label": "speaker_2",
+            }
+            assert websocket.receive_json() == {
+                "type": "meeting.status",
+                "status": "completed",
+            }
+
+    async def verify() -> None:
+        engine = create_async_engine(database_url)
+        session_factory = async_sessionmaker(engine)
+        async with session_factory() as database_session:
+            speaker_label = await database_session.scalar(
+                select(Speaker.provider_speaker_id)
+                .join(SegmentVersion, SegmentVersion.speaker_id == Speaker.id)
+            )
+        await engine.dispose()
+        assert speaker_label == "speaker_2"
+
+    asyncio.run(verify())
+
+
+def test_realtime_silence_fails_instead_of_reporting_success(tmp_path: Path) -> None:
+    class SilentStream(FakeStream):
+        async def send_audio(
+            self, chunk: bytes
+        ) -> tuple[StreamingTranscriptionEvent, ...]:
+            assert chunk == b"audio-chunk"
+            return ()
+
+    app, sender, database_url = _app(tmp_path)
+    provider = FakeProvider()
+    provider.stream = SilentStream()
+    app.state.stt_provider = provider
+    with TestClient(app) as client:
+        session = _verified_session(client, sender)
+        meeting_id = _create_realtime_meeting(client, session["access_token"])
+        with client.websocket_connect(
+            f"/api/v1/realtime/{meeting_id}?access_token={session['access_token']}"
+        ) as websocket:
+            websocket.receive_json()
+            websocket.send_bytes(b"audio-chunk")
+            websocket.send_text('{"type":"recording.stop"}')
+            error = websocket.receive_json()
+            assert error["code"] == "STT_NO_SPEECH"
+            assert error["retryable"] is False
+
+    async def verify() -> None:
+        engine = create_async_engine(database_url)
+        session_factory = async_sessionmaker(engine)
+        async with session_factory() as database_session:
+            meeting = (await database_session.scalars(select(Meeting))).one()
+        await engine.dispose()
+        assert meeting.status == "failed"
+
+    asyncio.run(verify())
+
+
+def test_realtime_rejects_upload_meetings_and_completed_sessions(tmp_path: Path) -> None:
+    app, sender, _ = _app(tmp_path)
+    app.state.stt_provider = FakeProvider()
+    with TestClient(app) as client:
+        session = _verified_session(client, sender)
+        upload_meeting_id = _create_realtime_meeting(
+            client, session["access_token"], source_type="upload"
+        )
+        with client.websocket_connect(
+            f"/api/v1/realtime/{upload_meeting_id}?access_token={session['access_token']}"
+        ) as websocket:
+            mismatch = websocket.receive_json()
+            assert mismatch["code"] == "MEETING_SOURCE_TYPE_MISMATCH"
+
+        meeting_id = _create_realtime_meeting(client, session["access_token"])
+        with client.websocket_connect(
+            f"/api/v1/realtime/{meeting_id}?access_token={session['access_token']}"
+        ) as websocket:
+            websocket.receive_json()
+            websocket.send_bytes(b"audio-chunk")
+            websocket.receive_json()
+            websocket.receive_json()
+            websocket.send_text('{"type":"recording.stop"}')
+            assert websocket.receive_json()["status"] == "completed"
+        with client.websocket_connect(
+            f"/api/v1/realtime/{meeting_id}?access_token={session['access_token']}"
+        ) as websocket:
+            completed = websocket.receive_json()
+            assert completed["code"] == "MEETING_ALREADY_COMPLETED"
 
 
 def test_realtime_translation_only_translates_final_segments(tmp_path: Path) -> None:
@@ -204,7 +324,7 @@ def test_realtime_translation_only_translates_final_segments(tmp_path: Path) -> 
                 "text": "Translated: Bản cuối được lưu",
             }
             websocket.send_text('{"type":"recording.stop"}')
-            assert websocket.receive_json() == {"type": "meeting.status", "status": "processing"}
+            assert websocket.receive_json() == {"type": "meeting.status", "status": "completed"}
 
     assert len(translation.calls) == 1
     segments, source, target = translation.calls[0]
@@ -328,7 +448,7 @@ def test_realtime_translation_errors_do_not_interrupt_stt(tmp_path: Path) -> Non
             websocket.send_text('{"type":"recording.pause"}')
             websocket.send_text('{"type":"recording.resume"}')
             websocket.send_text('{"type":"recording.stop"}')
-            assert websocket.receive_json() == {"type": "meeting.status", "status": "processing"}
+            assert websocket.receive_json() == {"type": "meeting.status", "status": "completed"}
 
 
 def test_realtime_rejects_provider_without_streaming_capability(tmp_path: Path) -> None:
@@ -453,13 +573,15 @@ def _verified_session(client: TestClient, sender: CapturingEmailSender) -> dict[
     return verified.json()
 
 
-def _create_realtime_meeting(client: TestClient, token: object) -> str:
+def _create_realtime_meeting(
+    client: TestClient, token: object, *, source_type: str = "realtime"
+) -> str:
     response = client.post(
         "/api/v1/meetings",
         headers={"Authorization": f"Bearer {token}"},
         json={
             "title": "Realtime test",
-            "source_type": "realtime",
+            "source_type": source_type,
             "language_mode": "vi",
             "diarization_enabled": True,
         },

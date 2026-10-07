@@ -4,6 +4,77 @@ _Cập nhật lần cuối: 2026-10-07_
 
 ## Done
 
+- Cuộc họp and Lịch sử are now one screen. The unified view keeps the primary
+  create actions and adds debounced search, status/source filters, full meeting
+  metadata, media management and deletion. The duplicate sidebar item and old
+  page component are removed; `/history` remains a compatibility alias.
+
+- The meeting workspace has a second, screenshot-driven refinement pass. Its
+  transcript is now a compact continuous list instead of oversized cards,
+  segment actions stay in the content column and recede until hover/focus on
+  desktop, sidebar/right-panel widths are reduced, and duplicate Công cụ/Người
+  nói tabs are removed. The backend merge constraint is shown in Vietnamese.
+  Type-check/build, Docker health, HTTP smoke and light/dark browser checks pass.
+
+- The complete frontend presentation has been redesigned around a minimal,
+  action-first system. Navigation is reduced to three primary destinations plus
+  contextual meeting tools; duplicate recent/search/sidebar controls are gone.
+  Meeting list and creation are now separate views, page copy and secondary
+  panels are trimmed, and auth, upload, transcript, speakers, translation,
+  summary, export/share, history, settings and public share use one responsive
+  surface/form/status system. Light/dark modes and keyboard focus remain
+  supported. Type-check, production build, Docker build, desktop light/dark and
+  390px mobile browser checks pass.
+
+- Realtime AssemblyAI connection no longer fails validation when a meeting
+  title is supplied as a keyterm. Streaming `keyterms_prompt` is now encoded as
+  the JSON array required by the upstream handshake instead of repeated scalar
+  query parameters. All 14 provider adapter tests pass, the API image is
+  rebuilt/healthy, and a live open/close streaming handshake with a Vietnamese
+  keyterm succeeds without sending audio.
+
+- Google login is operational again end-to-end. The frontend now checks API
+  readiness before leaving the login page and shows a Vietnamese recovery
+  message instead of sending users to a connection-refused page. Docker
+  Desktop's stale local IPC directories were recoverably isolated and the full
+  Compose stack rebuilt; API/frontend health checks pass. The OAuth start route
+  returns a signed-state `307` to Google, and a browser click reaches Google's
+  `Sign in` page for `bocbang-web`.
+
+- Light/dark theme is now implemented across authenticated pages, auth flows
+  and public share pages. The accessible toggle updates `data-theme`, native
+  `color-scheme` and browser theme color; the explicit preference persists in
+  `localStorage` and synchronizes across tabs. A pre-render initializer avoids
+  a light-theme flash. Dark surfaces, forms, status elements and content cards
+  now have explicit contrast-safe overrides. Frontend type-check and production
+  build pass; browser checks confirmed light → reload and dark → reload state.
+
+- STT accuracy/meeting-state repair completed after rereading the BA and tracing
+  a real failed upload. The uploaded `IMG_9721.MP4` normalized to 14.02 seconds
+  of digital silence (`-91 dB`), explaining AssemblyAI's valid zero-word
+  response; the worker now rejects this before a paid call with
+  `MEDIA_NO_AUDIBLE_AUDIO`. Batch STT moved from deprecated
+  `universal-3-pro` to `universal-3-5-pro` plus `universal-2` fallback and now
+  respects the meeting diarization option/context. Realtime now declares PCM16,
+  uses Universal 3.6 `max_accuracy` with meeting turn timing, enables speaker
+  labels, applies final speaker revisions, records word confidence instead of
+  end-of-turn confidence, and reaches `completed` only after final provider
+  output; silence fails explicitly. Backend and frontend also enforce the BA's
+  separate realtime/upload modes instead of allowing a file upload into a
+  realtime meeting (the path used by the failed sample). Full backend suite
+  reports 58 passed; frontend type-check/build pass.
+
+- Local full-stack regression pass now covers the real Docker frontend/API,
+  PostgreSQL, Redis, worker and reconciler. Browser checks passed for login,
+  meeting creation/detail, History search, Settings, no-transcript states and
+  viewer permission guards. API smoke checks confirmed owner/editor/viewer ACL
+  (`200/403/401` boundaries). Fixed export integration-test isolation from an
+  inherited Redis environment, disabled translation/summary/export without a
+  transcript, blocked viewer uploads/exports in the UI, stopped repeated
+  export-completion state updates, and upgraded
+  `source-map-js` to the patched release. Backend is green at 54 tests;
+  frontend type-check/build and `npm audit` pass with zero vulnerabilities.
+
 - Realtime recording now supports optional, transient VI ↔ EN translation on
   the existing authenticated WebSocket. Final STT segments are translated on a
   separate per-session queue, rendered under their source segment, and can be
@@ -12,13 +83,14 @@ _Cập nhật lần cuối: 2026-10-07_
   Frontend production build and seven focused realtime WebSocket tests pass.
 
 - Realtime AssemblyAI now steers every stream to the meeting language with a
-  single `language_codes` value, keeps the language-specific verbatim prompt,
-  and defaults to Universal 3.6 in `balanced` mode. Unsupported languages fail
+  single `language_codes` value, uses meeting context, and defaults to Universal
+  3.6 in `max_accuracy` mode. Unsupported languages fail
   before an upstream connection is opened. Browser microphone capture now uses
   AudioWorklet, mono 16 kHz PCM16 chunks, browser audio cleanup constraints,
   stateful resampling and explicit pause/stop flushing. Docker frontend/API
   builds, 18 focused provider/realtime tests and HTTP readiness smoke checks
-  passed; the full backend suite has one unrelated export/queue test failure.
+  passed; the formerly failing export/queue test is now isolated and the full
+  backend suite passes.
 
 - Added a local Docker Compose stack for the React frontend, PostgreSQL, Redis,
   Alembic migrations, API, worker and reconciler. Another machine needs only
@@ -77,12 +149,14 @@ _Cập nhật lần cuối: 2026-10-07_
 - LLM summary và dịch segment VI ↔ EN có thể dùng Groq làm primary hoặc
   fallback sau Gemini qua biến môi trường backend; key Groq không bao giờ được
   gửi ra frontend.
-- Xác minh frontend gần nhất: `npm.cmd run build` thành công sau Phase 2.
+- Xác minh frontend gần nhất: `npm.cmd run check`, production build và Docker
+  image build đều thành công sau browser regression ngày 2026-10-07.
 
 ## In progress
 
-- Chưa có lượt kiểm thử browser/E2E với backend/provider thật cho các luồng
-  realtime, upload processing, translation, summary, export và public share.
+- Chưa chạy lượt microphone realtime mới có tính phí sau các sửa đổi STT. Hai
+  transcript upload provider đã được đọc lại và đều xác nhận file nguồn im lặng;
+  chưa có mẫu tiếng Việt có lời nói rõ để đo WER/latency sau sửa đổi.
 
 ## Next
 
@@ -90,30 +164,21 @@ _Cập nhật lần cuối: 2026-10-07_
    `limit/offset` và server-side filtering nhưng chưa trả tổng số/cursor.
 2. Chốt và thiết kế migration/API cho default language, diarization, số điện
    thoại, storage/retention metadata trước khi thêm các field settings còn lại.
-3. Mở rộng public share contract: endpoint capability-link hiện chỉ trả meeting
-   metadata + permission; cần read-only transcript/summary/translation scoped
-   by token để share page có thể hiển thị nội dung nhạy cảm an toàn.
-4. Implement `AudioPlayer` đồng bộ segment against the authenticated local
-   proxy / short-lived S3 playback URL. Không fake player ở frontend.
-5. Chạy browser/microphone E2E với AssemblyAI thật trên các mẫu tiếng Việt rõ,
+3. Chạy browser/microphone E2E với AssemblyAI thật trên các mẫu tiếng Việt rõ,
    có tiếng ồn nhẹ và có thuật ngữ tiếng Anh xen kẽ; ghi nhận accuracy/latency.
-6. Chạy backend `pytest`, `ruff check .`, Alembic migration validation và
-   browser E2E trên standard CPython + isolated PostgreSQL.
+4. Bổ sung frontend component/E2E tests tự động cho permission và trạng thái
+   thiếu transcript; hiện các ca này đã được browser regression thủ công.
+5. Dọn repository-wide Ruff debt để có thể bật lint toàn bộ backend làm quality
+   gate; test file export vừa sửa đã qua Ruff riêng.
 
 ## Blockers / risks
 
-- Docker Engine is now reachable with elevated Docker access; the frontend
-  container is verified. Full-stack migration/API/worker/upload/export runtime
-  checks remain pending.
-
 - Provider credentials đã được cấu hình trong môi trường local, nhưng chưa chạy
-  browser/microphone E2E có tính phí với AssemblyAI sau thay đổi language
-  steering; không coi unit tests hoặc handshake giả lập là xác minh accuracy.
-- Public share chưa thể công khai transcript hoặc AI result vì backend không
-  cấp token-scoped result endpoints; không được mở endpoint authenticated hiện
-  có mà không thiết kế ACL riêng.
-- Audio playback BA vẫn bị chặn bởi thiếu media stream/download contract.
-- Backend test/lint có thể cần standard CPython và database độc lập tùy môi
-  trường local/deploy; không coi frontend build là E2E verification.
-- Browser automation was unavailable in the current agent environment; visual
-  comparison is recorded as static QA, not an interactive acceptance result.
+  browser/microphone E2E có tính phí với AssemblyAI sau thay đổi model/context/
+  diarization; không coi unit tests hoặc handshake giả lập là xác minh accuracy.
+- Upload → STT, authenticated audio playback, provider translation/summary and
+  generated export download were not exercised against paid providers in this
+  pass. Their contracts/unit tests pass, but live quality and latency remain a
+  release risk.
+- Repository-wide Ruff is still red on pre-existing formatting/style debt even
+  though the full backend pytest suite is green.

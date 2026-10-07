@@ -1,4 +1,6 @@
 import asyncio
+import wave
+from array import array
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -8,6 +10,21 @@ from app.core.config import Settings
 from app.db.base import Base
 from app.main import create_app
 from app.services.media import MediaService
+from app.services.media_worker import _has_audible_pcm
+
+
+def test_silent_pcm_is_rejected_before_stt(tmp_path: Path) -> None:
+    silent = tmp_path / "silent.wav"
+    audible = tmp_path / "audible.wav"
+    with wave.open(str(silent), "wb") as output:
+        output.setparams((1, 2, 16_000, 0, "NONE", "not compressed"))
+        output.writeframes(array("h", [0] * 16_000).tobytes())
+    with wave.open(str(audible), "wb") as output:
+        output.setparams((1, 2, 16_000, 0, "NONE", "not compressed"))
+        output.writeframes(array("h", [0, 100, -100] * 100).tobytes())
+
+    assert _has_audible_pcm(silent) is False
+    assert _has_audible_pcm(audible) is True
 
 
 class CapturingEmailSender:
@@ -136,6 +153,22 @@ def test_media_rejects_unsupported_or_oversized_uploads(tmp_path: Path) -> None:
     with TestClient(app) as client:
         owner = _verified_session(client, sender, "owner@example.com", "Owner")
         headers = _headers(owner)
+        realtime = client.post(
+            "/api/v1/meetings",
+            headers=headers,
+            json={
+                "title": "Realtime only",
+                "source_type": "realtime",
+                "language_mode": "vi",
+            },
+        )
+        wrong_mode = client.post(
+            f"/api/v1/meetings/{realtime.json()['id']}/media",
+            headers=headers,
+            files={"file": ("recording.wav", b"a", "audio/wav")},
+        )
+        assert wrong_mode.status_code == 409
+        assert wrong_mode.json()["code"] == "MEETING_SOURCE_TYPE_MISMATCH"
         meeting_id = _create_meeting(client, headers)
         unsupported = client.post(
             f"/api/v1/meetings/{meeting_id}/media",

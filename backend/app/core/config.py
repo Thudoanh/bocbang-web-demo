@@ -79,11 +79,14 @@ class Settings(BaseSettings):
     storage_presigned_url_ttl_seconds: int = 300
     stt_provider: str | None = None
     stt_api_key: str | None = None
-    stt_model: str = "universal-3-pro"
+    stt_model: str = "universal-3-5-pro"
+    stt_fallback_model: str | None = "universal-2"
     assemblyai_api_base_url: str = "https://api.assemblyai.com/v2"
     assemblyai_streaming_base_url: str = "wss://streaming.assemblyai.com/v3/ws"
     assemblyai_streaming_model: str = "universal-3-6-pro"
-    assemblyai_streaming_mode: Literal["min_latency", "balanced", "max_accuracy"] = "balanced"
+    assemblyai_streaming_mode: Literal["min_latency", "balanced", "max_accuracy"] = "max_accuracy"
+    assemblyai_streaming_min_turn_silence_ms: int = 560
+    assemblyai_streaming_max_turn_silence_ms: int = 2_000
     stt_poll_interval_seconds: float = 2.0
     stt_poll_timeout_seconds: int = 1800
     translation_provider: str | None = None
@@ -144,6 +147,8 @@ class Settings(BaseSettings):
         "worker_reconcile_interval_seconds",
         "worker_reconcile_batch_size",
         "worker_delivery_timeout_seconds",
+        "assemblyai_streaming_min_turn_silence_ms",
+        "assemblyai_streaming_max_turn_silence_ms",
     )
     @classmethod
     def validate_positive_worker_setting(cls, value: int) -> int:

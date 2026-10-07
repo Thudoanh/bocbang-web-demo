@@ -14,6 +14,7 @@ from app.providers.assemblyai import (
     _stream_event,
 )
 from app.providers.contracts import (
+    BatchTranscriptionOptions,
     LLMCapabilities,
     LLMProviderError,
     StreamingOptions,
@@ -72,9 +73,24 @@ def test_assemblyai_batch_sends_selected_language(tmp_path) -> None:
         Settings(_env_file=None, stt_api_key="key", media_storage_path=tmp_path),
         client=client,
     )
-    result = asyncio.run(provider.transcribe_file(source, "vi"))
+    result = asyncio.run(
+        provider.transcribe_file(
+            source,
+            BatchTranscriptionOptions(
+                language="vi",
+                diarization=False,
+                context="Họp dự án Bóc Băng",
+                keyterms=("Bóc Băng",),
+            ),
+        )
+    )
     request = client.posts[1][1]["json"]
-    assert isinstance(request, dict) and request["language_code"] == "vi"
+    assert isinstance(request, dict)
+    assert request["language_code"] == "vi"
+    assert request["speech_models"] == ["universal-3-5-pro", "universal-2"]
+    assert request["speaker_labels"] is False
+    assert request["keyterms_prompt"] == ["Bóc Băng"]
+    assert "Họp dự án Bóc Băng" in str(request["prompt"])
     assert result.language == "vi"
 
 
@@ -237,22 +253,32 @@ def test_assemblyai_stream_uses_configured_model_waits_for_begin_and_termination
             "wss://streaming.test/v3/ws",
             "universal-3-6-pro",
             "balanced",
-            StreamingOptions(language="vi", diarization=True),
+            StreamingOptions(
+                language="vi",
+                diarization=True,
+                keyterms=("Bóc Băng", "Bóc Băng"),
+            ),
         )
         query = parse_qs(urlparse(captured_url).query)
         assert query["speech_model"] == ["universal-3-6-pro"]
         assert query["mode"] == ["balanced"]
         assert query["language_codes"] == ["vi"]
+        assert query["encoding"] == ["pcm_s16le"]
+        assert query["speaker_labels"] == ["true"]
+        assert query["min_turn_silence"] == ["560"]
+        assert query["max_turn_silence"] == ["2000"]
+        assert query["keyterms_prompt"] == ['["Bóc Băng"]']
         assert query["prompt"] == [
-            "Transcribe Vietnamese. Transcribe verbatim with standard punctuation. "
-            "Keep the spoken language and do not translate it."
+            "A Vietnamese business meeting with multiple speakers."
         ]
 
         await websocket.incoming.put(json.dumps({
             "type": "Turn",
             "transcript": "Xin chào",
+            "turn_order": 3,
+            "speaker_label": "A",
             "end_of_turn": True,
-            "words": [{"start": 0, "end": 800}],
+            "words": [{"text": "Xin chào", "start": 0, "end": 800, "confidence": 0.88}],
             "end_of_turn_confidence": 0.96,
         }))
         await asyncio.sleep(0)
@@ -260,7 +286,24 @@ def test_assemblyai_stream_uses_configured_model_waits_for_begin_and_termination
         assert len(events) == 1
         assert events[0].type == "final"
         assert events[0].language == "vi"
-        assert events[0].segment.confidence == 0.96
+        assert events[0].provider_segment_id == "3"
+        assert events[0].segment.speaker_label == "A"
+        assert events[0].segment.confidence == 0.88
+
+        await websocket.incoming.put(json.dumps({
+            "type": "SpeakerRevision",
+            "revisions": [{
+                "turn_order": 3,
+                "speaker_label": "B",
+                "words": [{"text": "Xin chào", "start": 0, "end": 800}],
+            }],
+        }))
+        await asyncio.sleep(0)
+        revisions = await stream.pause()
+        assert len(revisions) == 1
+        assert revisions[0].type == "speaker_revision"
+        assert revisions[0].provider_segment_id == "3"
+        assert revisions[0].segment.speaker_label == "B"
 
         closing = asyncio.create_task(stream.close())
         await asyncio.sleep(0)
@@ -329,8 +372,10 @@ def test_assemblyai_stream_rejects_unsupported_language_before_connect(monkeypat
 
 def test_assemblyai_streaming_defaults_and_mode_validation() -> None:
     settings = Settings(_env_file=None)
+    assert settings.stt_model == "universal-3-5-pro"
+    assert settings.stt_fallback_model == "universal-2"
     assert settings.assemblyai_streaming_model == "universal-3-6-pro"
-    assert settings.assemblyai_streaming_mode == "balanced"
+    assert settings.assemblyai_streaming_mode == "max_accuracy"
 
     with pytest.raises(ValueError):
         Settings(_env_file=None, assemblyai_streaming_mode="fastest")

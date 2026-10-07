@@ -142,10 +142,11 @@ loaded from the meeting's trusted current transcript, and results are not
 persisted. The existing asynchronous translation REST APIs remain unchanged.
 
 Only normalized `transcript.final` results create `TranscriptVersion` and
-`SegmentVersion` rows; partial results are socket-only. Stopping or disconnecting
-changes an active meeting to `processing`, not `completed`; a non-retryable STT
-provider error changes it to `failed`. Realtime sessions do not fabricate or
-complete upload jobs.
+`SegmentVersion` rows; partial results are socket-only. An explicit stop waits
+for the provider's final turns and speaker revisions, then changes a meeting
+with transcript content to `completed`. A disconnect leaves the meeting in
+`processing` so it can reconnect; no detected speech and non-retryable provider
+errors change it to `failed`. Realtime sessions do not fabricate upload jobs.
 
 ## Production provider adapters
 
@@ -154,7 +155,10 @@ realtime STT. The media worker downloads an object to a temporary file,
 normalizes it to mono PCM WAV at 16 kHz using `ffmpeg`, stores the normalized object, and persists normalized STT
 segments and speaker labels. The browser sends 16 kHz mono PCM16 over the API
 WebSocket; the AssemblyAI credential always stays on the server. `ffmpeg` and
-`ffprobe` must both be present on PATH.
+`ffprobe` must both be present on PATH. Digital-silent normalized tracks are
+rejected before a paid STT request with `MEDIA_NO_AUDIBLE_AUDIO`. Upload media
+is accepted only for `source_type=upload`; the realtime WebSocket accepts only
+`source_type=realtime`, and a completed realtime meeting cannot be reopened.
 
 Set `TRANSLATION_PROVIDER=gemini` with `TRANSLATION_API_KEY` (or `LLM_API_KEY`)
 for segment-aligned VI ↔ EN translations. To fall back to Groq for translation,
@@ -167,12 +171,15 @@ To fall back from Gemini to Groq, set `LLM_FALLBACK_PROVIDER=groq` and provide
 `GROQ_API_KEY`. Groq is called only after the primary provider returns an
 error. `GROQ_MODEL` defaults to `openai/gpt-oss-20b` and can be overridden.
 Groq may also be the primary summary provider with `LLM_PROVIDER=groq`.
-`ASSEMBLYAI_STREAMING_MODEL` defaults to `universal-3-6-pro` and is independent
-from the batch `STT_MODEL`. `ASSEMBLYAI_STREAMING_MODE` defaults to `balanced`
-and accepts `min_latency`, `balanced`, or `max_accuracy`. Realtime sessions send
-the meeting language as a single `language_codes` value and retain a
-language-specific transcription prompt, preventing a Vietnamese meeting from
-silently falling back to English-biased automatic recognition. Summary requests
+`STT_MODEL` defaults to `universal-3-5-pro` with `universal-2` as the ordered
+fallback. `ASSEMBLYAI_STREAMING_MODEL` defaults to `universal-3-6-pro` and is
+independent from the batch model. `ASSEMBLYAI_STREAMING_MODE` defaults to
+`max_accuracy`; meeting turn silence defaults to 560/2000 ms. Realtime sessions
+declare PCM16 encoding, steer to the selected language, enable diarization only
+when requested, and use meeting title/description as provider context. Final
+speaker revisions update the persisted STT segment before completion. Transcript
+confidence is averaged from word confidence and never from turn-end confidence.
+Summary requests
 require `output_language` set to `vi` or `en`.
 `ASSEMBLYAI_API_BASE_URL`, `ASSEMBLYAI_STREAMING_BASE_URL`, and
 `GEMINI_API_BASE_URL` / `GROQ_API_BASE_URL` default to their official endpoints

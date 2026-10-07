@@ -6,6 +6,8 @@ import asyncio
 import os
 import subprocess
 import tempfile
+import wave
+from array import array
 from pathlib import Path
 from uuid import UUID
 
@@ -17,7 +19,7 @@ from app.db.session import Database
 from app.models.enums import MeetingStatus
 from app.models.media import Job, MediaFile
 from app.models.meeting import Meeting
-from app.providers.contracts import STTProvider, STTProviderError
+from app.providers.contracts import BatchTranscriptionOptions, STTProvider, STTProviderError
 from app.providers.storage import MediaStorage
 from app.services.transcripts import TranscriptService
 from app.workers import lifecycle
@@ -56,7 +58,25 @@ class MediaProcessingWorker:
                     await self._storage.put_file(normalized, normalized_key)
                     media.normalized_storage_key, job.progress = normalized_key, 45
                     await session.commit()
-                result = await self._stt.transcribe_file(normalized, meeting.language_mode)
+                if not await asyncio.to_thread(_has_audible_pcm, normalized):
+                    raise STTProviderError(
+                        "The uploaded media contains a silent audio track.",
+                        code="MEDIA_NO_AUDIBLE_AUDIO",
+                        retryable=False,
+                    )
+                result = await self._stt.transcribe_file(
+                    normalized,
+                    BatchTranscriptionOptions(
+                        language=meeting.language_mode,
+                        diarization=meeting.diarization_enabled,
+                        context=". ".join(
+                            item.strip()
+                            for item in (meeting.title, meeting.description or "")
+                            if item.strip()
+                        ),
+                        keyterms=(meeting.title,),
+                    ),
+                )
                 if not result.segments:
                     raise ValueError("STT provider returned no transcript segments.")
                 await TranscriptService(session).replace_stt_batch(
@@ -149,3 +169,19 @@ class MediaProcessingWorker:
             return True
         await lifecycle.failed(session, job, code, message, retryable)
         return False
+
+
+def _has_audible_pcm(source: Path, minimum_peak: int = 8) -> bool:
+    """Reject effectively digital-silent PCM16 WAV files before a paid STT call."""
+    try:
+        with wave.open(str(source), "rb") as audio:
+            if audio.getsampwidth() != 2:
+                raise ValueError("Normalized media must be PCM16 WAV.")
+            while chunk := audio.readframes(16_000):
+                samples = array("h")
+                samples.frombytes(chunk)
+                if samples and max(abs(sample) for sample in samples) >= minimum_peak:
+                    return True
+    except (EOFError, wave.Error) as exc:
+        raise ValueError("Normalized media is not a valid PCM WAV file.") from exc
+    return False

@@ -19,6 +19,7 @@ import httpx
 
 from app.core.config import Settings
 from app.providers.contracts import (
+    BatchTranscriptionOptions,
     StreamingOptions,
     StreamingTranscriptionEvent,
     STTCapabilities,
@@ -34,10 +35,17 @@ class AssemblyAIProvider:
             raise ValueError("STT_API_KEY is required when STT_PROVIDER=assemblyai.")
         self._key = settings.stt_api_key
         self._model = settings.stt_model
+        self._fallback_model = settings.stt_fallback_model
         self._api_base_url = settings.assemblyai_api_base_url.rstrip("/")
         self._streaming_base_url = settings.assemblyai_streaming_base_url.rstrip("/")
         self._streaming_model = settings.assemblyai_streaming_model
         self._streaming_mode = settings.assemblyai_streaming_mode
+        self._streaming_min_turn_silence_ms = (
+            settings.assemblyai_streaming_min_turn_silence_ms
+        )
+        self._streaming_max_turn_silence_ms = (
+            settings.assemblyai_streaming_max_turn_silence_ms
+        )
         self._poll_interval = settings.stt_poll_interval_seconds
         self._poll_timeout = settings.stt_poll_timeout_seconds
         self._client = client
@@ -45,7 +53,9 @@ class AssemblyAIProvider:
     def capabilities(self) -> STTCapabilities:
         return STTCapabilities(True, True, True, True, True, frozenset({"vi", "en"}), True)
 
-    async def transcribe_file(self, source: Path, language: str | None = None) -> TranscriptionResult:
+    async def transcribe_file(
+        self, source: Path, options: BatchTranscriptionOptions
+    ) -> TranscriptionResult:
         if not source.is_file():
             raise STTProviderError("Normalized media is unavailable.", code="STT_MEDIA_UNAVAILABLE", retryable=False)
         owns_client = self._client is None
@@ -59,15 +69,26 @@ class AssemblyAIProvider:
             upload_url = self._response_json(upload).get("upload_url")
             if not isinstance(upload_url, str):
                 raise STTProviderError("AssemblyAI did not return an upload URL.", code="STT_RESULT_INVALID", retryable=False)
+            models = [self._model]
+            if self._fallback_model and self._fallback_model not in models:
+                models.append(self._fallback_model)
+            request: dict[str, object] = {
+                "audio_url": upload_url,
+                "speech_models": models,
+                "speaker_labels": options.diarization,
+            }
+            if options.language in {"vi", "en"}:
+                request["language_code"] = options.language
+            prompt = _transcription_prompt(options.language, options.context)
+            if prompt:
+                request["prompt"] = prompt
+            keyterms = _keyterms(options.keyterms)
+            if keyterms:
+                request["keyterms_prompt"] = keyterms
             submitted = await client.post(
                 f"{self._api_base_url}/transcript",
                 headers={"authorization": self._key},
-                json={
-                    "audio_url": upload_url,
-                    "speech_models": [self._model],
-                    "speaker_labels": True,
-                    **({"language_code": language} if language in {"vi", "en"} else {}),
-                },
+                json=request,
             )
             transcript_id = self._response_json(submitted).get("id")
             if not isinstance(transcript_id, str):
@@ -90,13 +111,15 @@ class AssemblyAIProvider:
             if owns_client:
                 await client.aclose()
 
-    async def open_stream(self, options: StreamingOptions) -> "AssemblyAIStream":
+    async def open_stream(self, options: StreamingOptions) -> AssemblyAIStream:
         return await AssemblyAIStream.connect(
             self._key,
             self._streaming_base_url,
             self._streaming_model,
             self._streaming_mode,
             options,
+            min_turn_silence_ms=self._streaming_min_turn_silence_ms,
+            max_turn_silence_ms=self._streaming_max_turn_silence_ms,
         )
 
     @staticmethod
@@ -132,23 +155,36 @@ class AssemblyAIStream:
         streaming_model: str,
         streaming_mode: str,
         options: StreamingOptions,
-    ) -> "AssemblyAIStream":
+        *,
+        min_turn_silence_ms: int = 560,
+        max_turn_silence_ms: int = 2_000,
+    ) -> AssemblyAIStream:
         websocket: Any | None = None
         try:
             import websockets
 
             language = _streaming_language_code(options.language)
-            query = urlencode(
-                {
-                    "sample_rate": 16000,
-                    "speech_model": streaming_model,
-                    "mode": streaming_mode,
-                    "format_turns": "true",
-                    "language_codes": [language],
-                    "prompt": _streaming_language_prompt(language),
-                },
-                doseq=True,
-            )
+            params: dict[str, object] = {
+                "sample_rate": 16000,
+                "encoding": options.audio_format or "pcm_s16le",
+                "speech_model": streaming_model,
+                "mode": streaming_mode,
+                "language_codes": [language],
+                "language_detection": "true",
+                "min_turn_silence": min_turn_silence_ms,
+                "max_turn_silence": max_turn_silence_ms,
+            }
+            if options.diarization:
+                params["speaker_labels"] = "true"
+            prompt = _transcription_prompt(language, options.context)
+            if prompt:
+                params["prompt"] = prompt
+            keyterms = _keyterms(options.keyterms)
+            if keyterms:
+                # The Streaming v3 handshake expects this query parameter to
+                # contain a JSON array, not repeated scalar query parameters.
+                params["keyterms_prompt"] = json.dumps(keyterms, ensure_ascii=False)
+            query = urlencode(params, doseq=True)
             websocket = await websockets.connect(
                 f"{streaming_base_url}?{query}",
                 additional_headers={"Authorization": api_key},
@@ -211,9 +247,7 @@ class AssemblyAIStream:
                             retryable=True,
                         )
                     return
-                event = _stream_event(payload, self._language)
-                if event is not None:
-                    self._events.append(event)
+                self._events.extend(_stream_events(payload, self._language))
         except asyncio.CancelledError:
             raise
         except json.JSONDecodeError:
@@ -328,12 +362,22 @@ def _stream_provider_error(
         retryable=retryable,
     )
 
-def _streaming_language_prompt(language: str) -> str:
+def _transcription_prompt(language: str, context: str | None = None) -> str:
     language_name = {"vi": "Vietnamese", "en": "English"}.get(language, language)
-    return (
-        f"Transcribe {language_name}. Transcribe verbatim with standard punctuation. "
-        "Keep the spoken language and do not translate it."
-    )
+    base = f"A {language_name} business meeting with multiple speakers."
+    detail = context.strip() if context else ""
+    return f"{base} {detail}".strip()[:1750]
+
+
+def _keyterms(values: tuple[str, ...]) -> list[str]:
+    cleaned: list[str] = []
+    for value in values:
+        term = value.strip()
+        if term and len(term) <= 50 and term.casefold() not in {item.casefold() for item in cleaned}:
+            cleaned.append(term)
+        if len(cleaned) == 100:
+            break
+    return cleaned
 
 
 def _streaming_language_code(language: str) -> str:
@@ -361,20 +405,115 @@ def _batch_result(payload: dict[str, Any]) -> TranscriptionResult:
             confidence = item.get("confidence")
             segments.append(TranscriptionSegment(start, end, text.strip(), str(label) if label is not None else None, float(confidence) if isinstance(confidence, (int, float)) else None))
     if not segments:
+        if not str(payload.get("text") or "").strip() and not payload.get("words"):
+            raise STTProviderError(
+                "No speech was detected in the uploaded media.",
+                code="STT_NO_SPEECH",
+                retryable=False,
+            )
         raise STTProviderError("AssemblyAI returned no timed transcript segments.", code="STT_RESULT_INVALID", retryable=False)
     language = str(payload.get("language_code") or "und").split("_")[0].lower()
     return TranscriptionResult(language, tuple(segments))
 
 
-def _stream_event(payload: Any, default_language: str = "und") -> StreamingTranscriptionEvent | None:
-    if not isinstance(payload, dict) or payload.get("type") != "Turn" or not str(payload.get("transcript", "")).strip():
-        return None
+def _stream_events(
+    payload: Any, default_language: str = "und"
+) -> tuple[StreamingTranscriptionEvent, ...]:
+    if not isinstance(payload, dict):
+        return ()
+    language = str(payload.get("language_code") or default_language)
+    if payload.get("type") == "SpeakerRevision":
+        events: list[StreamingTranscriptionEvent] = []
+        revisions = payload.get("revisions")
+        if not isinstance(revisions, list):
+            return ()
+        for revision in revisions:
+            if not isinstance(revision, dict):
+                continue
+            words = revision.get("words") if isinstance(revision.get("words"), list) else []
+            timing = _word_timing(words)
+            text = _words_text(words)
+            turn_order = revision.get("turn_order")
+            if timing is None or not text or turn_order is None:
+                continue
+            events.append(
+                StreamingTranscriptionEvent(
+                    "speaker_revision",
+                    language,
+                    TranscriptionSegment(
+                        timing[0],
+                        timing[1],
+                        text,
+                        speaker_label=_speaker_label(revision),
+                        confidence=_word_confidence(words),
+                    ),
+                    provider_segment_id=str(turn_order),
+                )
+            )
+        return tuple(events)
+    if payload.get("type") != "Turn" or not str(payload.get("transcript", "")).strip():
+        return ()
     words = payload.get("words") if isinstance(payload.get("words"), list) else []
-    first, last = (words[0], words[-1]) if words else ({}, {})
-    start, end = first.get("start", 0), last.get("end", max(1, int(first.get("start", 0)) + 1))
+    timing = _word_timing(words)
+    if timing is None:
+        return ()
+    turn_order = payload.get("turn_order")
+    return (
+        StreamingTranscriptionEvent(
+            "final" if payload.get("end_of_turn") else "partial",
+            language,
+            TranscriptionSegment(
+                timing[0],
+                timing[1],
+                str(payload["transcript"]).strip(),
+                speaker_label=_speaker_label(payload),
+                confidence=_word_confidence(words),
+            ),
+            provider_segment_id=str(turn_order) if turn_order is not None else None,
+        ),
+    )
+
+
+def _stream_event(
+    payload: Any, default_language: str = "und"
+) -> StreamingTranscriptionEvent | None:
+    """Compatibility helper for callers that expect a single normalized event."""
+    events = _stream_events(payload, default_language)
+    return events[0] if events else None
+
+
+def _word_timing(words: list[Any]) -> tuple[int, int] | None:
+    valid = [item for item in words if isinstance(item, dict)]
+    if not valid:
+        return None
+    start, end = valid[0].get("start"), valid[-1].get("end")
     if not isinstance(start, int) or not isinstance(end, int) or end <= start:
         return None
-    return StreamingTranscriptionEvent("final" if payload.get("end_of_turn") else "partial", str(payload.get("language_code") or default_language), TranscriptionSegment(start, end, str(payload["transcript"]).strip(), confidence=float(payload.get("end_of_turn_confidence", payload.get("confidence"))) if isinstance(payload.get("end_of_turn_confidence", payload.get("confidence")), (int, float)) else None))
+    return start, end
+
+
+def _word_confidence(words: list[Any]) -> float | None:
+    values = [
+        float(item["confidence"])
+        for item in words
+        if isinstance(item, dict) and isinstance(item.get("confidence"), (int, float))
+    ]
+    return sum(values) / len(values) if values else None
+
+
+def _speaker_label(payload: dict[str, Any]) -> str | None:
+    value = payload.get("speaker_label")
+    if value in {None, "", "PENDING", "UNKNOWN"}:
+        return None
+    return str(value)
+
+
+def _words_text(words: list[Any]) -> str:
+    return " ".join(
+        str(item.get("text") or item.get("word") or "").strip()
+        for item in words
+        if isinstance(item, dict) and str(item.get("text") or item.get("word") or "").strip()
+    ).strip()
 
 
 def build_assemblyai_provider(settings: Settings) -> AssemblyAIProvider:

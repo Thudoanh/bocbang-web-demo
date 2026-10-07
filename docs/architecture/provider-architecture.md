@@ -183,5 +183,11 @@ thì streaming. Provider có thể đổi mà không thay public frontend API.
 For realtime AssemblyAI, an AudioWorklet captures browser audio as 16 kHz mono
 PCM16 chunks and sends them to this API WebSocket. The API opens the upstream
 WebSocket with the API key, pins `language_codes` to the meeting language, and
-uses the configured streaming model/mode. No provider secret is exposed to the
-browser.
+uses the configured streaming model/mode. It explicitly declares `pcm_s16le`,
+uses meeting-oriented turn silence, JSON-serializes `keyterms_prompt` in the
+WebSocket query, enables speaker labels from the meeting option, and applies
+end-of-session speaker revisions before completion. Word
+confidence is normalized separately from endpoint confidence. Batch calls use
+`BatchTranscriptionOptions` so language, diarization, context and keyterms stay
+provider-neutral; digital-silent PCM is rejected before the provider call. No
+provider secret is exposed to the browser.

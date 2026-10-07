@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings
 from app.core.errors import ApiError
 from app.core.logging import get_logger
-from app.models.enums import JobStatus, MeetingPermission
+from app.models.enums import JobStatus, MeetingPermission, MeetingSourceType
 from app.models.media import Job, MediaFile
 from app.models.user import User
 from app.providers.storage import MediaStorage, StorageError, StorageNotFoundError
@@ -58,6 +58,12 @@ class MediaService:
 
     async def upload(self, meeting_id: UUID, user: User, upload: UploadFile) -> JobResponse:
         meeting, _ = await self._meetings.require_access(meeting_id, user, MeetingPermission.EDIT)
+        if meeting.source_type != MeetingSourceType.UPLOAD:
+            raise ApiError(
+                "MEETING_SOURCE_TYPE_MISMATCH",
+                "Media can only be uploaded to an upload meeting.",
+                409,
+            )
         filename, extension = self._validate_filename(upload.filename)
         self._reject_oversized_content_length(upload)
         temp_path: Path | None = None

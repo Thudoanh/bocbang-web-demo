@@ -4,6 +4,7 @@ export type RealtimeEvent =
   | { type: "session.ready"; provider: string; language: string }
   | { type: "transcript.partial"; language: string; start_ms: number; end_ms: number; text: string }
   | { type: "transcript.final"; language: string; start_ms: number; end_ms: number; text: string; logical_segment_id: string }
+  | { type: "transcript.speaker_revision"; logical_segment_id: string; speaker_label?: string }
   | { type: "meeting.status"; status: string }
   | { type: "error"; code: string; message: string; retryable: boolean }
   | { type: "translation.status"; enabled: boolean; source_language?: string; target_language?: string }

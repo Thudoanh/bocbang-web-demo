@@ -243,6 +243,26 @@ class TranscriptService:
         await self._session.refresh(stored)
         return stored
 
+    async def revise_stt_speaker(
+        self,
+        meeting: Meeting,
+        stored: SegmentVersion,
+        speaker_label: str | None,
+    ) -> None:
+        """Apply a provider's final speaker correction before user edits take over."""
+        if meeting.current_transcript_version_id != stored.transcript_version_id:
+            return
+        speaker_id = await self._speaker_for_label(meeting.id, speaker_label)
+        stored.speaker_id = speaker_id
+        current = await self._session.scalar(
+            select(CurrentSegment).where(
+                CurrentSegment.logical_segment_id == stored.logical_segment_id
+            )
+        )
+        if current is not None:
+            current.speaker_id = speaker_id
+        await self._session.flush()
+
     async def replace_stt_batch(
         self, meeting: Meeting, actor_id: UUID, segments: tuple[TranscriptionSegment, ...]
     ) -> None:

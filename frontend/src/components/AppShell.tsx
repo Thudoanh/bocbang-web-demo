@@ -1,25 +1,78 @@
-import { useEffect, useState, type ReactNode } from "react";
-import { meetingsApi } from "../api/endpoints";
+import type { ReactNode } from "react";
 import { useAuth } from "../auth/AuthContext";
-import { useAsync } from "../hooks/useAsync";
-import { Icon, statusLabel, type IconName } from "./ui";
+import { ThemeToggle } from "./ThemeToggle";
+import { Icon, type IconName } from "./ui";
 
-const nav: Array<[string, IconName, string]> = [["/meetings", "meeting", "Danh sách phiên họp"], ["/history", "history", "Lịch sử bản ghi"], ["/settings", "profile", "Hồ sơ cá nhân"]];
-function pageLabel(path: string) { if (path === "/history") return "Lịch sử bản ghi"; if (path === "/settings") return "Hồ sơ cá nhân"; if (path.includes("/upload")) return "Tải lên & xử lý file"; if (path.match(/^\/meetings\/[^/]+$/)) return "Phiên họp / Phát lại"; return path === "/meetings/create" ? "Tạo phiên họp" : "Danh sách phiên họp"; }
+const primaryNav: Array<[string, IconName, string]> = [
+  ["/meetings", "meeting", "Cuộc họp"],
+  ["/settings", "profile", "Tài khoản"],
+];
+
+function pageLabel(path: string) {
+  if (path === "/history") return "Cuộc họp";
+  if (path === "/settings") return "Tài khoản";
+  if (path === "/meetings/create") return "Cuộc họp mới";
+  if (path.includes("/upload")) return "Tải bản ghi";
+  if (path.includes("/summary")) return "Tóm tắt";
+  if (path.includes("/speakers")) return "Người nói";
+  if (path.includes("/translation")) return "Bản dịch";
+  if (path.includes("/export-share")) return "Xuất & chia sẻ";
+  if (path.match(/^\/meetings\/[^/]+$/)) return "Bản ghi";
+  return "Cuộc họp";
+}
 
 export function AppShell({ children }: { children: ReactNode }) {
-  const { user, logout } = useAuth(); const [query, setQuery] = useState(""); const [search, setSearch] = useState(""); const [online, setOnline] = useState(() => navigator.onLine); const recent = useAsync(() => meetingsApi.list({ limit: 20, q: search || undefined }), [search]); const path = window.location.pathname;
-  useEffect(() => { const timer = window.setTimeout(() => setSearch(query.trim()), 250); return () => window.clearTimeout(timer); }, [query]);
-  useEffect(() => { const update = () => setOnline(navigator.onLine); window.addEventListener("online", update); window.addEventListener("offline", update); return () => { window.removeEventListener("online", update); window.removeEventListener("offline", update); }; }, []);
-  const currentMeetingMatch = path.match(/^\/meetings\/([^/]+)/)?.[1]; const currentMeeting = currentMeetingMatch === "create" ? undefined : currentMeetingMatch;
-  const contextualNav: Array<[string, IconName, string]> = currentMeeting ? [[`/meetings/${currentMeeting}/summary`, "summary", "Tóm tắt AI & Biên bản"], [`/meetings/${currentMeeting}/speakers`, "speaker", "Quản lý người nói"], [`/meetings/${currentMeeting}/translation`, "translate", "Dịch thuật song ngữ"], [`/meetings/${currentMeeting}/export-share`, "export", "Xuất & chia sẻ"]] : [];
-  const initials = user?.full_name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "BB";
-  return <div className="shell"><aside className="sidebar">
-    <a className="brand" href="/meetings" aria-label="Bóc Băng AI"><span className="brand-mark"><Icon name="brand" /></span><span><strong>Bóc Băng AI</strong><small>Audio Intelligence · v2.4</small></span></a>
-    <div className="side-actions"><a className="btn btn-dark" href="/meetings/create"><Icon name="plus" />Tạo phiên họp mới</a><a className="btn btn-light" href="/meetings/create?mode=upload"><Icon name="upload" />Tải lên bản ghi</a></div>
-    <label className="sidebar-search"><Icon name="search" /><input aria-label="Tìm kiếm bản ghi" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Tìm kiếm bản ghi..." /></label>
-    <section className="sidebar-section recent-meetings" aria-label="Danh mục cuộc họp" tabIndex={0}><span className="side-label">{search ? "KẾT QUẢ TÌM KIẾM" : "DANH MỤC CUỘC HỌP"}</span>{recent.data?.map((meeting) => <a key={meeting.id} className={path.includes(meeting.id) ? "selected" : ""} href={`/meetings/${meeting.id}`}><span><Icon name="meeting" /></span><b>{meeting.title}</b><small>{meeting.duration_ms ? `${Math.round(meeting.duration_ms / 60000)} phút` : statusLabel(meeting.status)}</small></a>)}{recent.data && recent.data.length === 0 && <p className="sidebar-empty">{search ? "Không tìm thấy bản ghi phù hợp." : "Chưa có phiên họp gần đây."}</p>}{search && <a className="sidebar-history-link" href="/history">Mở lịch sử để lọc thêm</a>}</section>
-    <nav aria-label="Công cụ và quản lý" className="sidebar-section tools-nav" tabIndex={0}><span className="side-label">CÔNG CỤ &amp; QUẢN LÝ</span>{contextualNav.map(([href, icon, label]) => <a className={path === href ? "selected" : ""} href={href} key={href}><span><Icon name={icon} /></span>{label}</a>)}{nav.map(([href, icon, label]) => <a className={path === href ? "selected" : ""} href={href} key={href}><span><Icon name={icon} /></span>{label}</a>)}</nav>
-    <div className="account"><a className="account-profile" href="/settings"><span className="person-avatar">{initials}</span><span><strong>{user?.full_name}</strong><small>{user?.email}</small></span><i>•••</i></a><button className="logout-link" type="button" onClick={() => void logout()}>Đăng xuất</button></div>
-  </aside><main><header className="topbar"><div className="top-left"><a className="back-mark" href="/meetings" aria-label="Về danh sách phiên họp"><Icon name="back" /></a><span className="top-divider" /><span>{pageLabel(path)}</span></div><span className={`environment ${online ? "" : "offline"}`} role="status" aria-live="polite" title={online ? "Trình duyệt đang có kết nối mạng." : "Trình duyệt đang ngoại tuyến."}><i /> {online ? "Đã kết nối" : "Ngoại tuyến"}</span><nav className="top-icons" aria-label="Tài khoản và cài đặt"><a href="/settings" aria-label="Mở cài đặt" title="Cài đặt"><Icon name="settings" /></a><a href="/settings" aria-label="Mở hồ sơ cá nhân" title="Hồ sơ cá nhân"><Icon name="profile" /></a></nav></header><div className="content">{children}</div></main></div>;
+  const { user, logout } = useAuth();
+  const path = window.location.pathname;
+  const meetingMatch = path.match(/^\/meetings\/([^/]+)/)?.[1];
+  const meetingId = meetingMatch === "create" ? undefined : meetingMatch;
+  const initials = user?.full_name
+    .split(/\s+/)
+    .map((part) => part[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase() || "BB";
+  const meetingNav: Array<[string, IconName, string]> = meetingId ? [
+    [`/meetings/${meetingId}`, "meeting", "Bản ghi"],
+    [`/meetings/${meetingId}/summary`, "summary", "Tóm tắt"],
+    [`/meetings/${meetingId}/speakers`, "speaker", "Người nói"],
+    [`/meetings/${meetingId}/translation`, "translate", "Dịch"],
+    [`/meetings/${meetingId}/export-share`, "export", "Xuất"],
+  ] : [];
+
+  return <div className="shell">
+    <aside className="sidebar">
+      <a className="brand" href="/meetings" aria-label="Bóc Băng">
+        <span className="brand-mark"><Icon name="brand" /></span>
+        <strong>Bóc Băng</strong>
+      </a>
+      <a className="btn btn-dark side-create" href="/meetings/create">
+        <Icon name="plus" /> Mới
+      </a>
+      <nav className="primary-nav" aria-label="Điều hướng chính">
+        {primaryNav.map(([href, icon, label]) => <a className={path === href || (href === "/meetings" && path === "/history") ? "selected" : ""} href={href} key={href}><Icon name={icon} />{label}</a>)}
+      </nav>
+      {meetingNav.length > 0 && <nav className="context-nav" aria-label="Công cụ cuộc họp">
+        <span className="side-label">ĐANG MỞ</span>
+        {meetingNav.map(([href, icon, label]) => <a className={path === href ? "selected" : ""} href={href} key={href}><Icon name={icon} />{label}</a>)}
+      </nav>}
+      <div className="account">
+        <a className="account-profile" href="/settings">
+          <span className="person-avatar">{initials}</span>
+          <span><strong>{user?.full_name}</strong><small>{user?.email}</small></span>
+        </a>
+        <button className="logout-link" type="button" onClick={() => void logout()}>Thoát</button>
+      </div>
+    </aside>
+    <main>
+      <header className="topbar">
+        <strong>{pageLabel(path)}</strong>
+        <div className="top-icons">
+          <ThemeToggle />
+          <a className="top-avatar" href="/settings" aria-label="Mở tài khoản">{initials}</a>
+        </div>
+      </header>
+      <div className="content">{children}</div>
+    </main>
+  </div>;
 }

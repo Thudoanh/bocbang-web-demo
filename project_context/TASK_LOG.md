@@ -12,6 +12,135 @@ Mục mới nhất được thêm ở đầu file. Dùng format ngắn dưới �
 - Follow-up / blocker: ...
 ```
 
+## 2026-10-07 — Merge meetings and history
+
+- Status: done
+- Scope: Consolidated the meeting list and history management into one
+  searchable/filterable Cuộc họp screen and removed the duplicate history
+  navigation/page while preserving `/history` as a compatible route alias.
+- Changed: `frontend/src/pages/MeetingsPage.tsx`, removed
+  `frontend/src/pages/HistoryPage.tsx`, updated `App.tsx`, `AppShell.tsx`,
+  `styles.css`, and project context.
+- Verified: React/TypeScript check and Vite production build pass; rebuilt
+  Compose frontend/API are healthy; `git diff --check` passes.
+- Follow-up / blocker: None.
+
+## 2026-10-07 — Compact transcript workspace refinement
+
+- Status: done
+- Scope: Refined the authenticated meeting workspace from the user's desktop
+  screenshot: compacted navigation and recording controls, converted separate
+  transcript cards into one continuous list, fixed misplaced segment actions,
+  removed duplicate side-panel tools, and localized the merge validation error.
+- Changed: `frontend/src/pages/MeetingPage.tsx`,
+  `frontend/src/app/styles.css`, project context.
+- Verified: TypeScript check and Vite production build pass; Compose frontend
+  and API are healthy; localhost returns HTTP 200; browser light/dark visual
+  checks pass; `git diff --check` passes.
+- Follow-up / blocker: Authenticated browser inspection still requires the user
+  to sign in; the revised transcript layout was validated from the supplied
+  screenshot, DOM structure, responsive rules and production build.
+
+## 2026-10-07 — Minimal action-first interface redesign
+
+- Status: done
+- Scope: Reworked the full frontend visual system and information hierarchy so
+  each screen presents one obvious next action with substantially less helper
+  copy and duplicated navigation.
+- Changed: `frontend/src/app/styles.css`, `components/AppShell.tsx`, `ui.tsx`,
+  auth/meeting/history/upload/settings/speakers/translation/summary/export/share
+  pages, and project context.
+- Verified: React/TypeScript check and Vite production build pass; Docker
+  frontend/API are healthy; browser QA passes for login/register in light and
+  dark themes and at a 390×844 mobile viewport; `git diff --check` passes.
+- Follow-up / blocker: Authenticated content keeps the existing API behavior and
+  was covered by type/build review; final visual preference can be refined from
+  user feedback without another structural rewrite.
+
+## 2026-10-07 — Realtime keyterms handshake repair
+
+- Status: done
+- Scope: Reproduced AssemblyAI's `Invalid 'keyterms_prompt' ... Invalid JSON
+  array` rejection and corrected Streaming v3 query serialization while
+  preserving the existing cleaned/deduplicated provider-neutral keyterms.
+- Changed: `backend/app/providers/assemblyai.py`,
+  `backend/tests/test_provider_adapters.py`, provider architecture docs and
+  project context.
+- Verified: all 14 provider adapter tests pass; rebuilt API is healthy; a live
+  AssemblyAI Vietnamese streaming handshake with `Bóc Băng` as a keyterm opens
+  and terminates cleanly without sending audio.
+- Follow-up / blocker: Retry recording in the browser to validate microphone
+  capture and speech output; the provider connection blocker itself is cleared.
+
+## 2026-10-07 — Google OAuth login and Docker IPC recovery
+
+- Status: done
+- Scope: Reproduced the Google-login failure, identified the unavailable API as
+  the first broken boundary, added frontend readiness/error handling, recovered
+  Docker Desktop from cascading stale AF_UNIX IPC sockets, rebuilt the full
+  stack, and verified the OAuth handoff without entering account credentials.
+- Changed: `frontend/src/auth/AuthContext.tsx`,
+  `frontend/src/pages/AuthPage.tsx`, project context. Host runtime directories
+  were preserved as timestamped `.stale-*` backups rather than deleted.
+- Verified: frontend type-check and production build pass; Compose API/frontend,
+  PostgreSQL and Redis are healthy; `/api/v1/ready` returns `200`; the OAuth
+  start route returns `307` to `accounts.google.com` with the expected query
+  fields and signed state cookie; browser click reaches Google's `Sign in` page
+  for `bocbang-web`.
+- Follow-up / blocker: The user must enter their own Google account credentials
+  to exercise Google's callback and create/login the local user; no credential
+  entry was automated.
+
+## 2026-10-07 — Persistent light/dark theme
+
+- Status: done
+- Scope: Added a real application-wide light/dark theme, accessible controls on
+  auth/app/public-share surfaces, persistence, cross-tab sync and no-flash
+  initialization; corrected dark-mode contrast for headings and primary actions.
+- Changed: `frontend/index.html`, `frontend/src/theme/ThemeContext.tsx`,
+  `frontend/src/components/ThemeToggle.tsx`, `AppShell.tsx`, `ui.tsx`,
+  `AuthPage.tsx`, `SharePage.tsx`, `styles.css`, project context.
+- Verified: frontend TypeScript check and Vite production build pass; browser
+  verification confirmed both modes, accessible toggle labels, correct computed
+  colors and persistence after reload in both directions.
+- Follow-up / blocker: Docker Desktop IPC recovery is complete and the rebuilt
+  Compose frontend/API health checks pass.
+
+## 2026-10-07 — BA/STT backend correctness and accuracy repair
+
+- Status: done (live spoken-audio acceptance pending)
+- Scope: Rechecked BA acceptance rules against the realtime/upload pipeline,
+  diagnosed the user's failed media, and corrected model routing, silence
+  handling, diarization, confidence, speaker revisions, final meeting state and
+  realtime/upload source-type boundaries.
+- Changed: provider contracts/AssemblyAI adapter, realtime route/service,
+  transcript speaker revision path, media worker, frontend realtime event,
+  environment defaults, provider/API/deployment docs and regression tests.
+- Verified: the two real provider responses contained zero words; the normalized
+  source was 14.02 seconds of digital silence at -91 dB; 58 backend tests pass;
+  frontend TypeScript/Vite build passes; Compose config and scoped diff checks pass.
+- Follow-up / blocker: Record or upload a clear Vietnamese speech sample for a
+  paid live accuracy/latency comparison; the previous sample cannot measure STT
+  quality because its audio track is silent.
+
+## 2026-10-07 — Full-stack regression and permission-state fixes
+
+- Status: done (paid provider acceptance pending)
+- Scope: Tested the core BA flow on the running Docker stack, verified
+  owner/editor/viewer ACL, and fixed misleading or unauthorized UI actions in
+  no-transcript and read-only states plus an export-completion render loop.
+- Changed: `backend/tests/test_exports_collaboration.py`,
+  `frontend/src/pages/MeetingPage.tsx`, `SummaryPage.tsx`, `UploadPage.tsx`,
+  `ExportSharePage.tsx`, `frontend/package-lock.json`, project context.
+- Verified: 54 backend tests passed; focused Ruff passed; frontend TypeScript,
+  Vite and Docker builds passed; npm audit reports zero vulnerabilities;
+  browser login/create/detail/history/search/settings and permission-state
+  checks passed with no console errors; API ACL returned expected
+  owner/editor/viewer/anonymous status codes; all Compose services are healthy.
+- Follow-up / blocker: Live microphone/upload/AI-provider acceptance was not
+  run to avoid unapproved paid-provider usage; repository-wide Ruff still has
+  pre-existing style debt.
+
 ## 2026-10-07 — Transient realtime translation
 
 - Status: done (live microphone/provider acceptance pending)

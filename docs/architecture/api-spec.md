@@ -295,10 +295,12 @@ WSS /realtime/{meeting_id}
 With the API base prefix, the implemented URL is
 `WS /api/v1/realtime/{meeting_id}?access_token=<access JWT>`. The access token
 authorizes the WebSocket only; STT API keys remain backend-only. The caller must
-have `edit` permission.
+have `edit` permission and the meeting must have `source_type=realtime`.
+Completed realtime meetings are terminal; create a new meeting for another
+recording. `POST /meetings/{id}/media` similarly requires `source_type=upload`.
 
 Server events: `session.ready`, `transcript.partial`, `transcript.final`,
-`meeting.status`, and `error`. Transcript events contain normalized
+`transcript.speaker_revision`, `meeting.status`, and `error`. Transcript events contain normalized
 `language`, `start_ms`, `end_ms`, `text`, optional `speaker_label` and
 `confidence`; final events also include `logical_segment_id`. Error events use
 `{type:"error", code, message, retryable}`.
@@ -307,10 +309,12 @@ Client sends raw PCM16 little-endian binary audio chunks at 16 kHz mono and
 JSON commands
 `{"type":"recording.pause"}`, `{"type":"recording.resume"}`, or
 `{"type":"recording.stop"}`. A partial is never persisted. A final is stored
-as a `SegmentVersion` in a new/current STT transcript version. Stop or client
-disconnect leaves the meeting `processing`; it does not mark a meeting or job
-`completed`. A non-retryable provider failure marks the meeting `failed`; a
-retryable error keeps the socket available for another chunk/command.
+as a `SegmentVersion` in a new/current STT transcript version. A speaker revision
+updates the provider speaker assignment for its final segment. Explicit stop
+waits for final provider output and marks a non-empty transcript `completed`;
+silence marks it `failed`. Client disconnect leaves the meeting `processing`
+for reconnect. A non-retryable provider failure marks the meeting `failed`; a
+retryable error leaves it `recording` so the client can reconnect.
 
 Optional realtime translation uses the same authenticated socket and never
 changes the saved translation REST workflow:

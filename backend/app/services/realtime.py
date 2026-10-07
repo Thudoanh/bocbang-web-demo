@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.enums import MeetingStatus
 from app.models.meeting import Meeting
-from app.models.transcript import CurrentSegment, Transcript
-from app.providers.contracts import TranscriptionSegment
+from app.models.transcript import CurrentSegment, SegmentVersion, Transcript
+from app.providers.contracts import STTProviderError, TranscriptionSegment
 from app.services.transcripts import TranscriptService
 
 
@@ -21,6 +21,7 @@ class RealtimeTranscriptService:
         self._session = session
         self._meeting = meeting
         self._actor_id = actor_id
+        self._provider_segments: dict[str, UUID] = {}
 
     async def recording_started(self) -> None:
         if self._meeting.status in {
@@ -41,14 +42,57 @@ class RealtimeTranscriptService:
         self._meeting.status = MeetingStatus.FAILED
         await self._session.commit()
 
-    async def persist_final(self, segment: TranscriptionSegment):
+    async def recording_completed(self) -> None:
+        segment_count = await self._session.scalar(
+            select(func.count(CurrentSegment.id))
+            .join(Transcript, CurrentSegment.transcript_id == Transcript.id)
+            .where(Transcript.meeting_id == self._meeting.id)
+        )
+        if not segment_count:
+            self._meeting.status = MeetingStatus.FAILED
+            await self._session.commit()
+            raise STTProviderError(
+                "No speech was detected during the recording.",
+                code="STT_NO_SPEECH",
+                retryable=False,
+            )
+        self._meeting.status = MeetingStatus.COMPLETED
+        await self._session.commit()
+
+    async def persist_final(
+        self, segment: TranscriptionSegment, provider_segment_id: str | None = None
+    ):
         """Persist through the common STT ingestion boundary used by batch workers too."""
         stored = await TranscriptService(self._session).append_stt_final(
             self._meeting, self._actor_id, segment
         )
+        if provider_segment_id is not None:
+            self._provider_segments[provider_segment_id] = stored.logical_segment_id
         self._meeting.duration_ms = max(self._meeting.duration_ms or 0, segment.end_ms)
         await self._session.commit()
         return stored
+
+    async def revise_speaker(
+        self, provider_segment_id: str | None, speaker_label: str | None
+    ) -> UUID | None:
+        if provider_segment_id is None:
+            return None
+        logical_id = self._provider_segments.get(provider_segment_id)
+        if logical_id is None:
+            return None
+        stored = await self._session.scalar(
+            select(SegmentVersion).where(SegmentVersion.logical_segment_id == logical_id)
+        )
+        if (
+            stored is None
+            or stored.transcript_version_id != self._meeting.current_transcript_version_id
+        ):
+            return None
+        await TranscriptService(self._session).revise_stt_speaker(
+            self._meeting, stored, speaker_label
+        )
+        await self._session.commit()
+        return logical_id
 
     async def translation_inputs(
         self, logical_segment_ids: tuple[UUID, ...]

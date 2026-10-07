@@ -32,21 +32,34 @@ class TranscriptionResult:
 
 
 @dataclass(frozen=True)
+class BatchTranscriptionOptions:
+    """Provider-neutral context for one pre-recorded transcription job."""
+
+    language: str
+    diarization: bool
+    context: str | None = None
+    keyterms: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class StreamingOptions:
     """Provider-neutral context supplied when a realtime STT session opens."""
 
     language: str
     diarization: bool
     audio_format: str | None = None
+    context: str | None = None
+    keyterms: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class StreamingTranscriptionEvent:
     """One normalized incremental result from a streaming STT provider."""
 
-    type: Literal["partial", "final"]
+    type: Literal["partial", "final", "speaker_revision"]
     language: str
     segment: TranscriptionSegment
+    provider_segment_id: str | None = None
 
 
 class STTProviderError(Exception):
@@ -80,7 +93,7 @@ class STTProvider(Protocol):
     def capabilities(self) -> STTCapabilities: ...
 
     async def transcribe_file(
-        self, source: Path, language: str | None = None
+        self, source: Path, options: BatchTranscriptionOptions
     ) -> TranscriptionResult: ...
 
     async def open_stream(self, options: StreamingOptions) -> STTStream: ...
