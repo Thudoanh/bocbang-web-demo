@@ -91,7 +91,7 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
     <PageHeading eyebrow={meeting.data.status === "recording" ? "GHI ÂM TRỰC TIẾP" : "PHÁT LẠI & CHI TIẾT"} title={meeting.data.title} description={meeting.data.status === "recording" ? "Các đoạn tạm thời được hiển thị riêng và chỉ được lưu khi máy chủ xác nhận." : `${meeting.data.language_mode.toUpperCase()} · quyền ${meeting.data.permission}`} actions={<><a className="btn btn-light" href={`/meetings/${meetingId}/translation`}>Dịch</a><a className="btn btn-light" href={`/meetings/${meetingId}/summary`}>Tóm tắt</a><a className="btn btn-light" href={`/meetings/${meetingId}/export-share`}>Xuất</a><a className="btn btn-light" href={`/meetings/${meetingId}/upload`}>⇧ Tải tệp</a>{owner && <Button tone="dark" onClick={() => setShareOpen(true)}>⌘ Chia sẻ</Button>}</>} />
     {notice && <div className="notice">{notice}</div>}{jobMonitor.job && <div className={`job-state ${jobMonitor.job.status}`}>Tác vụ {jobMonitor.job.status}{jobMonitor.job.progress !== undefined ? ` · ${jobMonitor.job.progress}%` : ""}{jobMonitor.job.error ? ` · ${jobMonitor.job.error.message}` : ""}</div>}{latestExport && (latestExport.status === "completed" || (latestExport.job_id === jobMonitor.job?.id && jobMonitor.job?.status === "completed")) && <a className="btn btn-dark" href={meetingsApi.exportDownloadUrl(latestExport.id)}>Tải {latestExport.filename ?? latestExport.format.toUpperCase()}</a>}
     <div className="meeting-layout"><section>
-      {editable && capabilities.data?.stt.streaming && <RecordingPanel meetingId={meetingId} targetLanguage={realtimeTranslationSupported ? realtimeTarget : undefined} translationVisible={showRealtimeTranslations} onTranslationVisibleChange={setShowRealtimeTranslations} onTranslation={(logicalSegmentId, translation) => setRealtimeTranslations((current) => ({ ...current, [logicalSegmentId]: translation }))} onFinal={() => void transcript.reload()} />}
+      {editable && capabilities.data?.stt.streaming && <RecordingPanel meetingId={meetingId} targetLanguage={realtimeTranslationSupported ? realtimeTarget : undefined} translationVisible={showRealtimeTranslations} onTranslationVisibleChange={setShowRealtimeTranslations} onTranslation={(logicalSegmentId, translation) => setRealtimeTranslations((current) => ({ ...current, [logicalSegmentId]: translation }))} onFinal={() => { void transcript.reload(); void speakers.reload(); void versions.reload(); }} />}
       {media.data?.[0] && <MediaPlayer ref={player} meetingId={meetingId} mediaId={media.data[0].id} filename={media.data[0].original_filename} segments={transcript.data?.segments ?? []} onActiveSegment={setActiveSegmentId} />}
       <div className="section-title"><h2>Transcript hiện tại</h2>{transcript.data && <Status>Phiên bản {transcript.data.version_no}</Status>}</div>
       {mergeFirst && <div className="notice">Chọn một đoạn liền kề để gộp với đoạn đã chọn, hoặc bấm “Gộp” lần nữa để hủy.</div>}
@@ -135,6 +135,7 @@ function RecordingPanel({ meetingId, targetLanguage, translationVisible, onTrans
   const [status, setStatus] = useState("Sẵn sàng ghi âm");
   const [translationStatus, setTranslationStatus] = useState("");
   const [partial, setPartial] = useState("");
+  const [partialSpeaker, setPartialSpeaker] = useState<string>();
   const [state, setState] = useState<"idle" | "connecting" | "recording" | "paused" | "stopping" | "failed">("idle");
   const [elapsed, setElapsed] = useState(0);
 
@@ -165,12 +166,17 @@ function RecordingPanel({ meetingId, targetLanguage, translationVisible, onTrans
         socket.current?.enableTranslation(targetLanguage, missingTranslationIds());
       }
     }
-    if (event.type === "transcript.partial") setPartial(event.text);
+    if (event.type === "transcript.partial") {
+      setPartial(event.text);
+      setPartialSpeaker(event.speaker_label);
+    }
     if (event.type === "transcript.final") {
       setPartial("");
+      setPartialSpeaker(undefined);
       finalSegmentIds.current.add(event.logical_segment_id);
       onFinal();
     }
+    if (event.type === "transcript.speaker_updated") onFinal();
     if (event.type === "translation.status") {
       setTranslationStatus(event.enabled ? "Đang dịch trực tiếp các đoạn đã được xác nhận." : "");
     }
@@ -266,6 +272,6 @@ function RecordingPanel({ meetingId, targetLanguage, translationVisible, onTrans
   }
 
   const canToggleTranslation = state === "recording" || state === "paused" || state === "stopping";
-  return <section className="panel recording"><div className="recording-heading"><div><h2>Ghi âm trực tiếp</h2><p>{status}</p></div><strong className="recording-timer">{formatDuration(elapsed)}</strong></div>{partial && <p className="partial-segment">{partial}</p>}{translationStatus && <p className="realtime-translation-status">{translationStatus}</p>}<div className="recording-actions">{(state === "idle" || state === "failed") && <Button tone="dark" onClick={() => void start()}>{state === "failed" ? "Thử kết nối lại" : "Bắt đầu ghi âm"}</Button>}{state === "connecting" && <Button disabled>Đang kết nối…</Button>}{state === "recording" && <><Button onClick={() => void pause()}>Tạm dừng</Button><Button tone="danger" onClick={() => void stop()}>Kết thúc ghi âm</Button></>}{state === "paused" && <><Button tone="dark" onClick={() => void resume()}>Tiếp tục</Button><Button tone="danger" onClick={() => void stop()}>Kết thúc ghi âm</Button></>}{state === "stopping" && <Button disabled>Đã kết thúc</Button>}{canToggleTranslation && <Button disabled={!targetLanguage} onClick={toggleTranslation}>{targetLanguage ? (translationVisible ? "Ẩn dịch realtime" : "Hiện dịch realtime") : "Dịch realtime không khả dụng"}</Button>}</div></section>;
+  return <section className="panel recording"><div className="recording-heading"><div><h2>Ghi âm trực tiếp</h2><p>{status}</p></div><strong className="recording-timer">{formatDuration(elapsed)}</strong></div>{partial && <p className="partial-segment"><strong>{partialSpeaker ? `Người nói ${partialSpeaker} · tạm thời` : "Chưa xác định · tạm thời"}</strong><br />{partial}</p>}{translationStatus && <p className="realtime-translation-status">{translationStatus}</p>}<div className="recording-actions">{(state === "idle" || state === "failed") && <Button tone="dark" onClick={() => void start()}>{state === "failed" ? "Thử kết nối lại" : "Bắt đầu ghi âm"}</Button>}{state === "connecting" && <Button disabled>Đang kết nối…</Button>}{state === "recording" && <><Button onClick={() => void pause()}>Tạm dừng</Button><Button tone="danger" onClick={() => void stop()}>Kết thúc ghi âm</Button></>}{state === "paused" && <><Button tone="dark" onClick={() => void resume()}>Tiếp tục</Button><Button tone="danger" onClick={() => void stop()}>Kết thúc ghi âm</Button></>}{state === "stopping" && <Button disabled>Đã kết thúc</Button>}{canToggleTranslation && <Button disabled={!targetLanguage} onClick={toggleTranslation}>{targetLanguage ? (translationVisible ? "Ẩn dịch realtime" : "Hiện dịch realtime") : "Dịch realtime không khả dụng"}</Button>}</div></section>;
 }
 function formatTime(milliseconds: number) { const seconds = Math.floor(milliseconds / 1000); return `${Math.floor(seconds / 60).toString().padStart(2, "0")}:${(seconds % 60).toString().padStart(2, "0")}`; } function formatDuration(seconds: number) { return `${Math.floor(seconds / 3600).toString().padStart(2, "0")}:${Math.floor((seconds % 3600) / 60).toString().padStart(2, "0")}:${(seconds % 60).toString().padStart(2, "0")}`; }

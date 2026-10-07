@@ -4,6 +4,33 @@ _Cập nhật lần cuối: 2026-10-07_
 
 ## Done
 
+- Realtime speaker diarization now honors the meeting option in AssemblyAI,
+  preserves turn labels and maps unassigned speech to no speaker. New meeting
+  speakers receive `Người nói N` names, final events include persisted speaker
+  IDs, and the frontend refreshes transcript/speakers/history on final or
+  correction events. Provider SpeakerRevision deltas are applied in order and
+  recorded as transcript revisions; manual assignments/unassignments and
+  split/merge/delete edits are protected. Each upstream connection scopes its
+  labels separately and starts a fresh STT snapshot, preserving earlier session
+  history; saved timestamps continue from retained meeting duration. No database
+  migration is required. All 83 backend tests and frontend production build
+  pass. Focused lint passes (pre-existing E501/UP037 excluded in legacy files);
+  realtime service/route and new regression tests also pass without exclusions.
+  Browser/microphone verification and real two-voice accuracy remain pending;
+  README contains the smoke-test procedure. Source changes require rebuilding
+  the Docker stack before testing the container-served application.
+
+- Export workers now read immutable transcript revisions through a shared
+  snapshot/edit-event reader also used by history and rollback. Edited revisions
+  without snapshots, legacy snapshots, checkpointed revisions and exports queued
+  before later edits are covered by regression tests. All 66 backend tests pass;
+  focused lint passes (pre-existing long lines in `transcripts.py` excluded).
+  The local worker was restarted after confirming no executing jobs or Redis
+  messages. Six fresh exports of the previously failing revision completed via
+  real Redis/Dramatiq and their stored downloads were verified; API is ready.
+  Browser interaction remains unverified; export UI error display/completion
+  effect issues are a separate follow-up. No database migration was needed.
+
 - Realtime recording now supports optional, transient VI ↔ EN translation on
   the existing authenticated WebSocket. Final STT segments are translated on a
   separate per-session queue, rendered under their source segment, and can be
@@ -18,7 +45,8 @@ _Cập nhật lần cuối: 2026-10-07_
   AudioWorklet, mono 16 kHz PCM16 chunks, browser audio cleanup constraints,
   stateful resampling and explicit pause/stop flushing. Docker frontend/API
   builds, 18 focused provider/realtime tests and HTTP readiness smoke checks
-  passed; the full backend suite has one unrelated export/queue test failure.
+  passed; the export/queue test failure observed then is now fixed by the
+  immutable-revision export change above.
 
 - Added a local Docker Compose stack for the React frontend, PostgreSQL, Redis,
   Alembic migrations, API, worker and reconciler. Another machine needs only

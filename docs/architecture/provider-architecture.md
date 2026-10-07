@@ -185,3 +185,24 @@ PCM16 chunks and sends them to this API WebSocket. The API opens the upstream
 WebSocket with the API key, pins `language_codes` to the meeting language, and
 uses the configured streaming model/mode. No provider secret is exposed to the
 browser.
+
+### Realtime speaker labels and corrections
+
+AssemblyAI streaming sends `speaker_labels=true/false` from the meeting's
+diarization option. Enabled connections request
+`speaker_labels_revision_interval_ms=300000` for mid-session corrections and
+also consume the final `SpeakerRevision` before `Termination`.
+The adapter maps a Turn's dominant `speaker_label` to the normalized segment;
+PENDING/UNKNOWN or missing labels map to null. Per-word speaker changes within
+one turn are not split into separate transcript segments in this implementation.
+Duplicate final turns with the same `turn_order` are suppressed.
+
+`StreamingTranscriptionEvent` now has optional `turn_order`.
+`StreamingSpeakerRevision(turn_order, speaker_label)` is a separate normalized
+event in the `StreamingEvent` union returned by send/pause/resume/close. It is
+consumed in arrival order, including null corrections, and never translated or
+persisted as new text. The domain service scopes labels by socket session,
+protects manual assignments and records accepted changes in revision history.
+No new database columns or migration are required.
+
+Protocol reference: [AssemblyAI streaming reference](https://github.com/AssemblyAI/assemblyai-skill/blob/main/skills/assemblyai/references/streaming.md).

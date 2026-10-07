@@ -1,5 +1,6 @@
 import asyncio
 from pathlib import Path
+from threading import Thread
 from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
@@ -11,6 +12,36 @@ from app.main import create_app
 from app.models.enums import MeetingPermission, MeetingSourceType, TranscriptVersionSource
 from app.models.meeting import Meeting, MeetingMember
 from app.models.transcript import SegmentVersion, Speaker, Transcript, TranscriptVersion
+from app.services.ai import AIJobDispatcher
+
+
+def _configure_export_worker(app) -> None:
+    """Replace only queue delivery; execute the production dispatcher in a test thread."""
+    def enqueue(job_id, _settings) -> None:
+        errors = []
+
+        def execute() -> None:
+            async def run() -> None:
+                dispatcher = AIJobDispatcher(
+                    app.state.database, app.state.settings,
+                    app.state.translation_provider, app.state.llm_provider,
+                    app.state.media_storage,
+                )
+                assert not await dispatcher.run(UUID(str(job_id)))
+
+            try:
+                asyncio.run(run())
+            except BaseException as exc:
+                errors.append(exc)
+
+        worker = Thread(target=execute)
+        worker.start()
+        worker.join(timeout=30)
+        assert not worker.is_alive(), "Export test worker timed out"
+        if errors:
+            raise errors[0]
+
+    app.state.enqueue_job = enqueue
 
 
 class Sender:
@@ -41,6 +72,7 @@ def test_exports_all_formats_and_collaboration_permissions(tmp_path: Path) -> No
         )
     )
     app.state.email_sender = sender
+    _configure_export_worker(app)
     with TestClient(app) as client:
         owner = _session(client, sender, "owner@example.com")
         commenter = _session(client, sender, "comment@example.com")

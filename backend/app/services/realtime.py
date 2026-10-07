@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from uuid import UUID
+from dataclasses import replace
+from uuid import UUID, uuid4
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,7 +11,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.enums import MeetingStatus
 from app.models.meeting import Meeting
 from app.models.transcript import CurrentSegment, Transcript
+from app.models.user import User
 from app.providers.contracts import TranscriptionSegment
+from app.schemas.transcript import TranscriptMutationResponse
 from app.services.transcripts import TranscriptService
 
 
@@ -21,6 +24,20 @@ class RealtimeTranscriptService:
         self._session = session
         self._meeting = meeting
         self._actor_id = actor_id
+        self._diarization_enabled = meeting.diarization_enabled
+        self._speaker_scope = uuid4().hex
+        self._turns: dict[int, UUID] = {}
+        self._time_offset_ms = meeting.duration_ms or 0
+        self._started_stt_version = False
+
+    def _scoped_label(self, label: str | None) -> str | None:
+        if not self._diarization_enabled or not label:
+            return None
+        return f"realtime:{self._speaker_scope}:{label}"
+
+    @property
+    def diarization_enabled(self) -> bool:
+        return self._diarization_enabled
 
     async def recording_started(self) -> None:
         if self._meeting.status in {
@@ -41,14 +58,40 @@ class RealtimeTranscriptService:
         self._meeting.status = MeetingStatus.FAILED
         await self._session.commit()
 
-    async def persist_final(self, segment: TranscriptionSegment):
+    async def persist_final(self, segment: TranscriptionSegment, turn_order: int | None = None):
         """Persist through the common STT ingestion boundary used by batch workers too."""
         stored = await TranscriptService(self._session).append_stt_final(
-            self._meeting, self._actor_id, segment
+            self._meeting, self._actor_id,
+            replace(
+                segment, speaker_label=self._scoped_label(segment.speaker_label),
+                start_ms=segment.start_ms + self._time_offset_ms,
+                end_ms=segment.end_ms + self._time_offset_ms,
+            ),
+            start_new_version=not self._started_stt_version,
         )
-        self._meeting.duration_ms = max(self._meeting.duration_ms or 0, segment.end_ms)
+        self._started_stt_version = True
+        self._meeting.duration_ms = max(self._meeting.duration_ms or 0, stored.end_ms)
         await self._session.commit()
+        if turn_order is not None:
+            self._turns[turn_order] = stored.logical_segment_id
         return stored
+
+    async def revise_speaker(
+        self, turn_order: int, label: str | None
+    ) -> TranscriptMutationResponse | None:
+        logical_id = self._turns.get(turn_order)
+        if logical_id is None or not self._diarization_enabled:
+            return None
+        user = await self._session.get(User, self._actor_id)
+        if user is None:
+            return None
+        mutation = await TranscriptService(self._session).revise_stt_speaker(
+            logical_id, user, self._scoped_label(label)
+        )
+        # Even an unchanged/protected turn acquired the meeting lock. Do not
+        # hold it while waiting for the next audio message on this socket.
+        await self._session.commit()
+        return mutation
 
     async def translation_inputs(
         self, logical_segment_ids: tuple[UUID, ...]

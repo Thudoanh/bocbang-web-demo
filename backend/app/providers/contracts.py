@@ -47,6 +47,18 @@ class StreamingTranscriptionEvent:
     type: Literal["partial", "final"]
     language: str
     segment: TranscriptionSegment
+    turn_order: int | None = None
+
+
+@dataclass(frozen=True)
+class StreamingSpeakerRevision:
+    """A corrected label for a previously finalized turn in this stream."""
+
+    turn_order: int
+    speaker_label: str | None
+
+
+StreamingEvent = StreamingTranscriptionEvent | StreamingSpeakerRevision
 
 
 class STTProviderError(Exception):
@@ -67,13 +79,13 @@ class STTProviderError(Exception):
 class STTStream(Protocol):
     """A live provider connection. Implementations must not retain API keys in events."""
 
-    async def send_audio(self, chunk: bytes) -> tuple[StreamingTranscriptionEvent, ...]: ...
+    async def send_audio(self, chunk: bytes) -> tuple[StreamingEvent, ...]: ...
 
-    async def pause(self) -> tuple[StreamingTranscriptionEvent, ...]: ...
+    async def pause(self) -> tuple[StreamingEvent, ...]: ...
 
-    async def resume(self) -> tuple[StreamingTranscriptionEvent, ...]: ...
+    async def resume(self) -> tuple[StreamingEvent, ...]: ...
 
-    async def close(self) -> tuple[StreamingTranscriptionEvent, ...]: ...
+    async def close(self) -> tuple[StreamingEvent, ...]: ...
 
 
 class STTProvider(Protocol):

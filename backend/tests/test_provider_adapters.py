@@ -17,6 +17,7 @@ from app.providers.contracts import (
     LLMCapabilities,
     LLMProviderError,
     StreamingOptions,
+    StreamingSpeakerRevision,
     STTProviderError,
     TranscriptionSegment,
     TranslationCapabilities,
@@ -243,6 +244,8 @@ def test_assemblyai_stream_uses_configured_model_waits_for_begin_and_termination
         assert query["speech_model"] == ["universal-3-6-pro"]
         assert query["mode"] == ["balanced"]
         assert query["language_codes"] == ["vi"]
+        assert query["speaker_labels"] == ["true"]
+        assert query["speaker_labels_revision_interval_ms"] == ["300000"]
         assert query["prompt"] == [
             "Transcribe Vietnamese. Transcribe verbatim with standard punctuation. "
             "Keep the spoken language and do not translate it."
@@ -254,6 +257,8 @@ def test_assemblyai_stream_uses_configured_model_waits_for_begin_and_termination
             "end_of_turn": True,
             "words": [{"start": 0, "end": 800}],
             "end_of_turn_confidence": 0.96,
+            "speaker_label": "A",
+            "turn_order": 0,
         }))
         await asyncio.sleep(0)
         events = await stream.send_audio(b"audio")
@@ -261,11 +266,17 @@ def test_assemblyai_stream_uses_configured_model_waits_for_begin_and_termination
         assert events[0].type == "final"
         assert events[0].language == "vi"
         assert events[0].segment.confidence == 0.96
+        assert events[0].segment.speaker_label == "A"
+        assert events[0].turn_order == 0
 
         closing = asyncio.create_task(stream.close())
         await asyncio.sleep(0)
+        await websocket.incoming.put(json.dumps({
+            "type": "SpeakerRevision",
+            "revisions": [{"turn_order": 0, "speaker_label": "B"}],
+        }))
         await websocket.incoming.put(json.dumps({"type": "Termination", "audio_duration_seconds": 1}))
-        assert await closing == ()
+        assert await closing == (StreamingSpeakerRevision(0, "B"),)
         assert json.loads(str(websocket.sent[-1])) == {"type": "Terminate"}
         assert websocket.closed
 
@@ -334,3 +345,45 @@ def test_assemblyai_streaming_defaults_and_mode_validation() -> None:
 
     with pytest.raises(ValueError):
         Settings(_env_file=None, assemblyai_streaming_mode="fastest")
+
+
+@pytest.mark.parametrize("label", [None, "PENDING", "UNKNOWN", "", "A"])
+def test_streaming_normalizes_unassigned_speakers_and_honors_disabled_mode(label):
+    payload = {
+        "type": "Turn", "transcript": "Hello", "end_of_turn": True,
+        "speaker_label": label, "words": [{"start": 0, "end": 900}],
+    }
+    event = _stream_event(payload)
+    assert event.segment.speaker_label == ("A" if label == "A" else None)
+    assert _stream_event(payload, diarization=False).segment.speaker_label is None
+
+
+def test_streaming_disabled_diarization_and_duplicate_finals(monkeypatch):
+    async def scenario():
+        websocket = FakeAssemblyWebSocket({"type": "Begin", "id": "session"})
+        async def connect(url, **kwargs):
+            assert parse_qs(urlparse(url).query)["speaker_labels"] == ["false"]
+            assert "speaker_labels_revision_interval_ms" not in parse_qs(urlparse(url).query)
+            return websocket
+        monkeypatch.setattr(websockets, "connect", connect)
+        stream = await AssemblyAIStream.connect(
+            "key", "wss://test/v3/ws", "universal-3-6-pro", "balanced",
+            StreamingOptions(language="vi", diarization=False),
+        )
+        payload = {
+            "type": "Turn", "transcript": "Hello", "end_of_turn": True,
+            "turn_order": 1, "speaker_label": "A", "words": [{"start": 0, "end": 900}],
+        }
+        for _ in range(2):
+            await websocket.incoming.put(json.dumps(payload))
+        await websocket.incoming.put(json.dumps({
+            "type": "SpeakerRevision", "revisions": [{"turn_order": 1, "speaker_label": "B"}],
+        }))
+        await asyncio.sleep(0)
+        events = await stream.send_audio(b"audio")
+        assert len(events) == 1 and events[0].segment.speaker_label is None
+        closing = asyncio.create_task(stream.close())
+        await asyncio.sleep(0)
+        await websocket.incoming.put(json.dumps({"type": "Termination"}))
+        assert await closing == ()
+    asyncio.run(scenario())

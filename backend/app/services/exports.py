@@ -19,12 +19,13 @@ from app.models.export import Export
 from app.models.media import Job
 from app.models.meeting import Meeting
 from app.models.summary import Summary, SummaryVersion
-from app.models.transcript import SegmentVersion, Speaker, TranscriptVersion
+from app.models.transcript import Speaker, TranscriptVersion
 from app.models.translation import Translation, TranslationSegment
 from app.models.user import User
 from app.providers.storage import MediaStorage, StorageError
 from app.schemas.export import ExportCreateRequest, ExportResponse
 from app.services.meetings import MeetingService
+from app.services.transcript_versions import TranscriptVersionReader
 
 _CONTENT_TYPES = {
     ExportFormat.TXT: "text/plain; charset=utf-8",
@@ -78,7 +79,9 @@ class ExportService:
         except (OSError, StorageError) as exc:
             raise ApiError("EXPORT_STORAGE_ERROR", "The export file is unavailable.", 503) from exc
 
-    async def presigned_download_url(self, export_id: UUID, user: User, expires_in: int) -> str | None:
+    async def presigned_download_url(
+        self, export_id: UUID, user: User, expires_in: int
+    ) -> str | None:
         export = await self._export_for_read(export_id, user)
         job = await self._job(export.id)
         if job is None or job.status != JobStatus.COMPLETED or not export.storage_key:
@@ -92,7 +95,9 @@ class ExportService:
                 content_disposition=disposition,
             )
         except StorageError as exc:
-            raise ApiError("EXPORT_STORAGE_ERROR", "The export URL could not be created.", 503) from exc
+            raise ApiError(
+                "EXPORT_STORAGE_ERROR", "The export URL could not be created.", 503
+            ) from exc
 
     async def purge_meeting_storage(self, meeting_id: UUID) -> None:
         keys = list(
@@ -106,7 +111,9 @@ class ExportService:
             for key in keys:
                 await self._storage.delete(key)
         except StorageError as exc:
-            raise ApiError("EXPORT_STORAGE_ERROR", "Meeting exports could not be deleted.", 502) from exc
+            raise ApiError(
+                "EXPORT_STORAGE_ERROR", "Meeting exports could not be deleted.", 502
+            ) from exc
 
     async def _current_version(self, meeting: Meeting) -> TranscriptVersion:
         if meeting.current_transcript_version_id is None:
@@ -158,13 +165,14 @@ class ExportJobRunner:
         meeting = await session.get(Meeting, export.meeting_id)
         if meeting is None:
             raise ValueError("Meeting no longer exists.")
-        segments = list(
-            await session.scalars(
-                select(SegmentVersion)
-                .where(SegmentVersion.transcript_version_id == export.transcript_version_id)
-                .order_by(SegmentVersion.sequence)
-            )
-        )
+        version = await session.get(TranscriptVersion, export.transcript_version_id)
+        if version is None:
+            raise ValueError("Transcript version no longer exists.")
+        try:
+            segments = await TranscriptVersionReader(session).read(version)
+        except ApiError as exc:
+            # Missing history is terminal input failure, not a transient provider failure.
+            raise ValueError(str(exc)) from exc
         if not segments:
             raise ValueError("Transcript input is empty or invalid.")
         options = {
@@ -196,7 +204,9 @@ class ExportJobRunner:
         key = f"exports/meetings/{meeting.id}/{export.id}.{export.format.value}"
         # Export binaries can be large. Keep the object-storage boundary
         # streaming-friendly and avoid assuming an API/worker shared volume.
-        descriptor, temporary_name = tempfile.mkstemp(prefix="bocbang-export-", suffix=f".{export.format.value}")
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix="bocbang-export-", suffix=f".{export.format.value}"
+        )
         temporary = Path(temporary_name)
         try:
             with os.fdopen(descriptor, "wb") as output:
@@ -256,7 +266,7 @@ async def _latest_summary(
 def _document(
     meeting: Meeting,
     export: Export,
-    segments: list[SegmentVersion],
+    segments: list[dict[str, object]],
     speakers: dict[UUID, str],
     translation: dict[UUID, str],
     summary: dict[str, object] | None,
@@ -275,15 +285,15 @@ def _document(
     }
     for item in segments:
         row: dict[str, object] = {
-            "id": str(item.logical_segment_id),
-            "start_ms": item.start_ms,
-            "end_ms": item.end_ms,
-            "text": item.text,
+            "id": str(item["logical_segment_id"]),
+            "start_ms": item["start_ms"],
+            "end_ms": item["end_ms"],
+            "text": item["text"],
         }
         if options["include_speakers"]:
-            row["speaker"] = speakers.get(item.speaker_id) if item.speaker_id else None
-        if options["include_translation"] and item.logical_segment_id in translation:
-            row["translation"] = translation[item.logical_segment_id]
+            row["speaker"] = speakers.get(item["speaker_id"]) if item["speaker_id"] else None
+        if options["include_translation"] and item["logical_segment_id"] in translation:
+            row["translation"] = translation[item["logical_segment_id"]]
         data["segments"].append(row)
     if options["include_summary"] and summary is not None:
         data["summary"] = summary

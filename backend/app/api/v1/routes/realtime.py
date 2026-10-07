@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, cast
 from uuid import UUID
 
@@ -18,8 +18,9 @@ from app.db.session import Database
 from app.models.enums import MeetingPermission
 from app.models.user import User
 from app.providers.contracts import (
+    StreamingEvent,
     StreamingOptions,
-    StreamingTranscriptionEvent,
+    StreamingSpeakerRevision,
     STTProvider,
     STTProviderError,
     STTStream,
@@ -93,6 +94,12 @@ async def realtime_transcription(websocket: WebSocket, meeting_id: UUID) -> None
                 language=meeting.language_mode,
                 diarization=meeting.diarization_enabled,
             )
+            if options.diarization and not provider.capabilities().diarization:
+                await _error_and_close(
+                    websocket, send_json, "PROVIDER_CAPABILITY_UNAVAILABLE",
+                    "The configured STT provider does not support diarization.", False,
+                )
+                return
             try:
                 stream = await provider.open_stream(options)
             except STTProviderError as exc:
@@ -377,12 +384,26 @@ def _command(raw_message: str) -> RealtimeCommand | None:
 async def _emit_events(
     send_json: SendJson,
     transcript_service: RealtimeTranscriptService,
-    events: tuple[StreamingTranscriptionEvent, ...],
+    events: tuple[StreamingEvent, ...],
     *,
     translation_session: RealtimeTranslationSession | None = None,
     send_client: bool = True,
 ) -> None:
     for event in events:
+        if isinstance(event, StreamingSpeakerRevision):
+            mutation = await transcript_service.revise_speaker(
+                event.turn_order, event.speaker_label
+            )
+            if mutation is not None and mutation.segment is not None and send_client:
+                await send_json({
+                    "type": "transcript.speaker_updated",
+                    "logical_segment_id": str(mutation.segment.logical_segment_id),
+                    "speaker_id": str(mutation.segment.speaker_id)
+                    if mutation.segment.speaker_id else None,
+                    "version_id": str(mutation.version_id),
+                    "version_no": mutation.version_no,
+                })
+            continue
         segment = event.segment
         payload = {
             "type": f"transcript.{event.type}",
@@ -390,14 +411,18 @@ async def _emit_events(
             "start_ms": segment.start_ms,
             "end_ms": segment.end_ms,
             "text": segment.text,
-            "speaker_label": segment.speaker_label,
+            "speaker_label": segment.speaker_label
+            if transcript_service.diarization_enabled else None,
             "confidence": segment.confidence,
         }
         logical_segment_id: UUID | None = None
         if event.type == "final":
-            stored = await transcript_service.persist_final(segment)
+            stored = await transcript_service.persist_final(segment, event.turn_order)
             logical_segment_id = stored.logical_segment_id
             payload["logical_segment_id"] = str(logical_segment_id)
+            payload["speaker_id"] = str(stored.speaker_id) if stored.speaker_id else None
+            payload["start_ms"], payload["end_ms"] = stored.start_ms, stored.end_ms
+            segment = replace(segment, start_ms=stored.start_ms, end_ms=stored.end_ms)
         if send_client:
             await send_json({key: value for key, value in payload.items() if value is not None})
             if logical_segment_id is not None and translation_session is not None:

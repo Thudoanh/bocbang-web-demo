@@ -298,9 +298,11 @@ authorizes the WebSocket only; STT API keys remain backend-only. The caller must
 have `edit` permission.
 
 Server events: `session.ready`, `transcript.partial`, `transcript.final`,
+`transcript.speaker_updated`,
 `meeting.status`, and `error`. Transcript events contain normalized
 `language`, `start_ms`, `end_ms`, `text`, optional `speaker_label` and
-`confidence`; final events also include `logical_segment_id`. Error events use
+`confidence`; final events also include `logical_segment_id` and optional
+`speaker_id` identifying the persisted meeting speaker. Error events use
 `{type:"error", code, message, retryable}`.
 
 Client sends raw PCM16 little-endian binary audio chunks at 16 kHz mono and
@@ -311,6 +313,36 @@ as a `SegmentVersion` in a new/current STT transcript version. Stop or client
 disconnect leaves the meeting `processing`; it does not mark a meeting or job
 `completed`. A non-retryable provider failure marks the meeting `failed`; a
 retryable error keeps the socket available for another chunk/command.
+
+Realtime diarization follows `meeting.diarization_enabled` when the socket
+opens; changing it takes effect on the next connection. If enabled but the
+provider lacks diarization, opening fails with `PROVIDER_CAPABILITY_UNAVAILABLE`.
+Unassigned/PENDING labels create no speaker. New speakers receive display names
+`Người nói 1`, `Người nói 2`, etc. Raw labels are scoped to each provider
+connection in `provider_speaker_id` (`realtime:<random scope>:<label>`); label A
+after reconnect is not assumed to be the same voice as A in a previous session.
+Users may reassign these segments using the existing edit-protected REST API.
+The first final of each connection starts a new STT snapshot containing the
+previous projection so later recordings do not append into an earlier session's
+snapshot.
+Persisted final timestamps continue from the meeting's retained duration on
+reconnect rather than restarting at zero; partial timestamps remain local to
+the active upstream stream.
+
+Provider corrections are mapped by session-local `turn_order` to saved logical
+segment IDs. Each accepted correction creates a transcript revision through
+the existing append-only `speaker_assigned` event with `source: "provider"`.
+Text, timestamps, speaker metadata and historical revisions are preserved.
+Deleted turns, manually assigned/unassigned turns and split/merged turns are
+excluded from automatic correction. Unchanged or unknown turns produce no event.
+Clients reload transcript, speakers and history on final/correction events:
+
+```json
+{"type":"transcript.speaker_updated","logical_segment_id":"uuid","speaker_id":"uuid","version_id":"uuid","version_no":2}
+```
+
+`speaker_id` is a UUID string or JSON `null` (unassignment). Corrections are
+delivered before `meeting.status` when the user stops recording.
 
 Optional realtime translation uses the same authenticated socket and never
 changes the saved translation REST workflow:

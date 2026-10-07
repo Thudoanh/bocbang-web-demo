@@ -98,6 +98,25 @@ captures mono PCM16 audio through an AudioWorklet. Override the provider model
 or latency/accuracy preset with `ASSEMBLYAI_STREAMING_MODEL` and
 `ASSEMBLYAI_STREAMING_MODE` in the root `.env`.
 
+Choose **Tự động phân biệt** when creating a realtime meeting to enable speaker
+labels. Final transcript segments and the speaker panel show `Người nói 1`,
+`Người nói 2`, etc.; short/unassigned speech stays **Chưa xác định** until the
+provider can assign a voice. Speaker corrections are applied during recording
+and before stop completes, with transcript history retained. Manual speaker
+assignments and split/merge/delete edits take precedence over later automatic
+corrections. A new upstream connection has independent labels, so reconnecting
+may create additional speakers; use the transcript editor to associate those
+segments with an existing person when needed.
+
+For a real diarization smoke test, create a Vietnamese realtime meeting with
+automatic speaker separation, record two people taking turns for 1–2 minutes,
+and confirm that distinct speaker names appear in both transcript and speaker
+panel. Rename a speaker and manually reassign a segment while recording, stop,
+then reload: the names, manual assignment and saved segments should remain.
+Repeat with **Không phân biệt** and confirm no automatic speakers are created.
+Speaking simultaneously may reduce separation accuracy; automated provider
+fixtures do not measure real voice accuracy.
+
 During realtime recording, users may enable transient VI ↔ EN translation from
 the recording panel. Only finalized STT segments are translated; hiding the
 translation stops provider calls, and enabling it again backfills untranslated

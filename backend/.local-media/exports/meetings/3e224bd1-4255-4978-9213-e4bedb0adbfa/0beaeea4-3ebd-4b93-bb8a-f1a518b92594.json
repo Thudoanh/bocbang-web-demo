@@ -1,0 +1,24 @@
+{
+  "meeting": {
+    "title": "ggh",
+    "description": null,
+    "language_mode": "vi",
+    "created_at": "2026-10-07T04:00:44.958593+00:00",
+    "transcript_version_id": "61134c49-2ee7-4857-bfe4-1b19375e5ffa"
+  },
+  "options": {
+    "include_timestamps": false,
+    "include_speakers": true,
+    "include_translation": false,
+    "include_summary": false
+  },
+  "segments": [
+    {
+      "id": "42547bd8-59ce-40da-9624-d5e93668038c",
+      "start_ms": 0,
+      "end_ms": 73000,
+      "text": "Sáng nay ngày 26 tháng 3, Chủ tịch Quốc hội Trần Thanh Mẫn chủ trì cuộc họp về công tác chuẩn bị cho kỳ họp thứ nhất, Quốc hội khóa 16. Phát biểu mở đầu cuộc họp, Chủ tịch Quốc hội nêu rõ kỳ họp thứ nhất Quốc hội khóa 16 có ý nghĩa đặc biệt quan trọng. Chủ tịch Quốc hội Trần Thanh Mẫn cho biết, kỳ họp lần này sẽ xem xét kiện toàn nhân sự các chức danh của nhà nước, gồm Chủ tịch nước, Thủ tướng Chính phủ, Chủ tịch Quốc hội, các phó chủ tịch cộ hội, các phó thủ tướng, các thành viên của chính phủ, các ủy viên ủy ban thường vụ cộ hội Hội đồng dân tộc, các ủ y ban của cộ hội. Ở địa phương, các tỉnh, thành phố đang tích cực chuẩn bị tổ chức kỳ họp thứ nhất của Hội đồng Nhân dân cấp tỉnh, phân đấu hoàn thành trước ngày 31 tháng 3 năm 2026. Một số địa phương sẽ tổ chức sau kỳ họп thứ nhất của cộ hội do còn liên quan đến công tác nhân sự gắn với Trung ương. Theo kế hoạch, còn khoảng 10 ngày nữa sẽ diễn ra phiên họp chủ bị. Trước khi khai mạc kỳ họp chính thức, Chủ tịch Quốc hội cho biết trong thời gian này, các cơ quan sẽ tiếp tục giả soát toàn diện những công việc đã hoàn thành, đang triển khai và những nội dung còn vướng mắt, nhằm kịp thời báo cáo xin ý kiến lãnh đạo Quốc hội và Ủy ban Thương vụ Quốc hội. Trường hợp công tác chuẩn bị cơ bản đáp ứng yêu cầu, các cuộc họp tiếp theo sẽ được tổ chức để tiếp tục hoàn thiện. Bảo đảm kỳ họп thứ nhất Quốc hội khóa 16 diễn ra đúng kế hoạc, chất lượng và hiệu qu",
+      "speaker": "btv"
+    }
+  ]
+}

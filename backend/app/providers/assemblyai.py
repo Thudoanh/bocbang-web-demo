@@ -19,7 +19,9 @@ import httpx
 
 from app.core.config import Settings
 from app.providers.contracts import (
+    StreamingEvent,
     StreamingOptions,
+    StreamingSpeakerRevision,
     StreamingTranscriptionEvent,
     STTCapabilities,
     STTProviderError,
@@ -114,10 +116,12 @@ class AssemblyAIProvider:
 
 
 class AssemblyAIStream:
-    def __init__(self, websocket: Any, language: str) -> None:
+    def __init__(self, websocket: Any, language: str, diarization: bool = False) -> None:
         self._websocket = websocket
         self._language = language
-        self._events: deque[StreamingTranscriptionEvent] = deque()
+        self._diarization = diarization
+        self._final_turns: set[int] = set()
+        self._events: deque[StreamingEvent] = deque()
         self._failure: STTProviderError | None = None
         self._terminated = asyncio.Event()
         self._closing = False
@@ -144,6 +148,9 @@ class AssemblyAIStream:
                     "speech_model": streaming_model,
                     "mode": streaming_mode,
                     "format_turns": "true",
+                    "speaker_labels": str(options.diarization).lower(),
+                    **({"speaker_labels_revision_interval_ms": 300000}
+                       if options.diarization else {}),
                     "language_codes": [language],
                     "prompt": _streaming_language_prompt(language),
                 },
@@ -171,7 +178,7 @@ class AssemblyAIStream:
                     code="STT_STREAM_HANDSHAKE_INVALID",
                     retryable=True,
                 )
-            return cls(websocket, language)
+            return cls(websocket, language, options.diarization)
         except STTProviderError:
             if websocket is not None:
                 await websocket.close()
@@ -211,8 +218,25 @@ class AssemblyAIStream:
                             retryable=True,
                         )
                     return
-                event = _stream_event(payload, self._language)
+                if event_type == "SpeakerRevision":
+                    revisions = payload.get("revisions")
+                    if self._diarization and isinstance(revisions, list):
+                        for revision in revisions:
+                            if not isinstance(revision, dict):
+                                continue
+                            order = revision.get("turn_order")
+                            if type(order) is int and order >= 0 and "speaker_label" in revision:
+                                self._events.append(StreamingSpeakerRevision(
+                                    order, _speaker_label(revision.get("speaker_label"))
+                                ))
+                    continue
+                event = _stream_event(payload, self._language, self._diarization)
                 if event is not None:
+                    if event.turn_order is not None:
+                        if event.turn_order in self._final_turns:
+                            continue
+                        if event.type == "final":
+                            self._final_turns.add(event.turn_order)
                     self._events.append(event)
         except asyncio.CancelledError:
             raise
@@ -237,7 +261,7 @@ class AssemblyAIStream:
         finally:
             self._terminated.set()
 
-    async def send_audio(self, chunk: bytes) -> tuple[StreamingTranscriptionEvent, ...]:
+    async def send_audio(self, chunk: bytes) -> tuple[StreamingEvent, ...]:
         if self._closed or self._closing:
             raise STTProviderError(
                 "The realtime session is closed.", code="STT_STREAM_CLOSED", retryable=False
@@ -262,15 +286,15 @@ class AssemblyAIStream:
         self._raise_failure()
         return self._drain()
 
-    async def pause(self) -> tuple[StreamingTranscriptionEvent, ...]:
+    async def pause(self) -> tuple[StreamingEvent, ...]:
         self._raise_failure()
         return self._drain()
 
-    async def resume(self) -> tuple[StreamingTranscriptionEvent, ...]:
+    async def resume(self) -> tuple[StreamingEvent, ...]:
         self._raise_failure()
         return self._drain()
 
-    async def close(self) -> tuple[StreamingTranscriptionEvent, ...]:
+    async def close(self) -> tuple[StreamingEvent, ...]:
         if self._closed:
             return self._drain()
         self._closing = True
@@ -307,8 +331,8 @@ class AssemblyAIStream:
         if self._failure is not None:
             raise self._failure
 
-    def _drain(self) -> tuple[StreamingTranscriptionEvent, ...]:
-        events = tuple(event for event in self._events if event.segment.text.strip())
+    def _drain(self) -> tuple[StreamingEvent, ...]:
+        events = tuple(self._events)
         self._events.clear()
         return events
 
@@ -366,7 +390,16 @@ def _batch_result(payload: dict[str, Any]) -> TranscriptionResult:
     return TranscriptionResult(language, tuple(segments))
 
 
-def _stream_event(payload: Any, default_language: str = "und") -> StreamingTranscriptionEvent | None:
+def _speaker_label(value: Any) -> str | None:
+    # PENDING/UNKNOWN identify unassigned speech, not actual speakers.
+    if isinstance(value, str) and len(value) == 1 and "A" <= value <= "Z":
+        return value
+    return None
+
+
+def _stream_event(
+    payload: Any, default_language: str = "und", diarization: bool = True
+) -> StreamingTranscriptionEvent | None:
     if not isinstance(payload, dict) or payload.get("type") != "Turn" or not str(payload.get("transcript", "")).strip():
         return None
     words = payload.get("words") if isinstance(payload.get("words"), list) else []
@@ -374,7 +407,18 @@ def _stream_event(payload: Any, default_language: str = "und") -> StreamingTrans
     start, end = first.get("start", 0), last.get("end", max(1, int(first.get("start", 0)) + 1))
     if not isinstance(start, int) or not isinstance(end, int) or end <= start:
         return None
-    return StreamingTranscriptionEvent("final" if payload.get("end_of_turn") else "partial", str(payload.get("language_code") or default_language), TranscriptionSegment(start, end, str(payload["transcript"]).strip(), confidence=float(payload.get("end_of_turn_confidence", payload.get("confidence"))) if isinstance(payload.get("end_of_turn_confidence", payload.get("confidence")), (int, float)) else None))
+    confidence = payload.get("end_of_turn_confidence", payload.get("confidence"))
+    order = payload.get("turn_order")
+    return StreamingTranscriptionEvent(
+        "final" if payload.get("end_of_turn") else "partial",
+        str(payload.get("language_code") or default_language),
+        TranscriptionSegment(
+            start, end, str(payload["transcript"]).strip(),
+            speaker_label=_speaker_label(payload.get("speaker_label")) if diarization else None,
+            confidence=float(confidence) if isinstance(confidence, (int, float)) else None,
+        ),
+        turn_order=order if type(order) is int and order >= 0 else None,
+    )
 
 
 def build_assemblyai_provider(settings: Settings) -> AssemblyAIProvider:

@@ -12,6 +12,51 @@ Mục mới nhất được thêm ở đầu file. Dùng format ngắn dưới �
 - Follow-up / blocker: ...
 ```
 
+## 2026-10-07 — Realtime speaker diarization and corrections
+
+- Status: done (automated verification; real audio/browser acceptance pending)
+- Scope: Enable/disable AssemblyAI streaming speaker labels, retain dominant
+  turn labels, consume mid-session/end-of-session corrections, and display
+  persisted speakers in realtime. Scope provider labels by connection to avoid
+  merging unrelated voices after reconnect. Each session starts a new STT
+  snapshot with existing projection and continuing meeting timestamps.
+- Changed: `backend/app/providers/assemblyai.py`, `contracts.py`,
+  `backend/app/services/realtime.py`, `transcripts.py`, realtime WebSocket route,
+  frontend `MeetingPage.tsx` / `meetingSocket.ts`, provider tests and new
+  `backend/tests/test_realtime_speakers.py`, API/provider docs and README.
+- Verified: 83 backend tests passed, including 17 added cases covering labels,
+  disabled diarization, duplicate final/correction handling, unsupported
+  capability, reconnect isolation, historical snapshots, and manual/structural
+  edits. Frontend production build passed. Focused lint passed with pre-existing
+  E501/UP037 excluded from legacy files; realtime service/route and new tests
+  pass full lint. No schema changes or migration needed.
+- Follow-up / blocker: No supplied two-person audio fixture or browser runtime
+  was available for real microphone/provider accuracy verification. Rebuild
+  Docker services to use the new source, then follow the README smoke test.
+  Speaker labels represent the dominant voice per turn; overlapping or
+  within-turn speaker changes are not split into separate segments.
+
+## 2026-10-07 — Export edited transcript revisions
+
+- Status: done (browser acceptance pending)
+- Scope: Export the pinned immutable transcript version by replaying edits over
+  its nearest checkpoint; retain legacy snapshot compatibility and terminal
+  failures for empty or unavailable history. History/rollback use the same reader.
+- Changed: `backend/app/services/transcript_versions.py`, `transcripts.py`,
+  `exports.py`, `backend/tests/test_export_versions.py`,
+  `backend/tests/test_exports_collaboration.py`, project context documentation.
+- Verified: all 66 backend tests passed, including six formats after edits,
+  queued-version isolation, split/merge/delete/speaker assignment, checkpoint,
+  rollback, legacy snapshots and invalid input. Focused Ruff checks passed;
+  existing E501 violations in `transcripts.py` were excluded. Restarted the local
+  worker only after verifying no executing jobs or Redis messages; created six
+  new exports for the previously failing revision through real Redis/Dramatiq,
+  verified completed state, stored downloads and content. API readiness passed.
+- Follow-up / blocker: Browser tools are unavailable in this session; verify UI
+  interaction separately. Export UI error details/completion effect issues remain
+  outside this backend fix. Existing historical failed/pending jobs were preserved;
+  no migrations or provider calls were required.
+
 ## 2026-10-07 — Transient realtime translation
 
 - Status: done (live microphone/provider acceptance pending)

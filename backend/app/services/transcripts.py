@@ -39,6 +39,7 @@ from app.schemas.transcript import (
     TranscriptVersionResponse,
 )
 from app.services.meetings import MeetingService
+from app.services.transcript_versions import TranscriptVersionReader
 
 
 class TranscriptService:
@@ -199,18 +200,20 @@ class TranscriptService:
         return SpeakerResponse.model_validate(speaker)
 
     async def append_stt_final(
-        self, meeting: Meeting, actor_id: UUID, segment: TranscriptionSegment
+        self, meeting: Meeting, actor_id: UUID, segment: TranscriptionSegment,
+        *, start_new_version: bool = False,
     ) -> SegmentVersion:
         """Shared ingestion boundary for realtime and future upload/batch STT."""
         if not segment.text.strip() or segment.start_ms < 0 or segment.end_ms <= segment.start_ms:
             raise ValueError("Final transcript result is invalid.")
+        await self._session.refresh(meeting, with_for_update=True)
         transcript = await self._ensure_transcript(meeting.id)
         version = await self._session.scalar(
             select(TranscriptVersion)
             .where(TranscriptVersion.transcript_id == transcript.id, TranscriptVersion.source == TranscriptVersionSource.STT)
             .order_by(TranscriptVersion.version_no.desc()).limit(1)
         )
-        if version is None or meeting.current_transcript_version_id != version.id:
+        if start_new_version or version is None or meeting.current_transcript_version_id != version.id:
             previous = await self._current_version_or_none(meeting)
             version = TranscriptVersion(
                 transcript_id=transcript.id,
@@ -222,6 +225,10 @@ class TranscriptService:
             self._session.add(version)
             await self._session.flush()
             meeting.current_transcript_version_id = version.id
+            if transcript.current_projection_initialized_at is not None:
+                # A revision may precede this turn. Start the new STT snapshot
+                # with the full projection, including its corrected speakers.
+                await self._checkpoint(transcript, version)
         speaker_id = await self._speaker_for_label(meeting.id, segment.speaker_label)
         sequence = int(await self._session.scalar(select(func.coalesce(func.max(SegmentVersion.sequence), 0) + 1).where(SegmentVersion.transcript_version_id == version.id)))
         stored = SegmentVersion(
@@ -335,6 +342,44 @@ class TranscriptService:
         version = await self._new_user_version(meeting, transcript, user)
         segment.speaker_id = speaker_id
         await self._event(transcript, version, user.id, "speaker_assigned", {"logical_segment_id": str(segment.logical_segment_id), "speaker_id": str(speaker_id) if speaker_id else None})
+        return await self._finish_mutation(meeting, transcript, version, segment)
+
+    async def revise_stt_speaker(
+        self, logical_id: UUID, user: User, label: str | None
+    ) -> TranscriptMutationResponse | None:
+        """Record provider corrections as revisions without overwriting user choices."""
+        segment = await self._session.scalar(
+            select(CurrentSegment).where(CurrentSegment.logical_segment_id == logical_id)
+            .execution_options(populate_existing=True)
+        )
+        if segment is None:
+            return None  # Deleted/merged while recording.
+        meeting, segment, transcript = await self._projection_context(logical_id, user)
+        await self._session.refresh(meeting)
+        edits = await self._session.scalars(
+            select(TranscriptEditEvent).where(TranscriptEditEvent.transcript_id == transcript.id)
+        )
+        for edit in edits:
+            if edit.payload.get("source") == "provider":
+                continue
+            if edit.event_type in {"speaker_assigned", "segment_split", "segments_merged"}:
+                if str(logical_id) in {
+                    str(edit.payload.get(key)) for key in (
+                        "logical_segment_id", "first_logical_segment_id",
+                        "second_logical_segment_id", "new_logical_segment_id",
+                    )
+                }:
+                    return None
+        speaker_id = await self._speaker_for_label(meeting.id, label)
+        if segment.speaker_id == speaker_id:
+            return None
+        version = await self._new_user_version(meeting, transcript, user)
+        segment.speaker_id = speaker_id
+        await self._event(transcript, version, user.id, "speaker_assigned", {
+            "logical_segment_id": str(logical_id),
+            "speaker_id": str(speaker_id) if speaker_id else None,
+            "source": "provider",
+        })
         return await self._finish_mutation(meeting, transcript, version, segment)
 
     async def _projected_delete(self, logical_id: UUID, user: User) -> TranscriptMutationResponse:
@@ -577,52 +622,7 @@ class TranscriptService:
         return TranscriptResponse(version_id=version.id, version_no=version.version_no, language=meeting.language_mode, segments=[SegmentResponse(id=item["logical_segment_id"], logical_segment_id=item["logical_segment_id"], start_ms=item["start_ms"], end_ms=item["end_ms"], text=item["text"], speaker_id=item["speaker_id"], confidence=item.get("confidence")) for item in page])
 
     async def _reconstruct(self, version: TranscriptVersion) -> list[dict[str, object]]:
-        lineage: list[TranscriptVersion] = []
-        current: TranscriptVersion | None = version
-        while current is not None:
-            lineage.append(current)
-            if current.checkpointed_at is not None:
-                break
-            current = await self._session.get(TranscriptVersion, current.parent_version_id) if current.parent_version_id else None
-        if not lineage or lineage[-1].checkpointed_at is None:
-            raise ApiError("TRANSCRIPT_HISTORY_UNAVAILABLE", "Transcript version has no valid checkpoint.", 409)
-        checkpoint = lineage[-1]
-        snapshots = await self._segments(checkpoint.id)
-        state = [self._snapshot_data(item, Decimal(index * 1024)) for index, item in enumerate(snapshots, start=1)]
-        by_id = {item["logical_segment_id"]: item for item in state}
-        for revision in reversed(lineage[:-1]):
-            events = await self._session.scalars(select(TranscriptEditEvent).where(TranscriptEditEvent.version_id == revision.id).order_by(TranscriptEditEvent.event_order))
-            for event in events:
-                self._apply_event(state, by_id, event)
-        return sorted(state, key=lambda item: (item["position"], item["logical_segment_id"]))
-
-    @staticmethod
-    def _snapshot_data(segment: SegmentVersion, position: Decimal) -> dict[str, object]:
-        return {"logical_segment_id": segment.logical_segment_id, "speaker_id": segment.speaker_id, "position": position, "start_ms": segment.start_ms, "end_ms": segment.end_ms, "text": segment.text, "original_stt_text": segment.original_stt_text, "confidence": segment.confidence}
-
-    @staticmethod
-    def _apply_event(state: list[dict[str, object]], by_id: dict[UUID, dict[str, object]], event: TranscriptEditEvent) -> None:
-        payload = event.payload
-        if event.event_type == "segment_edited":
-            item = by_id[UUID(str(payload["logical_segment_id"]))]
-            item.update({key: value for key, value in payload.items() if key in {"text", "start_ms", "end_ms"}})
-        elif event.event_type == "speaker_assigned":
-            by_id[UUID(str(payload["logical_segment_id"]))]["speaker_id"] = UUID(str(payload["speaker_id"])) if payload.get("speaker_id") else None
-        elif event.event_type == "segment_deleted":
-            item = by_id.pop(UUID(str(payload["logical_segment_id"])))
-            state.remove(item)
-        elif event.event_type == "segment_split":
-            item = by_id[UUID(str(payload["logical_segment_id"]))]
-            original_end = item["end_ms"]
-            item["end_ms"], item["text"] = payload["split_at_ms"], payload["first_text"]
-            created = dict(item, logical_segment_id=UUID(str(payload["new_logical_segment_id"])), position=Decimal(str(payload["new_position"])), start_ms=payload["split_at_ms"], end_ms=original_end, text=payload["second_text"])
-            state.append(created)
-            by_id[created["logical_segment_id"]] = created
-        elif event.event_type == "segments_merged":
-            first = by_id[UUID(str(payload["first_logical_segment_id"]))]
-            second = by_id.pop(UUID(str(payload["second_logical_segment_id"])))
-            first["end_ms"], first["text"] = payload["end_ms"], payload["text"]
-            state.remove(second)
+        return await TranscriptVersionReader(self._session).read(version)
 
     @staticmethod
     def _current_segment_response(segment: CurrentSegment) -> SegmentResponse:
@@ -633,7 +633,12 @@ class TranscriptService:
             return None
         speaker = await self._session.scalar(select(Speaker).where(Speaker.meeting_id == meeting_id, Speaker.provider_speaker_id == label))
         if speaker is None:
-            speaker = Speaker(meeting_id=meeting_id, provider_speaker_id=label, name=label)
+            count = int(await self._session.scalar(
+                select(func.count(Speaker.id)).where(Speaker.meeting_id == meeting_id)
+            ) or 0)
+            speaker = Speaker(
+                meeting_id=meeting_id, provider_speaker_id=label, name=f"Người nói {count + 1}"
+            )
             self._session.add(speaker)
             await self._session.flush()
         return speaker.id
