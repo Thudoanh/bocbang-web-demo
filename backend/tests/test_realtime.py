@@ -1,5 +1,7 @@
 import asyncio
+import json
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -18,6 +20,8 @@ from app.providers.contracts import (
     STTCapabilities,
     STTProviderError,
     TranscriptionSegment,
+    TranslationCapabilities,
+    TranslationProviderError,
 )
 
 
@@ -95,7 +99,38 @@ class FakeProvider:
         return self.stream
 
 
-def test_realtime_persists_finals_but_never_partials_and_handles_pause_resume(tmp_path: Path) -> None:
+class FakeTranslation:
+    def __init__(self, error: TranslationProviderError | None = None) -> None:
+        self.error = error
+        self.calls: list[tuple[tuple[TranscriptionSegment, ...], str, str]] = []
+
+    def capabilities(self) -> TranslationCapabilities:
+        return TranslationCapabilities(frozenset({("vi", "en"), ("en", "vi")}))
+
+    async def translate_segments(
+        self,
+        segments: tuple[TranscriptionSegment, ...],
+        source: str,
+        target: str,
+    ) -> tuple[TranscriptionSegment, ...]:
+        self.calls.append((segments, source, target))
+        if self.error:
+            raise self.error
+        return tuple(
+            TranscriptionSegment(
+                item.start_ms,
+                item.end_ms,
+                f"Translated: {item.text}",
+                item.speaker_label,
+                item.confidence,
+            )
+            for item in segments
+        )
+
+
+def test_realtime_persists_finals_but_never_partials_and_handles_pause_resume(
+    tmp_path: Path,
+) -> None:
     app, sender, database_url = _app(tmp_path)
     provider = FakeProvider()
     app.state.stt_provider = provider
@@ -134,6 +169,168 @@ def test_realtime_persists_finals_but_never_partials_and_handles_pause_resume(tm
     assert provider.stream.paused and provider.stream.resumed and provider.stream.closed
 
 
+def test_realtime_translation_only_translates_final_segments(tmp_path: Path) -> None:
+    app, sender, _ = _app(tmp_path)
+    provider, translation = FakeProvider(), FakeTranslation()
+    app.state.stt_provider = provider
+    app.state.translation_provider = translation
+    with TestClient(app) as client:
+        session = _verified_session(client, sender)
+        meeting_id = _create_realtime_meeting(client, session["access_token"])
+        with client.websocket_connect(
+            f"/api/v1/realtime/{meeting_id}?access_token={session['access_token']}"
+        ) as websocket:
+            assert websocket.receive_json()["type"] == "session.ready"
+            websocket.send_text(
+                '{"type":"translation.enable","target_language":"en",'
+                '"logical_segment_ids":[]}'
+            )
+            assert websocket.receive_json() == {
+                "type": "translation.status",
+                "enabled": True,
+                "source_language": "vi",
+                "target_language": "en",
+            }
+            websocket.send_bytes(b"audio-chunk")
+            assert websocket.receive_json()["type"] == "transcript.partial"
+            final = websocket.receive_json()
+            assert final["type"] == "transcript.final"
+            translated = websocket.receive_json()
+            assert translated == {
+                "type": "translation.final",
+                "logical_segment_id": final["logical_segment_id"],
+                "source_language": "vi",
+                "target_language": "en",
+                "text": "Translated: Bản cuối được lưu",
+            }
+            websocket.send_text('{"type":"recording.stop"}')
+            assert websocket.receive_json() == {"type": "meeting.status", "status": "processing"}
+
+    assert len(translation.calls) == 1
+    segments, source, target = translation.calls[0]
+    assert [item.text for item in segments] == ["Bản cuối được lưu"]
+    assert (source, target) == ("vi", "en")
+
+
+def test_realtime_translation_disable_and_reenable_backfills_without_duplicates(
+    tmp_path: Path,
+) -> None:
+    app, sender, _ = _app(tmp_path)
+    translation = FakeTranslation()
+    app.state.stt_provider = FakeProvider()
+    app.state.translation_provider = translation
+    with TestClient(app) as client:
+        session = _verified_session(client, sender)
+        meeting_id = _create_realtime_meeting(client, session["access_token"])
+        with client.websocket_connect(
+            f"/api/v1/realtime/{meeting_id}?access_token={session['access_token']}"
+        ) as websocket:
+            websocket.receive_json()
+            websocket.send_bytes(b"audio-chunk")
+            websocket.receive_json()
+            first_final = websocket.receive_json()
+            assert translation.calls == []
+
+            websocket.send_text(
+                json.dumps(
+                    {
+                        "type": "translation.enable",
+                        "target_language": "en",
+                        "logical_segment_ids": [first_final["logical_segment_id"]],
+                    }
+                )
+            )
+            assert websocket.receive_json()["type"] == "translation.status"
+            assert (
+                websocket.receive_json()["logical_segment_id"]
+                == first_final["logical_segment_id"]
+            )
+
+            websocket.send_text('{"type":"translation.disable"}')
+            assert websocket.receive_json() == {"type": "translation.status", "enabled": False}
+            websocket.send_bytes(b"audio-chunk")
+            websocket.receive_json()
+            second_final = websocket.receive_json()
+
+            websocket.send_text(
+                json.dumps(
+                    {
+                        "type": "translation.enable",
+                        "target_language": "en",
+                        "logical_segment_ids": [
+                            first_final["logical_segment_id"],
+                            second_final["logical_segment_id"],
+                        ],
+                    }
+                )
+            )
+            assert websocket.receive_json()["type"] == "translation.status"
+            assert (
+                websocket.receive_json()["logical_segment_id"]
+                == second_final["logical_segment_id"]
+            )
+            websocket.send_text('{"type":"recording.stop"}')
+            websocket.receive_json()
+
+    assert len(translation.calls) == 2
+    assert all(len(segments) == 1 for segments, _, _ in translation.calls)
+
+
+def test_realtime_translation_errors_do_not_interrupt_stt(tmp_path: Path) -> None:
+    app, sender, _ = _app(tmp_path)
+    translation = FakeTranslation(
+        TranslationProviderError("Translator unavailable.", code="TRANSLATION_DOWN")
+    )
+    app.state.stt_provider = FakeProvider()
+    app.state.translation_provider = translation
+    with TestClient(app) as client:
+        session = _verified_session(client, sender)
+        meeting_id = _create_realtime_meeting(client, session["access_token"])
+        with client.websocket_connect(
+            f"/api/v1/realtime/{meeting_id}?access_token={session['access_token']}"
+        ) as websocket:
+            websocket.receive_json()
+            websocket.send_text(
+                '{"type":"translation.enable","target_language":"fr",'
+                '"logical_segment_ids":[]}'
+            )
+            unsupported = websocket.receive_json()
+            assert unsupported["type"] == "translation.error"
+            assert unsupported["code"] == "PROVIDER_CAPABILITY_UNAVAILABLE"
+            assert translation.calls == []
+
+            websocket.send_text(
+                json.dumps(
+                    {
+                        "type": "translation.enable",
+                        "target_language": "en",
+                        "logical_segment_ids": [str(uuid4())],
+                    }
+                )
+            )
+            invalid = websocket.receive_json()
+            assert invalid["type"] == "translation.error"
+            assert invalid["code"] == "TRANSLATION_SEGMENT_NOT_FOUND"
+            assert translation.calls == []
+
+            websocket.send_text(
+                '{"type":"translation.enable","target_language":"en",'
+                '"logical_segment_ids":[]}'
+            )
+            assert websocket.receive_json()["type"] == "translation.status"
+            websocket.send_bytes(b"audio-chunk")
+            assert websocket.receive_json()["type"] == "transcript.partial"
+            assert websocket.receive_json()["type"] == "transcript.final"
+            error = websocket.receive_json()
+            assert error["type"] == "translation.error"
+            assert error["code"] == "TRANSLATION_DOWN"
+
+            websocket.send_text('{"type":"recording.pause"}')
+            websocket.send_text('{"type":"recording.resume"}')
+            websocket.send_text('{"type":"recording.stop"}')
+            assert websocket.receive_json() == {"type": "meeting.status", "status": "processing"}
+
+
 def test_realtime_rejects_provider_without_streaming_capability(tmp_path: Path) -> None:
     app, sender, _ = _app(tmp_path)
     app.state.stt_provider = FakeProvider(streaming=False)
@@ -150,7 +347,9 @@ def test_realtime_rejects_provider_without_streaming_capability(tmp_path: Path) 
                 websocket.receive_json()
 
 
-def test_realtime_retryable_provider_error_closes_for_reconnect_without_failing_meeting(tmp_path: Path) -> None:
+def test_realtime_retryable_provider_error_closes_for_reconnect_without_failing_meeting(
+    tmp_path: Path,
+) -> None:
     app, sender, database_url = _app(tmp_path)
     app.state.stt_provider = FakeProvider(
         error=STTProviderError("Temporary streaming interruption.", retryable=True)
@@ -239,7 +438,11 @@ def _app(tmp_path: Path) -> tuple[object, CapturingEmailSender, str]:
 def _verified_session(client: TestClient, sender: CapturingEmailSender) -> dict[str, object]:
     response = client.post(
         "/api/v1/auth/register",
-        json={"email": "speaker@example.com", "password": "correct horse battery", "full_name": "Speaker"},
+        json={
+            "email": "speaker@example.com",
+            "password": "correct horse battery",
+            "full_name": "Speaker",
+        },
     )
     assert response.status_code == 201
     verified = client.post(

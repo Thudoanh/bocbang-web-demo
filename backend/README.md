@@ -132,6 +132,15 @@ client sends binary audio chunks and optional JSON commands
 `session.ready`, `transcript.partial`, `transcript.final`, `meeting.status`, or
 `error` events. `error` includes a stable code and `retryable` boolean.
 
+Transient realtime translation reuses this socket. The client sends
+`translation.enable` with the automatic VI ↔ EN target and any missing logical
+segment IDs, or `translation.disable`. The server emits `translation.status`,
+`translation.final`, and non-terminal `translation.error` events. Translation
+runs in a per-connection background queue so provider latency does not block
+audio/STT. Only final segments are translated, requested backfill IDs are
+loaded from the meeting's trusted current transcript, and results are not
+persisted. The existing asynchronous translation REST APIs remain unchanged.
+
 Only normalized `transcript.final` results create `TranscriptVersion` and
 `SegmentVersion` rows; partial results are socket-only. Stopping or disconnecting
 changes an active meeting to `processing`, not `completed`; a non-retryable STT

@@ -1,5 +1,14 @@
 import { config } from "../app/config";
-export type RealtimeEvent = { type: "session.ready" | "transcript.partial" | "transcript.final" | "meeting.status" | "error"; [key: string]: unknown };
+
+export type RealtimeEvent =
+  | { type: "session.ready"; provider: string; language: string }
+  | { type: "transcript.partial"; language: string; start_ms: number; end_ms: number; text: string }
+  | { type: "transcript.final"; language: string; start_ms: number; end_ms: number; text: string; logical_segment_id: string }
+  | { type: "meeting.status"; status: string }
+  | { type: "error"; code: string; message: string; retryable: boolean }
+  | { type: "translation.status"; enabled: boolean; source_language?: string; target_language?: string }
+  | { type: "translation.final"; logical_segment_id: string; source_language: string; target_language: string; text: string }
+  | { type: "translation.error"; code: string; message: string; retryable: boolean; logical_segment_ids: string[] };
 
 export class MeetingSocket {
   private socket?: WebSocket;
@@ -42,7 +51,7 @@ export class MeetingSocket {
         }
         this.onEvent(event);
       } catch {
-        this.onEvent({ type: "error", message: "Sự kiện realtime không hợp lệ.", retryable: false });
+        this.onEvent({ type: "error", code: "INVALID_REALTIME_EVENT", message: "Sự kiện realtime không hợp lệ.", retryable: false });
         this.stopped = true;
       }
     };
@@ -71,9 +80,19 @@ export class MeetingSocket {
       this.stopped = true;
       this.clearRetryTimer();
     }
-    if (this.socket?.readyState === WebSocket.OPEN) {
-      this.socket.send(JSON.stringify({ type: command }));
-    }
+    this.sendCommand({ type: command });
+  }
+
+  enableTranslation(targetLanguage: string, logicalSegmentIds: string[]) {
+    this.sendCommand({
+      type: "translation.enable",
+      target_language: targetLanguage,
+      logical_segment_ids: logicalSegmentIds,
+    });
+  }
+
+  disableTranslation() {
+    this.sendCommand({ type: "translation.disable" });
   }
 
   close() {
@@ -86,6 +105,12 @@ export class MeetingSocket {
     if (this.retryTimer !== undefined) {
       window.clearTimeout(this.retryTimer);
       this.retryTimer = undefined;
+    }
+  }
+
+  private sendCommand(payload: Record<string, unknown>) {
+    if (this.socket?.readyState === WebSocket.OPEN) {
+      this.socket.send(JSON.stringify(payload));
     }
   }
 }

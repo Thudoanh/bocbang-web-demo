@@ -4,6 +4,13 @@ _Cập nhật lần cuối: 2026-10-07_
 
 ## Done
 
+- Realtime recording now supports optional, transient VI ↔ EN translation on
+  the existing authenticated WebSocket. Final STT segments are translated on a
+  separate per-session queue, rendered under their source segment, and can be
+  hidden to stop provider calls. Re-enabling backfills missing trusted segment
+  IDs without persisting or replacing the existing batch translation feature.
+  Frontend production build and seven focused realtime WebSocket tests pass.
+
 - Realtime AssemblyAI now steers every stream to the meeting language with a
   single `language_codes` value, keeps the language-specific verbatim prompt,
   and defaults to Universal 3.6 in `balanced` mode. Unsupported languages fail

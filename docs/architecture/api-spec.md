@@ -312,6 +312,30 @@ disconnect leaves the meeting `processing`; it does not mark a meeting or job
 `completed`. A non-retryable provider failure marks the meeting `failed`; a
 retryable error keeps the socket available for another chunk/command.
 
+Optional realtime translation uses the same authenticated socket and never
+changes the saved translation REST workflow:
+
+```json
+{"type":"translation.enable","target_language":"en","logical_segment_ids":[]}
+{"type":"translation.disable"}
+```
+
+The target must be the supported opposite of the meeting language (`vi` →
+`en`, or `en` → `vi`). `logical_segment_ids` requests backfill from trusted
+current transcript rows; client-provided transcript text is never accepted.
+The server emits:
+
+```json
+{"type":"translation.status","enabled":true,"source_language":"vi","target_language":"en"}
+{"type":"translation.final","logical_segment_id":"uuid","source_language":"vi","target_language":"en","text":"..."}
+{"type":"translation.error","code":"...","message":"...","retryable":true,"logical_segment_ids":[]}
+```
+
+Only finalized STT segments enter the non-blocking translation queue.
+`translation.error` is non-terminal and never closes or fails the STT session.
+Realtime translation results are transient and are not stored in translation
+tables or used for exports.
+
 Realtime endpoint checks configured STT capability. Nếu
 `streaming=false`, return explicit unsupported capability; không giả
 realtime.

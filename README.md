@@ -98,6 +98,12 @@ captures mono PCM16 audio through an AudioWorklet. Override the provider model
 or latency/accuracy preset with `ASSEMBLYAI_STREAMING_MODEL` and
 `ASSEMBLYAI_STREAMING_MODE` in the root `.env`.
 
+During realtime recording, users may enable transient VI ↔ EN translation from
+the recording panel. Only finalized STT segments are translated; hiding the
+translation stops provider calls, and enabling it again backfills untranslated
+segments from the current browser session. These realtime translations are not
+stored and do not replace the existing saved translation workflow.
+
 After frontend/backend source or dependency changes, rebuild with
 `docker compose up --build -d`. To explicitly apply new migrations to an
 existing stack, run `docker compose run --rm migrate` before restarting the

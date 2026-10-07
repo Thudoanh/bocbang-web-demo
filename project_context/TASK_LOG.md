@@ -12,6 +12,20 @@ Mục mới nhất được thêm ở đầu file. Dùng format ngắn dưới �
 - Follow-up / blocker: ...
 ```
 
+## 2026-10-07 — Transient realtime translation
+
+- Status: done (live microphone/provider acceptance pending)
+- Scope: Added an opt-in VI ↔ EN translation view for finalized realtime STT
+  segments while preserving the existing saved translation workflow.
+- Changed: realtime WebSocket commands/events and background translation queue,
+  trusted segment backfill, meeting recording UI/socket state, protocol docs.
+- Verified: frontend TypeScript/Vite production Docker build; seven focused
+  realtime WebSocket tests covering final-only translation, toggle/backfill,
+  deduplication, unsupported pairs, invalid segment IDs and provider failures.
+- Follow-up / blocker: Run a paid browser microphone session with the configured
+  STT and translation providers to measure end-to-end latency and translation
+  quality for both VI → EN and EN → VI.
+
 ## 2026-10-07 — Vietnamese realtime STT steering and audio capture
 
 - Status: done (live provider accuracy smoke test pending)
