@@ -45,6 +45,13 @@ def test_exports_all_formats_and_collaboration_permissions(tmp_path: Path) -> No
     )
     app.state.email_sender = sender
 
+    async def presigned_url(*_args: object, **_kwargs: object) -> str:
+        return "https://storage.example.invalid/export"
+
+    # Production S3 storage can create presigned URLs, but browser downloads
+    # must still be proxied to avoid depending on bucket CORS configuration.
+    app.state.media_storage.presigned_get_url = presigned_url
+
     def enqueue(job_id: UUID, _settings: Settings) -> None:
         def execute() -> None:
             async def run_until_terminal() -> None:
@@ -90,7 +97,9 @@ def test_exports_all_formats_and_collaboration_permissions(tmp_path: Path) -> No
             completed = _wait_export(client, owner_headers, response.json()["id"])
             assert completed["status"] == "completed"
             download = client.get(
-                f"/api/v1/exports/{completed['id']}/download", headers=reader_headers
+                f"/api/v1/exports/{completed['id']}/download",
+                headers=reader_headers,
+                follow_redirects=False,
             )
             assert download.status_code == 200
             if format in {"txt", "json", "srt", "vtt"}:

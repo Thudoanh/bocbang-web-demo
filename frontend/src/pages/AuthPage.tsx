@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ApiError } from "../api/client";
 import { authApi } from "../api/endpoints";
 import { useAuth } from "../auth/AuthContext";
 import { Button, Icon } from "../components/ui";
 import { ThemeToggle } from "../components/ThemeToggle";
+import { config } from "../app/config";
 
 type Mode = "login" | "register" | "verify" | "forgot" | "reset";
 
@@ -28,6 +29,12 @@ export function AuthPage({ initialMode = "login" }: { initialMode?: Exclude<Mode
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const auth = useAuth();
+
+  useEffect(() => {
+    // Start waking the free backend as soon as the auth screen appears instead
+    // of waiting for the user to press the Google button.
+    void fetch(`${config.apiBaseUrl}/health`).catch(() => undefined);
+  }, []);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();

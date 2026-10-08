@@ -6,7 +6,6 @@ from urllib.parse import quote
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request, Response, status
-from fastapi.responses import RedirectResponse
 
 from app.api.v1.routes.auth import CurrentUserDependency
 from app.core.dependencies import get_database
@@ -42,10 +41,13 @@ async def create_export(
     export = await service.request(meeting_id, user, payload)
     try:
         request.app.state.enqueue_job(export.job_id, request.app.state.settings)
-    except Exception:
+    except Exception as exc:
         await fail_enqueue(get_database(request), export.job_id)
         from app.core.errors import ApiError
-        raise ApiError("QUEUE_ENQUEUE_FAILED", "The export job could not be queued.", 503)
+
+        raise ApiError(
+            "QUEUE_ENQUEUE_FAILED", "The export job could not be queued.", 503
+        ) from exc
     return export
 
 
@@ -58,12 +60,11 @@ async def get_export(
 
 @exports_router.get("/{export_id}/download")
 async def download_export(
-    export_id: UUID, request: Request, user: CurrentUserDependency, service: ExportServiceDependency
+    export_id: UUID, user: CurrentUserDependency, service: ExportServiceDependency
 ) -> Response:
-    ttl = request.app.state.settings.storage_presigned_url_ttl_seconds
-    url = await service.presigned_download_url(export_id, user, ttl)
-    if url is not None:
-        return RedirectResponse(url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+    # Proxy private object storage through the authenticated API. Browser
+    # fetches cannot reliably follow a cross-origin presigned redirect unless
+    # every S3-compatible bucket has matching CORS rules.
     content, export = await service.download(export_id, user)
     filename = export.filename or "meeting-export"
     disposition = f"attachment; filename=export; filename*=UTF-8''{quote(filename)}"

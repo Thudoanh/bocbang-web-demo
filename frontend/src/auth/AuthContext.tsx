@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { ApiError, apiClient, configureApiAuth } from "../api/client";
+import { configureApiAuth } from "../api/client";
 import { authApi } from "../api/endpoints";
 import { config } from "../app/config";
 import type { AuthSession, User } from "../types/domain";
@@ -37,11 +37,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     logout: async () => { try { await authApi.logout(); } finally { persist(null); } },
     updateProfile: async (fullName) => { if (!sessionRef.current) return; const user = await authApi.updateProfile(fullName); persist({ ...sessionRef.current, user }); },
     googleLogin: async () => {
-      try {
-        await apiClient.get<{ status: string }>("/ready");
-      } catch {
-        throw new ApiError(0, "API_UNAVAILABLE", "Máy chủ chưa sẵn sàng. Hãy khởi động backend rồi thử đăng nhập Google lại.");
-      }
       window.location.assign(`${config.apiBaseUrl}${authApi.googleUrl()}`);
     },
   }), [persist, ready, session?.user]);

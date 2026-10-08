@@ -99,4 +99,5 @@ def test_google_start_requires_configuration_and_uses_signed_state(tmp_path: Pat
 
     assert response.status_code == 307
     assert response.headers["location"].startswith("https://accounts.google.com/o/oauth2/v2/auth?")
+    assert "prompt=" not in response.headers["location"]
     assert "bocbang_oauth_state" in response.headers["set-cookie"]

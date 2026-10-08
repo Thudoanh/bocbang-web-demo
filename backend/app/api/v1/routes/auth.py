@@ -8,8 +8,8 @@ from urllib.parse import urlencode
 
 import httpx
 from fastapi import APIRouter, Depends, Request, Response, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.responses import RedirectResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.core.config import Settings
 from app.core.dependencies import DatabaseSessionDependency, get_settings
@@ -25,8 +25,8 @@ from app.schemas.auth import (
     RegisterResponse,
     ResetPasswordRequest,
     TokenRefreshRequest,
-    UserUpdateRequest,
     UserResponse,
+    UserUpdateRequest,
 )
 from app.services.auth import AuthService
 
@@ -133,7 +133,6 @@ async def google_start(request: Request, service: AuthServiceDependency) -> Redi
             "response_type": "code",
             "scope": "openid email profile",
             "state": state,
-            "prompt": "select_account",
         }
     )
     response = RedirectResponse(f"https://accounts.google.com/o/oauth2/v2/auth?{query}")
@@ -177,7 +176,10 @@ async def google_callback(
         )
     picture = profile.get("picture")
     user = await service.google_user(
-        subject, email.strip().lower(), str(profile.get("name") or email), str(picture) if picture else None
+        subject,
+        email.strip().lower(),
+        str(profile.get("name") or email),
+        str(picture) if picture else None,
     )
     session = service.session_response(user)
     fragment = urlencode(

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -20,6 +21,17 @@ def process_commands(port: str) -> tuple[tuple[str, Sequence[str]], ...]:
     """Return the supervised commands in startup order."""
 
     return (
+        (
+            "api",
+            (
+                "uvicorn",
+                "app.main:app",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                port,
+            ),
+        ),
         (
             "worker",
             (
@@ -32,18 +44,23 @@ def process_commands(port: str) -> tuple[tuple[str, Sequence[str]], ...]:
             ),
         ),
         ("reconciler", (sys.executable, "-m", "app.workers.reconciler")),
-        (
-            "api",
-            (
-                "uvicorn",
-                "app.main:app",
-                "--host",
-                "0.0.0.0",
-                "--port",
-                port,
-            ),
-        ),
     )
+
+
+def _wait_for_api(port: str, process: subprocess.Popen[bytes]) -> None:
+    """Give the API cold start exclusive CPU before launching job processes."""
+
+    deadline = time.monotonic() + 90
+    while time.monotonic() < deadline:
+        return_code = process.poll()
+        if return_code is not None:
+            raise RuntimeError(f"API exited during startup with code {return_code}.")
+        try:
+            with socket.create_connection(("127.0.0.1", int(port)), timeout=0.25):
+                return
+        except OSError:
+            time.sleep(0.1)
+    raise RuntimeError("API did not open its port within 90 seconds.")
 
 
 def _stop(processes: list[tuple[str, subprocess.Popen[bytes]]]) -> None:
@@ -80,7 +97,10 @@ def main() -> int:
     try:
         for name, command in process_commands(os.getenv("PORT", "8000")):
             print(f"free-stack starting {name}", flush=True)
-            processes.append((name, subprocess.Popen(command)))
+            process = subprocess.Popen(command)
+            processes.append((name, process))
+            if name == "api":
+                _wait_for_api(os.getenv("PORT", "8000"), process)
 
         while not shutting_down:
             for name, process in processes:
