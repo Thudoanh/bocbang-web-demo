@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from app.core.config import Settings
 from app.db.base import Base
 from app.main import create_app
+from app.providers.email import UnavailableEmailSender, build_email_sender
 
 
 class CapturingEmailSender:
@@ -51,6 +52,12 @@ def test_email_registration_verification_login_and_refresh(tmp_path: Path) -> No
         assert sender.messages[0][0] == "member@example.com"
         assert sender.messages[0][2] == "verify_email"
 
+        resent = client.post(
+            "/api/v1/auth/resend-email-otp", json={"email": "member@example.com"}
+        )
+        assert resent.status_code == 204
+        assert sender.messages[-1][2] == "verify_email"
+
         unverified_login = client.post(
             "/api/v1/auth/login",
             json={"email": "member@example.com", "password": "correct horse battery"},
@@ -60,7 +67,7 @@ def test_email_registration_verification_login_and_refresh(tmp_path: Path) -> No
 
         verified = client.post(
             "/api/v1/auth/verify-email-otp",
-            json={"email": "member@example.com", "code": sender.messages[0][1]},
+            json={"email": "member@example.com", "code": sender.messages[-1][1]},
         )
         assert verified.status_code == 200
         session = verified.json()
@@ -79,6 +86,34 @@ def test_email_registration_verification_login_and_refresh(tmp_path: Path) -> No
         )
         assert refreshed.status_code == 200
         assert refreshed.json()["access_token"] != session["access_token"]
+
+        forgot = client.post(
+            "/api/v1/auth/forgot-password", json={"email": "member@example.com"}
+        )
+        assert forgot.status_code == 204
+        assert sender.messages[-1][2] == "reset_password"
+        reset = client.post(
+            "/api/v1/auth/reset-password",
+            json={
+                "email": "member@example.com",
+                "code": sender.messages[-1][1],
+                "new_password": "new correct horse battery",
+            },
+        )
+        assert reset.status_code == 204
+        relogin = client.post(
+            "/api/v1/auth/login",
+            json={"email": "member@example.com", "password": "new correct horse battery"},
+        )
+        assert relogin.status_code == 200
+
+
+def test_console_email_is_never_used_in_production() -> None:
+    sender = build_email_sender(
+        Settings(_env_file=None, environment="production", email_provider="console")
+    )
+
+    assert isinstance(sender, UnavailableEmailSender)
 
 
 def test_google_start_requires_configuration_and_uses_signed_state(tmp_path: Path) -> None:

@@ -35,6 +35,20 @@ envVarGroups:
         sync: false
       - key: GOOGLE_REDIRECT_URI
         sync: false
+      - key: EMAIL_PROVIDER
+        value: smtp
+      - key: EMAIL_FROM
+        sync: false
+      - key: EMAIL_SMTP_HOST
+        sync: false
+      - key: EMAIL_SMTP_PORT
+        value: "587"
+      - key: EMAIL_SMTP_USERNAME
+        sync: false
+      - key: EMAIL_SMTP_PASSWORD
+        sync: false
+      - key: EMAIL_SMTP_USE_TLS
+        value: "true"
       - key: STORAGE_BACKEND
         value: s3
       - key: S3_ENDPOINT_URL

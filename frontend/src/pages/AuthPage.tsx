@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { ApiError } from "../api/client";
 import { authApi } from "../api/endpoints";
+import { config } from "../app/config";
 import { useAuth } from "../auth/AuthContext";
 import { Button, Icon } from "../components/ui";
 import { ThemeToggle } from "../components/ThemeToggle";
-import { config } from "../app/config";
 
 type Mode = "login" | "register" | "verify" | "forgot" | "reset";
 
@@ -25,6 +25,7 @@ export function AuthPage({ initialMode = "login" }: { initialMode?: Exclude<Mode
   const [agreed, setAgreed] = useState(false);
   const [code, setCode] = useState("");
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [pending, setPending] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
@@ -40,6 +41,7 @@ export function AuthPage({ initialMode = "login" }: { initialMode?: Exclude<Mode
     event.preventDefault();
     setPending(true);
     setError("");
+    setNotice("");
     try {
       if (mode === "login") {
         await auth.login(email, password);
@@ -48,21 +50,38 @@ export function AuthPage({ initialMode = "login" }: { initialMode?: Exclude<Mode
         if (password !== confirmPassword) throw new Error("Mật khẩu xác nhận chưa khớp.");
         if (!agreed) throw new Error("Bạn cần đồng ý với điều khoản sử dụng.");
         await auth.register(email, password, name);
+        setNotice("Đã gửi mã xác minh. Hãy kiểm tra hộp thư đến và thư rác.");
         setMode("verify");
       } else if (mode === "verify") {
         await auth.verifyOtp(email, code);
         window.location.assign("/meetings");
       } else if (mode === "forgot") {
         await authApi.forgotPassword(email);
+        setNotice("Nếu email đã đăng ký, mã khôi phục đã được gửi. Hãy kiểm tra cả thư rác.");
         setMode("reset");
       } else {
         await authApi.resetPassword(email, code, password);
+        setNotice("Đổi mật khẩu thành công. Bạn có thể đăng nhập ngay.");
         setMode("login");
       }
     } catch (cause) {
       const apiError = cause as ApiError;
       if (apiError.code === "EMAIL_NOT_VERIFIED") setMode("verify");
-      setError(apiError.message);
+      setError(authErrorMessage(cause));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function resendVerificationCode() {
+    setPending(true);
+    setError("");
+    setNotice("");
+    try {
+      await authApi.resendOtp(email);
+      setNotice("Đã gửi lại mã xác minh. Hãy kiểm tra hộp thư đến và thư rác.");
+    } catch (cause) {
+      setError(authErrorMessage(cause));
     } finally {
       setPending(false);
     }
@@ -165,6 +184,7 @@ export function AuthPage({ initialMode = "login" }: { initialMode?: Exclude<Mode
           </label>
         )}
         {error && <div className="form-error">{error}</div>}
+        {notice && <div className="notice">{notice}</div>}
         <Button type="submit" tone="dark" disabled={pending}>
           {pending ? "Đang xử lý…" : current.action}
         </Button>
@@ -181,11 +201,23 @@ export function AuthPage({ initialMode = "login" }: { initialMode?: Exclude<Mode
         <p className="switch"><a href="/login">Đã có tài khoản? Đăng nhập</a></p>
       )}
       {mode === "verify" && (
-        <p className="switch"><button type="button" onClick={() => void authApi.resendOtp(email)}>Gửi lại mã</button></p>
+        <p className="switch"><button type="button" disabled={pending} onClick={() => void resendVerificationCode()}>{pending ? "Đang gửi…" : "Gửi lại mã"}</button></p>
       )}
       {(mode === "forgot" || mode === "reset") && (
         <p className="switch"><a href="/login">← Quay lại đăng nhập</a></p>
       )}
     </section>
   </div>;
+}
+
+function authErrorMessage(cause: unknown): string {
+  if (cause instanceof ApiError) {
+    if (cause.code === "EMAIL_DELIVERY_UNAVAILABLE") {
+      return "Hệ thống gửi email chưa được cấu hình. Vui lòng thử lại sau.";
+    }
+    if (cause.code === "EMAIL_DELIVERY_FAILED") {
+      return "Không thể gửi email lúc này. Vui lòng kiểm tra địa chỉ và thử lại.";
+    }
+  }
+  return cause instanceof Error ? cause.message : "Không thể hoàn tất yêu cầu.";
 }

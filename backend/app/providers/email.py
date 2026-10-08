@@ -78,8 +78,10 @@ def build_email_sender(settings: Settings) -> EmailSender:
             return SmtpEmailSender(settings)
         except ValueError:
             return UnavailableEmailSender()
-    if settings.email_provider in ("console", "dev", "local") or (
-        not settings.email_provider and settings.environment == "development"
+    is_production = settings.environment.strip().lower() in {"production", "prod"}
+    if not is_production and (
+        settings.email_provider in ("console", "dev", "local")
+        or (not settings.email_provider and settings.environment == "development")
     ):
         return ConsoleEmailSender()
     return UnavailableEmailSender()
