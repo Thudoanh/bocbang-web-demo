@@ -8,7 +8,8 @@ from urllib.parse import quote
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Request, Response, UploadFile, status
-from fastapi.responses import RedirectResponse, Response as FastAPIResponse
+from fastapi.responses import RedirectResponse
+from fastapi.responses import Response as FastAPIResponse
 
 from app.api.v1.routes.auth import CurrentUserDependency
 from app.core.config import Settings
@@ -75,7 +76,13 @@ async def create_playback_url(
     ttl = settings.media_playback_ticket_ttl_seconds
     tokens = TokenService(settings.jwt_secret, settings.access_token_ttl_seconds, settings.refresh_token_ttl_seconds)
     ticket = tokens.issue_media_playback_ticket(user.id, meeting_id, media_id, ttl)
-    return MediaPlaybackResponse(url=str(request.url_for("playback_media", ticket=ticket)), expires_in_seconds=ttl)
+    playback_url = request.url_for("playback_media", ticket=ticket)
+    # Render terminates TLS before forwarding the request to Uvicorn.  The
+    # ASGI request can therefore look like HTTP even though the public page is
+    # HTTPS, and browsers refuse to load that mixed-content audio URL.
+    if settings.environment.lower() in {"production", "prod"}:
+        playback_url = playback_url.replace(scheme="https")
+    return MediaPlaybackResponse(url=str(playback_url), expires_in_seconds=ttl)
 
 
 @meetings_router.get("/media/playback/{ticket}", name="playback_media")
@@ -118,7 +125,11 @@ async def stream_media(
 
 @meetings_router.get("/{meeting_id}/media/{media_id}/download")
 async def download_media(
-    meeting_id: UUID, media_id: UUID, user: CurrentUserDependency, service: MediaServiceDependency
+    meeting_id: UUID,
+    media_id: UUID,
+    request: Request,
+    user: CurrentUserDependency,
+    service: MediaServiceDependency,
 ) -> Response:
     settings = get_settings(request)
     url = await service.presigned_url(

@@ -48,7 +48,9 @@ def test_media_upload_creates_queue_job_and_respects_acl(tmp_path: Path) -> None
     app = create_app(
         Settings(
             _env_file=None,
+            environment="production",
             database_url=database_url,
+            redis_url="redis://test.invalid:6379/0",
             jwt_secret="test-secret",
             frontend_origins="http://localhost:5173",
             media_storage_path=tmp_path / "objects",
@@ -101,6 +103,12 @@ def test_media_upload_creates_queue_job_and_respects_acl(tmp_path: Path) -> None
             media = client.get(f"/api/v1/meetings/{meeting_id}/media", headers=reader_headers)
             assert media.status_code == 200
             assert media.json()[0]["duration_ms"] == 1_200
+            playback = client.post(
+                f"/api/v1/meetings/{meeting_id}/media/{job['media_file_id']}/playback-url",
+                headers=owner_headers,
+            )
+            assert playback.status_code == 200
+            assert playback.json()["url"].startswith("https://testserver/")
             assert (
                 client.post(
                     f"/api/v1/meetings/{meeting_id}/media",
