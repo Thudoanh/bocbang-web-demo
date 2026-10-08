@@ -95,7 +95,7 @@ services:
     region: singapore
     plan: free
     dockerContext: ./backend
-    dockerfilePath: ./docker/backend.Dockerfile
+    dockerfilePath: ./backend/Dockerfile
     dockerCommand: python -m app.free_stack
     healthCheckPath: /api/v1/ready
     envVars:

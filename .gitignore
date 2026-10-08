@@ -11,7 +11,9 @@ dist/
 # Environment
 .env
 .env.local
+.env.neon.local
 
 # IDE and OS
 .DS_Store
 Thumbs.db
+.neon
