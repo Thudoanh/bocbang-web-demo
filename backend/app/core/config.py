@@ -3,6 +3,7 @@
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -106,9 +107,13 @@ class Settings(BaseSettings):
     @classmethod
     def split_frontend_origins(cls, value: str | list[str] | tuple[str, ...]) -> tuple[str, ...]:
         if isinstance(value, str):
-            origins = tuple(origin.strip().rstrip("/") for origin in value.split(",") if origin.strip())
+            origins = tuple(
+                origin.strip().rstrip("/") for origin in value.split(",") if origin.strip()
+            )
         else:
-            origins = tuple(str(origin).strip().rstrip("/") for origin in value if str(origin).strip())
+            origins = tuple(
+                str(origin).strip().rstrip("/") for origin in value if str(origin).strip()
+            )
         if not origins:
             raise ValueError("At least one FRONTEND_ORIGIN must be configured.")
         return origins
@@ -119,10 +124,26 @@ class Settings(BaseSettings):
         if not value:
             return None
         if value.startswith("postgres://"):
-            return "postgresql+asyncpg://" + value.removeprefix("postgres://")
-        if value.startswith("postgresql://"):
-            return "postgresql+asyncpg://" + value.removeprefix("postgresql://")
-        return value
+            value = "postgresql+asyncpg://" + value.removeprefix("postgres://")
+        elif value.startswith("postgresql://"):
+            value = "postgresql+asyncpg://" + value.removeprefix("postgresql://")
+
+        if not value.startswith("postgresql+asyncpg://"):
+            return value
+
+        parsed = urlsplit(value)
+        query: list[tuple[str, str]] = []
+        for key, query_value in parse_qsl(parsed.query, keep_blank_values=True):
+            # Neon emits libpq options that SQLAlchemy forwards as keyword
+            # arguments. asyncpg expects `ssl` and does not support
+            # `channel_binding`, so translate the URL at the configuration
+            # boundary before either Alembic or the application creates an
+            # engine.
+            if key == "channel_binding":
+                continue
+            query.append(("ssl" if key == "sslmode" else key, query_value))
+
+        return urlunsplit(parsed._replace(query=urlencode(query)))
 
     @field_validator("storage_backend")
     @classmethod
@@ -153,7 +174,9 @@ class Settings(BaseSettings):
     @classmethod
     def validate_positive_worker_setting(cls, value: int) -> int:
         if value <= 0:
-            raise ValueError("Worker retry, delivery, and reconciliation settings must be positive.")
+            raise ValueError(
+                "Worker retry, delivery, and reconciliation settings must be positive."
+            )
         return value
 
     def require_queue_configuration(self) -> None:

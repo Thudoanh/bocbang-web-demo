@@ -22,6 +22,20 @@ def test_application_starts_and_generates_openapi() -> None:
     assert "/api/v1/health" in response.json()["paths"]
 
 
+def test_neon_database_url_is_compatible_with_asyncpg() -> None:
+    settings = Settings(
+        _env_file=None,
+        database_url=(
+            "postgresql://user:password@example.neon.tech/database"
+            "?sslmode=require&channel_binding=require"
+        ),
+    )
+
+    assert settings.database_url == (
+        "postgresql+asyncpg://user:password@example.neon.tech/database?ssl=require"
+    )
+
+
 def test_health_is_live_and_returns_request_id() -> None:
     with build_client() as client:
         response = client.get("/api/v1/health", headers={"X-Request-ID": "test-request"})
