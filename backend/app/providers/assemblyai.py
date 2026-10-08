@@ -169,10 +169,11 @@ class AssemblyAIStream:
                 "encoding": options.audio_format or "pcm_s16le",
                 "speech_model": streaming_model,
                 "mode": streaming_mode,
-                # Universal Streaming expects the plural parameter to contain
-                # a JSON array. Passing a Python list through urlencode with
-                # doseq=True would emit repeated scalars instead.
-                "language_codes": json.dumps([language]),
+                # Universal-3.6 Pro treats language_codes as a multilingual
+                # bias. A meeting language is an explicit monolingual choice,
+                # so use language_code to prevent low-confidence Vietnamese
+                # audio from drifting to English.
+                "language_code": language,
                 "min_turn_silence": min_turn_silence_ms,
                 "max_turn_silence": max_turn_silence_ms,
             }
@@ -366,7 +367,10 @@ def _stream_provider_error(
 
 def _transcription_prompt(language: str, context: str | None = None) -> str:
     language_name = {"vi": "Vietnamese", "en": "English"}.get(language, language)
-    base = f"A {language_name} business meeting with multiple speakers."
+    base = (
+        f"Transcribe {language_name}. Preserve the spoken words in {language_name}; "
+        f"this is a {language_name} business meeting with multiple speakers."
+    )
     detail = context.strip() if context else ""
     return f"{base} {detail}".strip()[:1750]
 

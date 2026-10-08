@@ -262,14 +262,16 @@ def test_assemblyai_stream_uses_configured_model_waits_for_begin_and_termination
         query = parse_qs(urlparse(captured_url).query)
         assert query["speech_model"] == ["universal-3-6-pro"]
         assert query["mode"] == ["balanced"]
-        assert query["language_codes"] == ['["vi"]']
+        assert query["language_code"] == ["vi"]
+        assert "language_codes" not in query
         assert query["encoding"] == ["pcm_s16le"]
         assert query["speaker_labels"] == ["true"]
         assert query["min_turn_silence"] == ["560"]
         assert query["max_turn_silence"] == ["2000"]
         assert query["keyterms_prompt"] == ['["Bóc Băng"]']
         assert query["prompt"] == [
-            "A Vietnamese business meeting with multiple speakers."
+            "Transcribe Vietnamese. Preserve the spoken words in Vietnamese; "
+            "this is a Vietnamese business meeting with multiple speakers."
         ]
 
         await websocket.incoming.put(json.dumps({
