@@ -169,8 +169,7 @@ class AssemblyAIStream:
                 "encoding": options.audio_format or "pcm_s16le",
                 "speech_model": streaming_model,
                 "mode": streaming_mode,
-                "language_codes": [language],
-                "language_detection": "true",
+                "language_code": language,
                 "min_turn_silence": min_turn_silence_ms,
                 "max_turn_silence": max_turn_silence_ms,
             }
