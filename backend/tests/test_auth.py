@@ -1,13 +1,17 @@
 import asyncio
+import json
 from pathlib import Path
 
+import httpx
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.core.config import Settings
+from app.core.errors import ApiError
 from app.db.base import Base
 from app.main import create_app
-from app.providers.email import UnavailableEmailSender, build_email_sender
+from app.providers.email import BrevoEmailSender, UnavailableEmailSender, build_email_sender
 
 
 class CapturingEmailSender:
@@ -111,6 +115,63 @@ def test_email_registration_verification_login_and_refresh(tmp_path: Path) -> No
 def test_console_email_is_never_used_in_production() -> None:
     sender = build_email_sender(
         Settings(_env_file=None, environment="production", email_provider="console")
+    )
+
+    assert isinstance(sender, UnavailableEmailSender)
+
+
+def test_brevo_email_sender_uses_https_api() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(201, json={"messageId": "test-message"})
+
+    sender = BrevoEmailSender(
+        Settings(
+            _env_file=None,
+            email_provider="brevo",
+            email_api_key="test-api-key",
+            email_from="sender@example.com",
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+
+    asyncio.run(sender.send_otp("member@example.com", "123456", "verify_email"))
+
+    assert len(requests) == 1
+    request = requests[0]
+    assert request.url == "https://api.brevo.com/v3/smtp/email"
+    assert request.headers["api-key"] == "test-api-key"
+    payload = json.loads(request.content)
+    assert payload["sender"]["email"] == "sender@example.com"
+    assert payload["to"] == [{"email": "member@example.com"}]
+    assert "123456" in payload["textContent"]
+
+
+def test_brevo_email_sender_maps_provider_failure_to_api_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, request=request, json={"message": "unauthorized"})
+
+    sender = BrevoEmailSender(
+        Settings(
+            _env_file=None,
+            email_provider="brevo",
+            email_api_key="invalid-api-key",
+            email_from="sender@example.com",
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(ApiError) as exc_info:
+        asyncio.run(sender.send_otp("member@example.com", "123456", "verify_email"))
+
+    assert exc_info.value.code == "EMAIL_DELIVERY_FAILED"
+
+
+def test_brevo_provider_requires_api_key_and_sender() -> None:
+    sender = build_email_sender(
+        Settings(_env_file=None, environment="production", email_provider="brevo")
     )
 
     assert isinstance(sender, UnavailableEmailSender)

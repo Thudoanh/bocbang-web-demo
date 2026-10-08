@@ -55,8 +55,10 @@ independent worker with `dramatiq app.workers.worker`.
 
 Email/password authentication requires `DATABASE_URL` and `JWT_SECRET`. Email
 verification and password reset only send mail through an explicitly configured
-adapter; the built-in production adapter is selected with `EMAIL_PROVIDER=smtp`
-and requires `EMAIL_FROM` and `EMAIL_SMTP_HOST` (plus optional SMTP credentials).
+adapter; the recommended production adapter for free Render services is selected with
+`EMAIL_PROVIDER=brevo` and requires `EMAIL_API_KEY` plus a verified `EMAIL_FROM` sender.
+The SMTP adapter remains available with `EMAIL_PROVIDER=smtp` on hosts that allow outbound
+SMTP traffic and requires `EMAIL_FROM` and `EMAIL_SMTP_HOST` (plus optional SMTP credentials).
 The application never logs or persists a plaintext OTP.
 
 Google OAuth uses the standard Google authorization-code flow. Set

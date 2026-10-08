@@ -8,6 +8,8 @@ import ssl
 from email.message import EmailMessage
 from typing import Protocol
 
+import httpx
+
 from app.core.config import Settings
 from app.core.errors import ApiError
 
@@ -72,16 +74,74 @@ class SmtpEmailSender:
             client.send_message(message)
 
 
+class BrevoEmailSender:
+    """Send transactional OTP messages through Brevo's HTTPS API."""
+
+    _API_URL = "https://api.brevo.com/v3/smtp/email"
+
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        if not all((settings.email_api_key, settings.email_from)):
+            raise ValueError("EMAIL_API_KEY and EMAIL_FROM are required for Brevo delivery.")
+        self._api_key = settings.email_api_key
+        self._sender = settings.email_from
+        self._expires_in_minutes = max(1, settings.email_otp_ttl_seconds // 60)
+        self._transport = transport
+
+    async def send_otp(self, recipient: str, code: str, purpose: str) -> None:
+        is_verification = purpose == "verify_email"
+        subject = (
+            "Mã xác minh tài khoản Bóc Băng"
+            if is_verification
+            else "Mã đặt lại mật khẩu Bóc Băng"
+        )
+        action = "xác minh tài khoản" if is_verification else "đặt lại mật khẩu"
+        payload = {
+            "sender": {"name": "Bóc Băng", "email": self._sender},
+            "to": [{"email": recipient}],
+            "subject": subject,
+            "textContent": (
+                f"Mã {action} của bạn là: {code}\n\n"
+                f"Mã hết hạn sau {self._expires_in_minutes} phút.\n"
+                "Nếu bạn không yêu cầu mã này, hãy bỏ qua email."
+            ),
+        }
+        try:
+            async with httpx.AsyncClient(timeout=15, transport=self._transport) as client:
+                response = await client.post(
+                    self._API_URL,
+                    headers={
+                        "accept": "application/json",
+                        "api-key": self._api_key,
+                        "content-type": "application/json",
+                    },
+                    json=payload,
+                )
+                response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise ApiError("EMAIL_DELIVERY_FAILED", "Unable to send email.", 502) from exc
+
+
 def build_email_sender(settings: Settings) -> EmailSender:
-    if settings.email_provider == "smtp":
+    provider = (settings.email_provider or "").strip().lower()
+    if provider == "brevo":
+        try:
+            return BrevoEmailSender(settings)
+        except ValueError:
+            return UnavailableEmailSender()
+    if provider == "smtp":
         try:
             return SmtpEmailSender(settings)
         except ValueError:
             return UnavailableEmailSender()
     is_production = settings.environment.strip().lower() in {"production", "prod"}
     if not is_production and (
-        settings.email_provider in ("console", "dev", "local")
-        or (not settings.email_provider and settings.environment == "development")
+        provider in ("console", "dev", "local")
+        or (not provider and settings.environment == "development")
     ):
         return ConsoleEmailSender()
     return UnavailableEmailSender()
