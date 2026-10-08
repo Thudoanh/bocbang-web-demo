@@ -123,8 +123,6 @@ class TranscriptService:
         second = await self._session.scalar(select(CurrentSegment).where(CurrentSegment.logical_segment_id == payload.second_segment_id).with_for_update())
         if second is None or second.transcript_id != transcript.id or not await self._are_adjacent(first, second):
             raise ApiError("SEGMENTS_NOT_MERGEABLE", "Segments must be adjacent in the current transcript.", 422)
-        if first.speaker_id != second.speaker_id or first.end_ms != second.start_ms:
-            raise ApiError("SEGMENTS_NOT_MERGEABLE", "Segments must be contiguous and have the same speaker.", 422)
         version = await self._new_user_version(meeting, transcript, user)
         first.end_ms = second.end_ms
         first.text = f"{first.text.rstrip()} {second.text.lstrip()}".strip()
