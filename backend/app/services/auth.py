@@ -100,7 +100,7 @@ class AuthService:
         await self._session.refresh(user)
         return user
 
-    async def google_user(self, subject: str, email: str, full_name: str) -> User:
+    async def google_user(self, subject: str, email: str, full_name: str, avatar_url: str | None = None) -> User:
         user = await self._session.scalar(select(User).where(User.google_subject == subject))
         if user is None:
             user = await self._user_by_email(email)
@@ -109,12 +109,15 @@ class AuthService:
                     email=email,
                     google_subject=subject,
                     full_name=full_name or email,
+                    avatar_url=avatar_url,
                     is_email_verified=True,
                 )
                 self._session.add(user)
             elif user.google_subject is None:
                 user.google_subject = subject
                 user.is_email_verified = True
+                if avatar_url:
+                    user.avatar_url = avatar_url
             elif user.google_subject != subject:
                 raise ApiError(
                     "GOOGLE_ACCOUNT_CONFLICT",
@@ -122,6 +125,8 @@ class AuthService:
                     409,
                 )
         user.is_email_verified = True
+        if avatar_url and not user.avatar_url:
+            user.avatar_url = avatar_url
         await self._session.commit()
         return user
 

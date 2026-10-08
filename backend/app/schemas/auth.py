@@ -18,6 +18,7 @@ class UserResponse(BaseModel):
     id: UUID
     email: str
     full_name: str
+    avatar_url: str | None = None
     is_email_verified: bool
 
 

@@ -8,11 +8,11 @@ import { ThemeToggle } from "../components/ThemeToggle";
 type Mode = "login" | "register" | "verify" | "forgot" | "reset";
 
 const copy: Record<Mode, { title: string; detail: string; action: string }> = {
-  login: { title: "Đăng nhập", detail: "Tiếp tục vào Bóc Băng.", action: "Đăng nhập" },
-  register: { title: "Tạo tài khoản", detail: "Bắt đầu trong vài giây.", action: "Tạo tài khoản" },
-  verify: { title: "Nhập mã xác minh", detail: "Mã đã được gửi tới email của bạn.", action: "Xác minh" },
-  forgot: { title: "Quên mật khẩu", detail: "Nhập email để nhận mã.", action: "Gửi mã" },
-  reset: { title: "Mật khẩu mới", detail: "Nhập mã và mật khẩu mới.", action: "Đổi mật khẩu" },
+  login:    { title: "Chào mừng trở lại", detail: "Đăng nhập để tiếp tục sử dụng Bóc Băng.", action: "Đăng nhập" },
+  register: { title: "Tạo tài khoản",     detail: "Bắt đầu bóc băng cuộc họp chỉ trong vài giây.",  action: "Tạo tài khoản" },
+  verify:   { title: "Xác minh email",    detail: "Chúng tôi đã gửi mã xác minh tới email của bạn.",    action: "Xác minh" },
+  forgot:   { title: "Quên mật khẩu?",   detail: "Nhập email và chúng tôi sẽ gửi mã khôi phục.", action: "Gửi mã" },
+  reset:    { title: "Đặt mật khẩu mới", detail: "Nhập mã từ email và mật khẩu mới.",  action: "Đổi mật khẩu" },
 };
 
 export function AuthPage({ initialMode = "login" }: { initialMode?: Exclude<Mode, "verify" | "reset"> }) {
@@ -25,6 +25,8 @@ export function AuthPage({ initialMode = "login" }: { initialMode?: Exclude<Mode
   const [code, setCode] = useState("");
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const auth = useAuth();
 
   async function submit(event: React.FormEvent) {
@@ -72,30 +74,111 @@ export function AuthPage({ initialMode = "login" }: { initialMode?: Exclude<Mode
 
   const current = copy[mode];
   const googleVisible = mode === "login" || mode === "register";
+
   return <div className="auth">
     <header>
-      <a className="brand" href="/"><span className="brand-mark"><Icon name="brand" /></span><strong>Bóc Băng</strong></a>
+      <a className="brand" href="/">
+        <span className="brand-mark"><Icon name="brand" /></span>
+        <strong>Bóc Băng</strong>
+      </a>
       <ThemeToggle />
     </header>
+
     <section className={`auth-card ${mode === "register" ? "auth-card-wide" : ""}`}>
+      {/* In-card brand badge */}
+      <div className="auth-brand-badge">
+        <span className="brand-mark"><Icon name="brand" /></span>
+        <span>Bóc Băng</span>
+      </div>
+
       <h1>{current.title}</h1>
       <p>{current.detail}</p>
-      {googleVisible && <button className="google" type="button" disabled={pending} onClick={() => void startGoogleLogin()}>{pending ? "Đang kết nối…" : "G  Tiếp tục với Google"}</button>}
+
+      {googleVisible && (
+        <button className="google" type="button" disabled={pending} onClick={() => void startGoogleLogin()}>
+          {pending ? "Đang kết nối…" : "Tiếp tục với Google"}
+        </button>
+      )}
       {googleVisible && <div className="auth-divider"><span>hoặc</span></div>}
+
       <form className={mode === "register" ? "register-form" : ""} onSubmit={submit}>
-        {mode === "register" && <label>Họ và tên<input autoComplete="name" required value={name} onChange={(event) => setName(event.target.value)} /></label>}
-        <label>Email<input type="email" autoComplete="email" required value={email} onChange={(event) => setEmail(event.target.value)} /></label>
-        {(mode === "verify" || mode === "reset") && <label>Mã xác minh<input inputMode="numeric" autoComplete="one-time-code" required value={code} onChange={(event) => setCode(event.target.value)} /></label>}
-        {mode !== "verify" && mode !== "forgot" && <label>{mode === "reset" ? "Mật khẩu mới" : "Mật khẩu"}<input type="password" autoComplete={mode === "login" ? "current-password" : "new-password"} minLength={8} required value={password} onChange={(event) => setPassword(event.target.value)} /></label>}
-        {mode === "register" && <label>Xác nhận mật khẩu<input type="password" autoComplete="new-password" minLength={8} required value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} /></label>}
-        {mode === "register" && <label className="auth-consent"><input type="checkbox" checked={agreed} onChange={(event) => setAgreed(event.target.checked)} />Tôi đồng ý với điều khoản sử dụng.</label>}
+        {mode === "register" && (
+          <label>Họ và tên
+            <input autoComplete="name" required placeholder="Nguyễn Văn A" value={name} onChange={(event) => setName(event.target.value)} />
+          </label>
+        )}
+        <label>Email
+          <input type="email" autoComplete="email" required placeholder="email@congty.com" value={email} onChange={(event) => setEmail(event.target.value)} />
+        </label>
+        {(mode === "verify" || mode === "reset") && (
+          <label>Mã xác minh
+            <input inputMode="numeric" autoComplete="one-time-code" required placeholder="123456" value={code} onChange={(event) => setCode(event.target.value)} />
+          </label>
+        )}
+        {mode !== "verify" && mode !== "forgot" && (
+          <label>{mode === "reset" ? "Mật khẩu mới" : "Mật khẩu"}
+            <div className="input-group">
+              <input
+                type={showPassword ? "text" : "password"}
+                autoComplete={mode === "login" ? "current-password" : "new-password"}
+                minLength={8}
+                required
+                placeholder="Tối thiểu 8 ký tự"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+              />
+              <button type="button" className="btn-icon" onClick={() => setShowPassword(!showPassword)} tabIndex={-1}>
+                <Icon name={showPassword ? "eye-off" : "eye"} />
+              </button>
+            </div>
+          </label>
+        )}
+        {mode === "register" && (
+          <label>Xác nhận mật khẩu
+            <div className="input-group">
+              <input 
+                type={showConfirmPassword ? "text" : "password"} 
+                autoComplete="new-password" 
+                minLength={8} 
+                required 
+                placeholder="Nhập lại mật khẩu" 
+                value={confirmPassword} 
+                onChange={(event) => setConfirmPassword(event.target.value)} 
+              />
+              <button type="button" className="btn-icon" onClick={() => setShowConfirmPassword(!showConfirmPassword)} tabIndex={-1}>
+                <Icon name={showConfirmPassword ? "eye-off" : "eye"} />
+              </button>
+            </div>
+          </label>
+        )}
+        {mode === "register" && (
+          <label className="auth-consent">
+            <input type="checkbox" checked={agreed} onChange={(event) => setAgreed(event.target.checked)} />
+            Tôi đồng ý với điều khoản sử dụng dịch vụ.
+          </label>
+        )}
         {error && <div className="form-error">{error}</div>}
-        <Button type="submit" tone="dark" disabled={pending}>{pending ? "Đang xử lý…" : current.action}</Button>
+        <Button type="submit" tone="dark" disabled={pending}>
+          {pending ? "Đang xử lý…" : current.action}
+        </Button>
       </form>
-      {mode === "login" && <p className="switch"><a href="/forgot-password">Quên mật khẩu?</a><span>·</span><a href="/register">Tạo tài khoản</a></p>}
-      {mode === "register" && <p className="switch"><a href="/login">Đã có tài khoản</a></p>}
-      {mode === "verify" && <p className="switch"><button type="button" onClick={() => void authApi.resendOtp(email)}>Gửi lại mã</button></p>}
-      {(mode === "forgot" || mode === "reset") && <p className="switch"><a href="/login">Quay lại đăng nhập</a></p>}
+
+      {mode === "login" && (
+        <p className="switch">
+          <a href="/forgot-password">Quên mật khẩu?</a>
+          <span>·</span>
+          <a href="/register">Tạo tài khoản mới</a>
+        </p>
+      )}
+      {mode === "register" && (
+        <p className="switch"><a href="/login">Đã có tài khoản? Đăng nhập</a></p>
+      )}
+      {mode === "verify" && (
+        <p className="switch"><button type="button" onClick={() => void authApi.resendOtp(email)}>Gửi lại mã</button></p>
+      )}
+      {(mode === "forgot" || mode === "reset") && (
+        <p className="switch"><a href="/login">← Quay lại đăng nhập</a></p>
+      )}
     </section>
   </div>;
 }

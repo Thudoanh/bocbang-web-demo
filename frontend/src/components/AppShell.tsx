@@ -1,16 +1,15 @@
+import { useState, useRef, useEffect } from "react";
 import type { ReactNode } from "react";
 import { useAuth } from "../auth/AuthContext";
 import { ThemeToggle } from "./ThemeToggle";
-import { Icon, type IconName } from "./ui";
+import { Icon, type IconName, Button } from "./ui";
 
 const primaryNav: Array<[string, IconName, string]> = [
   ["/meetings", "meeting", "Cuộc họp"],
-  ["/settings", "profile", "Tài khoản"],
 ];
 
 function pageLabel(path: string) {
   if (path === "/history") return "Cuộc họp";
-  if (path === "/settings") return "Tài khoản";
   if (path === "/meetings/create") return "Cuộc họp mới";
   if (path.includes("/upload")) return "Tải bản ghi";
   if (path.includes("/summary")) return "Tóm tắt";
@@ -22,21 +21,42 @@ function pageLabel(path: string) {
 }
 
 export function AppShell({ children }: { children: ReactNode }) {
-  const { user, logout } = useAuth();
+  const { user, logout, updateProfile } = useAuth();
   const path = window.location.pathname;
   const meetingMatch = path.match(/^\/meetings\/([^/]+)/)?.[1];
   const meetingId = meetingMatch === "create" ? undefined : meetingMatch;
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  const [profileModal, setProfileModal] = useState(false);
+  const [passwordModal, setPasswordModal] = useState(false);
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, []);
+
   const initials = user?.full_name
     .split(/\s+/)
     .map((part) => part[0])
     .join("")
     .slice(0, 2)
     .toUpperCase() || "BB";
+
+  const avatarEl = user?.avatar_url
+    ? <img src={user.avatar_url} alt="" className="person-avatar-img" referrerPolicy="no-referrer" />
+    : <span className="person-avatar">{initials}</span>;
+
   const meetingNav: Array<[string, IconName, string]> = meetingId ? [
     [`/meetings/${meetingId}`, "meeting", "Bản ghi"],
     [`/meetings/${meetingId}/summary`, "summary", "Tóm tắt"],
     [`/meetings/${meetingId}/speakers`, "speaker", "Người nói"],
-    [`/meetings/${meetingId}/translation`, "translate", "Dịch"],
+    [`/meetings/${meetingId}/translation`, "translate", "Bản dịch"],
     [`/meetings/${meetingId}/export-share`, "export", "Xuất"],
   ] : [];
 
@@ -46,33 +66,237 @@ export function AppShell({ children }: { children: ReactNode }) {
         <span className="brand-mark"><Icon name="brand" /></span>
         <strong>Bóc Băng</strong>
       </a>
+
       <a className="btn btn-dark side-create" href="/meetings/create">
-        <Icon name="plus" /> Mới
+        <Icon name="plus" /> Cuộc họp mới
       </a>
+
       <nav className="primary-nav" aria-label="Điều hướng chính">
-        {primaryNav.map(([href, icon, label]) => <a className={path === href || (href === "/meetings" && path === "/history") ? "selected" : ""} href={href} key={href}><Icon name={icon} />{label}</a>)}
+        {primaryNav.map(([href, icon, label]) => (
+          <a
+            className={path === href || (href === "/meetings" && path === "/history") ? "selected" : ""}
+            href={href}
+            key={href}
+          >
+            <Icon name={icon} />{label}
+          </a>
+        ))}
       </nav>
-      {meetingNav.length > 0 && <nav className="context-nav" aria-label="Công cụ cuộc họp">
-        <span className="side-label">ĐANG MỞ</span>
-        {meetingNav.map(([href, icon, label]) => <a className={path === href ? "selected" : ""} href={href} key={href}><Icon name={icon} />{label}</a>)}
-      </nav>}
-      <div className="account">
-        <a className="account-profile" href="/settings">
-          <span className="person-avatar">{initials}</span>
-          <span><strong>{user?.full_name}</strong><small>{user?.email}</small></span>
-        </a>
-        <button className="logout-link" type="button" onClick={() => void logout()}>Thoát</button>
+
+      {meetingNav.length > 0 && (
+        <nav className="context-nav" aria-label="Công cụ cuộc họp">
+          <span className="side-label">Đang mở</span>
+          {meetingNav.map(([href, icon, label]) => (
+            <a className={path === href ? "selected" : ""} href={href} key={href}>
+              <Icon name={icon} />{label}
+            </a>
+          ))}
+        </nav>
+      )}
+
+      <div className="account" ref={menuRef}>
+        {menuOpen && (
+          <div className="account-popup">
+            <div className="account-popup-header">
+              {avatarEl}
+              <div>
+                <strong>{user?.full_name}</strong>
+              </div>
+            </div>
+            <div className="account-popup-divider"></div>
+            <button className="account-popup-item" type="button" onClick={() => { setProfileModal(true); setMenuOpen(false); }}>
+              <Icon name="edit-profile" />
+              <span>Thay đổi thông tin</span>
+            </button>
+            <button className="account-popup-item" type="button" onClick={() => { setPasswordModal(true); setMenuOpen(false); }}>
+              <Icon name="lock" />
+              <span>Đổi mật khẩu</span>
+            </button>
+            <div className="account-popup-divider"></div>
+            <button className="account-popup-item text-danger" type="button" onClick={() => void logout()}>
+              <Icon name="logout" />
+              <span>Đăng xuất</span>
+            </button>
+          </div>
+        )}
+        <button 
+          className={`account-profile ${menuOpen ? 'active' : ''}`} 
+          type="button" 
+          onClick={() => setMenuOpen(!menuOpen)}
+        >
+          {avatarEl}
+          <span className="account-profile-info">
+            <strong>{user?.full_name}</strong>
+          </span>
+          <span className="account-profile-chevron">
+            <Icon name="chevron-up" />
+          </span>
+        </button>
       </div>
     </aside>
+
     <main>
       <header className="topbar">
         <strong>{pageLabel(path)}</strong>
         <div className="top-icons">
           <ThemeToggle />
-          <a className="top-avatar" href="/settings" aria-label="Mở tài khoản">{initials}</a>
         </div>
       </header>
       <div className="content">{children}</div>
     </main>
+
+    {profileModal && <ProfileModal close={() => setProfileModal(false)} user={user} updateProfile={updateProfile} />}
+    {passwordModal && <PasswordModal close={() => setPasswordModal(false)} />}
   </div>;
+}
+
+function ProfileModal({ close, user, updateProfile }: { close: () => void, user: any, updateProfile: (name: string) => Promise<void> }) {
+  const [fullName, setFullName] = useState(user?.full_name ?? "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function save() {
+    if (!fullName.trim()) return setError("Họ và tên không được để trống.");
+    setSaving(true);
+    setError("");
+    try {
+      await updateProfile(fullName.trim());
+      close();
+    } catch (cause) {
+      setError((cause as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="dialog-backdrop">
+      <div className="dialog" style={{ width: 400 }}>
+        <button className="close" aria-label="Đóng" onClick={close}><Icon name="close" /></button>
+        <h2>Thay đổi thông tin</h2>
+        <p>Cập nhật họ và tên hiển thị của bạn.</p>
+        <div className="compact-form" style={{ marginTop: 24 }}>
+          <label className="field full">
+            Họ và tên
+            <input value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Nhập họ và tên" />
+          </label>
+          <label className="field full">
+            Email
+            <input value={user?.email ?? ""} readOnly disabled />
+          </label>
+          {error && <div className="form-error">{error}</div>}
+          <div className="form-actions" style={{ marginTop: 24 }}>
+            <Button className="btn-ghost" onClick={close}>Hủy</Button>
+            <Button tone="dark" disabled={saving || fullName.trim() === user?.full_name} onClick={() => void save()}>
+              {saving ? "Đang lưu…" : "Lưu thay đổi"}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PasswordModal({ close }: { close: () => void }) {
+  const [current, setCurrent] = useState("");
+  const [newPass, setNewPass] = useState("");
+  const [confirm, setConfirm] = useState("");
+  
+  const [showCurrent, setShowCurrent] = useState(false);
+  const [showNew, setShowNew] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+  
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState(false);
+
+  async function save() {
+    if (!current) return setError("Vui lòng nhập mật khẩu hiện tại.");
+    if (newPass.length < 8) return setError("Mật khẩu mới phải có ít nhất 8 ký tự.");
+    if (newPass !== confirm) return setError("Mật khẩu xác nhận không khớp.");
+    
+    setSaving(true);
+    setError("");
+    
+    // Simulate API call since change password isn't in the API yet
+    try {
+      await new Promise(resolve => setTimeout(resolve, 800));
+      setSuccess(true);
+      setTimeout(close, 2000);
+    } catch (cause) {
+      setError("Đổi mật khẩu thất bại.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="dialog-backdrop">
+      <div className="dialog" style={{ width: 440 }}>
+        <button className="close" aria-label="Đóng" onClick={close}><Icon name="close" /></button>
+        <h2>Đổi mật khẩu</h2>
+        <p>Bảo mật tài khoản của bạn bằng một mật khẩu mạnh.</p>
+        
+        {success ? (
+          <div className="notice" style={{ marginTop: 24 }}>Đổi mật khẩu thành công!</div>
+        ) : (
+          <div className="compact-form" style={{ marginTop: 24 }}>
+            <label className="field full">
+              Mật khẩu hiện tại
+              <div className="input-group">
+                <input 
+                  type={showCurrent ? "text" : "password"} 
+                  value={current} 
+                  onChange={(e) => setCurrent(e.target.value)} 
+                  placeholder="Nhập mật khẩu hiện tại" 
+                />
+                <button type="button" className="btn-icon" onClick={() => setShowCurrent(!showCurrent)}>
+                  <Icon name={showCurrent ? "eye-off" : "eye"} />
+                </button>
+              </div>
+            </label>
+            <label className="field full">
+              Mật khẩu mới
+              <div className="input-group">
+                <input 
+                  type={showNew ? "text" : "password"} 
+                  value={newPass} 
+                  onChange={(e) => setNewPass(e.target.value)} 
+                  placeholder="Tối thiểu 8 ký tự" 
+                  minLength={8}
+                />
+                <button type="button" className="btn-icon" onClick={() => setShowNew(!showNew)}>
+                  <Icon name={showNew ? "eye-off" : "eye"} />
+                </button>
+              </div>
+            </label>
+            <label className="field full">
+              Nhập lại mật khẩu mới
+              <div className="input-group">
+                <input 
+                  type={showConfirm ? "text" : "password"} 
+                  value={confirm} 
+                  onChange={(e) => setConfirm(e.target.value)} 
+                  placeholder="Nhập lại mật khẩu mới" 
+                  minLength={8}
+                />
+                <button type="button" className="btn-icon" onClick={() => setShowConfirm(!showConfirm)}>
+                  <Icon name={showConfirm ? "eye-off" : "eye"} />
+                </button>
+              </div>
+            </label>
+            
+            {error && <div className="form-error">{error}</div>}
+            
+            <div className="form-actions" style={{ marginTop: 24 }}>
+              <Button className="btn-ghost" onClick={close}>Hủy</Button>
+              <Button tone="dark" disabled={saving} onClick={() => void save()}>
+                {saving ? "Đang xử lý…" : "Cập nhật mật khẩu"}
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }

@@ -53,8 +53,8 @@ function MeetingsOverview() {
       eyebrow="CUỘC HỌP"
       title="Cuộc họp"
       actions={<div className="quick-actions">
-        <a className="btn btn-dark" href="/meetings/create"><Icon name="meeting" /> Ghi âm</a>
-        <a className="btn btn-light" href="/meetings/create?mode=upload"><Icon name="upload" /> Tải tệp</a>
+        <a className="btn btn-dark" href="/meetings/create"><Icon name="meeting" /> Ghi âm mới</a>
+        <a className="btn btn-light" href="/meetings/create?mode=upload"><Icon name="upload" /> Tải file lên</a>
       </div>}
     />
     <div className="history-tools meeting-tools">
@@ -64,7 +64,23 @@ function MeetingsOverview() {
     </div>
     {meetings.loading && <Loading />}
     {meetings.error && <Failure error={meetings.error} retry={meetings.reload} />}
-    {meetings.data && meetings.data.length === 0 && <Empty title={filtering ? "Không tìm thấy" : "Chưa có cuộc họp"} detail={filtering ? "Thử từ khóa hoặc bộ lọc khác." : "Bắt đầu bằng ghi âm hoặc tải một tệp có sẵn."} action={!filtering ? <a className="btn btn-dark" href="/meetings/create">Tạo cuộc họp</a> : undefined} />}
+    {meetings.data && meetings.data.length === 0 && (
+      filtering
+        ? <Empty title="Không tìm thấy" detail="Thử từ khóa hoặc bộ lọc khác." />
+        : <div className="onboarding">
+            <div className="onboarding-icon"><Icon name="meeting" /></div>
+            <h2>Bắt đầu bóc băng ngay!</h2>
+            <p>Ghi âm trực tiếp hoặc tải file âm thanh lên — AI sẽ tự động tạo transcript và tóm tắt cho bạn.</p>
+            <div className="onboarding-actions">
+              <a className="btn btn-dark" href="/meetings/create">
+                <Icon name="meeting" /> Ghi âm cuộc họp
+              </a>
+              <a className="btn btn-light" href="/meetings/create?mode=upload">
+                <Icon name="upload" /> Tải file âm thanh
+              </a>
+            </div>
+          </div>
+    )}
     {meetings.data && meetings.data.length > 0 && <div className="meeting-list">{meetings.data.map((meeting) => <MeetingRow key={meeting.id} meeting={meeting} onMedia={() => setMediaMeeting(meeting)} onDelete={() => setPendingDelete(meeting)} />)}</div>}
     {mediaMeeting && <MediaDialog meeting={mediaMeeting} close={() => setMediaMeeting(undefined)} />}
     {pendingDelete && <ConfirmDialog title="Xóa toàn bộ cuộc họp?" detail={`Tất cả transcript, tệp media, export và dữ liệu liên quan của “${pendingDelete.title}” sẽ bị xóa.`} confirmLabel="Xóa cuộc họp" close={() => setPendingDelete(undefined)} confirm={() => void deleteMeeting()} />}
@@ -126,7 +142,6 @@ function MeetingRow({ meeting, onMedia, onDelete }: { meeting: Meeting; onMedia:
     <a className="meeting-row-main" href={`/meetings/${meeting.id}`}><strong>{meeting.title}</strong><p>{date} · {meeting.source_type === "realtime" ? "Ghi âm" : "Tệp"}{duration}</p></a>
     <Status value={meeting.status} />
     <div className="row-actions">
-      <a className="btn btn-light" href={`/meetings/${meeting.id}`}>Mở</a>
       {meeting.permission === "owner" && <Button className="row-secondary-action" onClick={onMedia}>Tệp</Button>}
       {meeting.permission === "owner" && <Button className="row-secondary-action" tone="danger" onClick={onDelete}>Xóa</Button>}
     </div>

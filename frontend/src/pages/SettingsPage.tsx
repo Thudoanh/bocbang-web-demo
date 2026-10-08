@@ -1,16 +1,101 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "../auth/AuthContext";
-import { Button, PageHeading, Panel } from "../components/ui";
+import { Button, Icon, PageHeading } from "../components/ui";
 
 export function SettingsPage() {
   const { user, logout, updateProfile } = useAuth();
-  const [fullName, setFullName] = useState(user?.full_name ?? ""); const [message, setMessage] = useState(""); const [saving, setSaving] = useState(false);
+  const [fullName, setFullName] = useState(user?.full_name ?? "");
+  const [message, setMessage] = useState("");
+  const [saving, setSaving] = useState(false);
+
   useEffect(() => setFullName(user?.full_name ?? ""), [user?.full_name]);
-  const initials = user?.full_name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "BB";
-  async function save() { if (!fullName.trim()) return setMessage("Họ và tên không được để trống."); setSaving(true); try { await updateProfile(fullName.trim()); setMessage("Đã cập nhật hồ sơ."); } catch (cause) { setMessage((cause as Error).message); } finally { setSaving(false); } }
-  async function startPasswordReset() { await logout(); window.location.assign("/forgot-password"); }
-  return <><PageHeading eyebrow="TÀI KHOẢN" title="Tài khoản" />
-    <div className="settings-grid"><Panel><div className="profile-intro"><span className="person-avatar">{initials}</span><div><h2>{user?.full_name}</h2><p>{user?.is_email_verified ? "Tài khoản đã xác minh" : "Tài khoản chưa xác minh"}</p></div></div><div className="field-grid"><label className="field">Họ và tên<input value={fullName} onChange={(event) => setFullName(event.target.value)} /></label><label className="field">Email<input value={user?.email ?? ""} readOnly /></label></div>{message && <div className={message === "Đã cập nhật hồ sơ." ? "notice" : "form-error"}>{message}</div>}<div className="form-actions"><Button tone="dark" disabled={saving || fullName.trim() === user?.full_name} onClick={() => void save()}>{saving ? "Đang lưu…" : "✓ Cập nhật hồ sơ"}</Button></div></Panel>
-      <Panel><h2>Bảo mật</h2><div className="setting-line"><div><strong>Đổi mật khẩu</strong><small>Xác minh lại qua email.</small></div></div><Button onClick={() => void startPasswordReset()}>Đổi mật khẩu</Button><Button tone="danger" onClick={() => void logout()}>Đăng xuất</Button></Panel></div>
+
+  async function save() {
+    if (!fullName.trim()) return setMessage("Họ và tên không được để trống.");
+    setSaving(true);
+    setMessage("");
+    try {
+      await updateProfile(fullName.trim());
+      setMessage("Đã cập nhật hồ sơ thành công.");
+    } catch (cause) {
+      setMessage((cause as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function startPasswordReset() {
+    await logout();
+    window.location.assign("/forgot-password");
+  }
+
+  return <>
+    <PageHeading 
+      eyebrow="TÀI KHOẢN" 
+      title="Cài đặt" 
+      description="Quản lý thông tin cá nhân và bảo mật tài khoản." 
+    />
+    
+    <div className="settings-container">
+      {message && <div className={message.includes("thành công") ? "notice" : "form-error"}>{message}</div>}
+
+      <h3 className="settings-group-title">Thông tin cá nhân</h3>
+      <div className="setting-card">
+        <div className="setting-row">
+          <div className="setting-icon"><Icon name="profile" /></div>
+          <div className="setting-content">
+            <strong>Họ và tên</strong>
+            <small>Tên hiển thị trên hệ thống và các cuộc họp.</small>
+          </div>
+          <div className="setting-action">
+            <input
+              className="setting-input"
+              value={fullName}
+              onChange={(event) => setFullName(event.target.value)}
+              placeholder="Nhập họ và tên"
+            />
+          </div>
+        </div>
+        <div className="setting-row">
+          <div className="setting-icon"><Icon name="translate" /></div>
+          <div className="setting-content">
+            <strong>Email</strong>
+            <small>Địa chỉ email dùng để đăng nhập và nhận thông báo.</small>
+          </div>
+          <div className="setting-action">
+            <input className="setting-input" value={user?.email ?? ""} readOnly disabled />
+          </div>
+        </div>
+        <div className="setting-row" style={{ justifyContent: "flex-end", borderBottom: "none" }}>
+           <Button tone="dark" disabled={saving || fullName.trim() === user?.full_name} onClick={() => void save()}>
+              {saving ? "Đang lưu…" : "Lưu thay đổi"}
+           </Button>
+        </div>
+      </div>
+
+      <h3 className="settings-group-title">Bảo mật</h3>
+      <div className="setting-card">
+        <div className="setting-row">
+          <div className="setting-icon"><Icon name="lock" /></div>
+          <div className="setting-content">
+            <strong>Mật khẩu</strong>
+            <small>Thay đổi mật khẩu đăng nhập của bạn.</small>
+          </div>
+          <div className="setting-action">
+            <Button onClick={() => void startPasswordReset()}>Đổi mật khẩu</Button>
+          </div>
+        </div>
+        <div className="setting-row">
+          <div className="setting-icon" style={{ color: "var(--danger)" }}><Icon name="logout" /></div>
+          <div className="setting-content">
+            <strong style={{ color: "var(--danger)" }}>Đăng xuất</strong>
+            <small>Đăng xuất khỏi thiết bị này.</small>
+          </div>
+          <div className="setting-action">
+            <Button tone="danger" onClick={() => void logout()}>Đăng xuất</Button>
+          </div>
+        </div>
+      </div>
+    </div>
   </>;
 }
