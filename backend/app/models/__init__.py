@@ -8,6 +8,7 @@ from app.models.summary import Summary, SummaryVersion
 from app.models.transcript import SegmentVersion, Speaker, Transcript, TranscriptVersion
 from app.models.translation import Translation, TranslationSegment
 from app.models.user import EmailOtp, User
+from app.models.voice_profile import VoiceProfile
 
 __all__ = [
     "Comment",
@@ -27,4 +28,5 @@ __all__ = [
     "Translation",
     "TranslationSegment",
     "User",
+    "VoiceProfile",
 ]

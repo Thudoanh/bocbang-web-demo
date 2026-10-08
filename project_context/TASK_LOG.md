@@ -12,6 +12,31 @@ Mục mới nhất được thêm ở đầu file. Dùng format ngắn dưới �
 - Follow-up / blocker: ...
 ```
 
+## 2026-10-08 — Pre-meeting Voice Profile Enrollment & Automatic Speaker Recognition
+
+- Status: done
+- Scope: Tự động nhận diện và gán tên người phát biểu trong cuộc họp dựa trên mẫu giọng
+  được thu âm trước (10-25s) hoặc tải lên file âm thanh mẫu (WAV/MP3/M4A). Hỗ trợ cả
+  mẫu giọng cá nhân của người dùng và mẫu giọng khách theo từng cuộc họp. Tích hợp so khớp
+  voiceprint cosine similarity vào cả streaming realtime STT WebSocket và batch media upload processing.
+- Changed:
+  - Database & Models: `backend/app/models/voice_profile.py`, `transcript.py`, `meeting.py`, `user.py`,
+    `backend/alembic/versions/20261008_0011_voice_profiles.py`.
+  - Acoustic Engine: `backend/app/services/voice_embedding.py` (192-dim Log-Mel filterbanks + MFCCs + deltas + statistical pooling).
+  - Business Services & APIs: `backend/app/services/voice_profiles.py`, `transcripts.py`, `realtime.py`,
+    `media_worker.py`, `backend/app/api/v1/routes/voice_profiles.py`, `realtime.py`, `router.py`.
+  - Frontend: `frontend/src/types/domain.ts`, `frontend/src/api/endpoints.ts`,
+    `frontend/src/components/VoiceEnrollmentModal.tsx`, `frontend/src/pages/MeetingPage.tsx`,
+    `frontend/src/pages/SettingsPage.tsx`, `frontend/src/pages/SpeakersPage.tsx`.
+  - Tests: `backend/tests/test_migrations.py`, `backend/tests/test_voice_profiles.py`.
+- Verified:
+  - Python bytecode compilation (`compileall`) qua 100% không có lỗi.
+  - Test acoustic embedding và vector cosine similarity: 1.0 với cùng giọng nói, 0.51 với giọng khác tần số, so khớp ứng viên chính xác `conf=1.0`.
+  - Alembic migration test assertions bổ sung cho `voice_profiles` và `speakers.voice_profile_id`.
+- Follow-up / blocker:
+  - Chạy Docker Compose rebuild stack để nạp code mới nhất lên container.
+  - Thử nghiệm trên micro thực tế với 2 hoặc nhiều người nói khác nhau trong phiên họp trực tiếp.
+
 ## 2026-10-07 — Realtime speaker diarization and corrections
 
 - Status: done (automated verification; real audio/browser acceptance pending)

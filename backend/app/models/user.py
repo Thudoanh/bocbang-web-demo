@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from app.models.collaboration import Comment
     from app.models.meeting import Meeting, MeetingMember, ShareLink
     from app.models.transcript import TranscriptVersion
+    from app.models.voice_profile import VoiceProfile
 
 
 class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -36,6 +37,7 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         back_populates="created_by_user", foreign_keys="TranscriptVersion.created_by"
     )
     created_share_links: Mapped[list[ShareLink]] = relationship(back_populates="created_by_user")
+    voice_profiles: Mapped[list[VoiceProfile]] = relationship(back_populates="user")
 
 
 class EmailOtp(UUIDPrimaryKeyMixin, Base):

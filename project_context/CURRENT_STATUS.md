@@ -1,8 +1,23 @@
 # Current Status
 
-_Cập nhật lần cuối: 2026-10-07_
+_Cập nhật lần cuối: 2026-10-08_
 
 ## Done
+
+- Pre-meeting Voice Profile Enrollment & Automatic Speaker Recognition:
+  Hệ thống hỗ trợ thu âm trực tiếp (MediaRecorder 10-25s) hoặc tải file âm thanh mẫu (WAV/MP3/M4A)
+  của từng người tham gia trước khi bắt đầu cuộc họp (hoặc trong phần Cài đặt tài khoản cá nhân).
+  Engine acoustic embedding thuần NumPy/SciPy (192-dim Log-Mel filterbanks + MFCCs + deltas + statistical pooling)
+  trích xuất vector đặc trưng giọng nói (voiceprint) và tính cosine similarity để tự động so khớp
+  và gán tên thực (ví dụ "Nguyễn Văn A") thay vì nhãn mặc định "Người nói N" trong cả luồng
+  realtime streaming STT (WebSocket) và batch media processing (upload file).
+  - Backend models & migrations: Bảng `voice_profiles` và trường `speakers.voice_profile_id`,
+    `speakers.match_confidence`, Alembic migration `20261008_0011_voice_profiles.py`.
+  - Backend APIs: `/api/v1/voice-profiles/me` (GET/POST/DELETE) và `/api/v1/meetings/{id}/voice-profiles` (GET/POST/DELETE).
+  - Realtime & Batch Workers: Nhúng candidate matching vào `RealtimeTranscriptService` và `MediaWorker`.
+  - Frontend: `VoiceEnrollmentModal` (thu âm mic kèm countdown/preview/đoạn đọc mẫu tiếng Việt hoặc upload file),
+    `PreMeetingVoiceProfiles` panel trong `MeetingPage.tsx`, huy hiệu `✓ Đã nhận diện` cạnh tên người nói,
+    và panel quản lý "Mẫu giọng nói của tôi" trong `SettingsPage.tsx`.
 
 - Realtime speaker diarization now honors the meeting option in AssemblyAI,
   preserves turn labels and maps unassigned speech to no speaker. New meeting

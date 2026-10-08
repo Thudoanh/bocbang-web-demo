@@ -32,6 +32,7 @@ from app.services.realtime_translation import (
     RealtimeTranslationItem,
     RealtimeTranslationSession,
 )
+from app.services.voice_profiles import VoiceProfileService
 
 router = APIRouter()
 SendJson = Callable[[dict[str, object]], Awaitable[None]]
@@ -114,7 +115,10 @@ async def realtime_transcription(websocket: WebSocket, meeting_id: UUID) -> None
                     STTProviderError("The STT provider could not start a realtime session."),
                 )
                 return
-            transcript_service = RealtimeTranscriptService(session, meeting, user.id)
+            candidates = await VoiceProfileService(session).list_candidates_for_matching(meeting.id)
+            transcript_service = RealtimeTranscriptService(
+                session, meeting, user.id, candidates=candidates
+            )
             if translation_provider is not None:
                 translation_session = RealtimeTranslationSession(
                     translation_provider,
@@ -144,6 +148,7 @@ async def realtime_transcription(websocket: WebSocket, meeting_id: UUID) -> None
                         )
                         continue
                     try:
+                        transcript_service.feed_audio(message["bytes"])
                         events = await stream.send_audio(message["bytes"])
                         await _emit_events(
                             send_json,
@@ -422,6 +427,11 @@ async def _emit_events(
             payload["logical_segment_id"] = str(logical_segment_id)
             payload["speaker_id"] = str(stored.speaker_id) if stored.speaker_id else None
             payload["start_ms"], payload["end_ms"] = stored.start_ms, stored.end_ms
+            if stored.speaker_id:
+                speaker = await transcript_service.get_speaker(stored.speaker_id)
+                if speaker:
+                    payload["speaker_name"] = speaker.name
+                    payload["is_identified"] = speaker.is_identified
             segment = replace(segment, start_ms=stored.start_ms, end_ms=stored.end_ms)
         if send_client:
             await send_json({key: value for key, value in payload.items() if value is not None})

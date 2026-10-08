@@ -1,0 +1,31 @@
+"""Pydantic schemas for voice profiles and enrolled speaker identification."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class VoiceProfileResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    user_id: UUID | None = None
+    meeting_id: UUID | None = None
+    name: str
+    sample_duration_ms: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class VoiceProfileCandidateResponse(BaseModel):
+    id: UUID
+    name: str
+    sample_duration_ms: int
+    is_user_profile: bool
+
+
+class VoiceProfileCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=255)

@@ -61,7 +61,7 @@ docker compose logs -f frontend api worker reconciler
 ```
 
 Compose starts PostgreSQL and Redis, runs `alembic upgrade head` in a one-off
-`migrate` container, then starts the API, Dramatiq worker and reconciler.
+`migrate` container and then starts the API, Dramatiq worker and reconciler.
 The frontend starts after the API readiness check passes and serves the built
 React application with Nginx at `http://localhost:5173`.
 `migrate` exiting with code 0 is expected. If migration fails, inspect
@@ -299,6 +299,7 @@ complete.
 4. If a streaming STT adapter is configured, create a realtime meeting, grant
    microphone access, start recording, confirm partial text, then stop and
    confirm final persisted segments.
+5. Pre-meeting Voice Recognition: Enroll a personal voice sample in Settings or add speaker voiceprints in a meeting before recording; verify that speakers are automatically matched with real participant names and the `✓ Đã nhận diện` badge appears.
 
 The AssemblyAI and Gemini adapters activate only through their respective
 backend environment variables. With no batch STT configured uploads fail with

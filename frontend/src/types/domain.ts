@@ -14,7 +14,8 @@ export interface Meeting {
 }
 export interface MediaFile { id: string; original_filename: string; size_bytes: number; duration_ms?: number; status: string }
 export interface SpeakerSample { media_id: string; start_ms: number; end_ms: number }
-export interface Speaker { id: string; meeting_id?: string; name: string; role?: string; organization?: string; is_identified: boolean }
+export interface Speaker { id: string; meeting_id?: string; name: string; role?: string; organization?: string; is_identified: boolean; voice_profile_id?: string; match_confidence?: number }
+export interface VoiceProfile { id: string; user_id?: string; meeting_id?: string; name: string; sample_duration_ms: number; created_at: string; updated_at: string }
 export interface Segment { logical_segment_id: string; start_ms: number; end_ms: number; text: string; speaker_id?: string; speaker_label?: string; confidence?: number }
 export interface Transcript { version_id: string; version_no: number; language: string; segments: Segment[]; next_cursor?: string | null }
 export interface Capabilities {

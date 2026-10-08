@@ -19,6 +19,11 @@ from app.api.v1.routes.transcripts import (
     speakers_router,
 )
 
+from app.api.v1.routes.voice_profiles import (
+    meeting_voice_profiles_router,
+    voice_profiles_router,
+)
+
 api_router = APIRouter()
 api_router.include_router(auth_router, tags=["auth"])
 api_router.include_router(capabilities_router, tags=["providers"])
@@ -35,6 +40,8 @@ api_router.include_router(realtime_router, tags=["realtime"])
 api_router.include_router(transcript_meetings_router, tags=["transcripts"])
 api_router.include_router(segments_router, tags=["transcripts"])
 api_router.include_router(speakers_router, tags=["speakers"])
+api_router.include_router(voice_profiles_router, tags=["voice_profiles"])
+api_router.include_router(meeting_voice_profiles_router, tags=["voice_profiles"])
 api_router.include_router(ai_meetings_router, tags=["ai"])
 api_router.include_router(translations_router, tags=["translations"])
 api_router.include_router(summaries_router, tags=["summaries"])

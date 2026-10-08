@@ -24,8 +24,11 @@ def test_initial_migration_upgrades_and_downgrades_clean_database(tmp_path: Path
     engine = create_engine(f"sqlite+pysqlite:///{database_path.as_posix()}")
     try:
         tables = set(inspect(engine).get_table_names())
-        assert {"users", "meetings", "transcripts", "transcript_versions", "summary_versions"} <= tables
+        assert {"users", "meetings", "transcripts", "transcript_versions", "summary_versions", "voice_profiles"} <= tables
         inspector = inspect(engine)
+        assert "voice_profile_id" in {
+            item["name"] for item in inspector.get_columns("speakers")
+        }
         assert "output_language" in {
             item["name"] for item in inspector.get_columns("summaries")
         }

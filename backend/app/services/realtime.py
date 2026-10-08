@@ -10,17 +10,28 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.enums import MeetingStatus
 from app.models.meeting import Meeting
-from app.models.transcript import CurrentSegment, Transcript
+from app.models.transcript import CurrentSegment, Speaker, Transcript
 from app.models.user import User
 from app.providers.contracts import TranscriptionSegment
 from app.schemas.transcript import TranscriptMutationResponse
 from app.services.transcripts import TranscriptService
+from app.services.voice_embedding import (
+    VoiceCandidate,
+    extract_embedding_from_pcm16,
+    match_candidate,
+)
 
 
 class RealtimeTranscriptService:
     """Owns durable final-segment writes for one realtime socket session."""
 
-    def __init__(self, session: AsyncSession, meeting: Meeting, actor_id: UUID) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        meeting: Meeting,
+        actor_id: UUID,
+        candidates: list[VoiceCandidate] | None = None,
+    ) -> None:
         self._session = session
         self._meeting = meeting
         self._actor_id = actor_id
@@ -29,6 +40,14 @@ class RealtimeTranscriptService:
         self._turns: dict[int, UUID] = {}
         self._time_offset_ms = meeting.duration_ms or 0
         self._started_stt_version = False
+        self._candidates = candidates or []
+        self._audio_buffer = bytearray()
+        self._max_buffer_bytes = 16000 * 2 * 60  # 60s max ring buffer
+
+    def feed_audio(self, chunk: bytes) -> None:
+        self._audio_buffer.extend(chunk)
+        if len(self._audio_buffer) > self._max_buffer_bytes:
+            self._audio_buffer = self._audio_buffer[-self._max_buffer_bytes :]
 
     def _scoped_label(self, label: str | None) -> str | None:
         if not self._diarization_enabled or not label:
@@ -60,6 +79,24 @@ class RealtimeTranscriptService:
 
     async def persist_final(self, segment: TranscriptionSegment, turn_order: int | None = None):
         """Persist through the common STT ingestion boundary used by batch workers too."""
+        candidate_name: str | None = None
+        voice_profile_id: UUID | None = None
+        match_confidence: float | None = None
+
+        if self._candidates and len(self._audio_buffer) >= 16000:
+            turn_duration_ms = max(500, segment.end_ms - segment.start_ms)
+            turn_bytes = int(turn_duration_ms / 1000 * 16000 * 2)
+            audio_slice = bytes(self._audio_buffer[-turn_bytes:]) if turn_bytes <= len(self._audio_buffer) else bytes(self._audio_buffer)
+            try:
+                emb = extract_embedding_from_pcm16(audio_slice)
+                matched, conf = match_candidate(emb, self._candidates, threshold=0.72)
+                if matched:
+                    candidate_name = matched.name
+                    voice_profile_id = matched.id
+                    match_confidence = conf
+            except Exception:
+                pass
+
         stored = await TranscriptService(self._session).append_stt_final(
             self._meeting, self._actor_id,
             replace(
@@ -68,6 +105,9 @@ class RealtimeTranscriptService:
                 end_ms=segment.end_ms + self._time_offset_ms,
             ),
             start_new_version=not self._started_stt_version,
+            candidate_name=candidate_name,
+            voice_profile_id=voice_profile_id,
+            match_confidence=match_confidence,
         )
         self._started_stt_version = True
         self._meeting.duration_ms = max(self._meeting.duration_ms or 0, stored.end_ms)
@@ -92,6 +132,11 @@ class RealtimeTranscriptService:
         # hold it while waiting for the next audio message on this socket.
         await self._session.commit()
         return mutation
+
+    async def get_speaker(self, speaker_id: UUID | None) -> Speaker | None:
+        if speaker_id is None:
+            return None
+        return await self._session.get(Speaker, speaker_id)
 
     async def translation_inputs(
         self, logical_segment_ids: tuple[UUID, ...]

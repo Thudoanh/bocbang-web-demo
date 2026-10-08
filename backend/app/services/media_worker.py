@@ -20,6 +20,8 @@ from app.models.meeting import Meeting
 from app.providers.contracts import STTProvider, STTProviderError
 from app.providers.storage import MediaStorage
 from app.services.transcripts import TranscriptService
+from app.services.voice_embedding import extract_embedding_from_pcm16, match_candidate
+from app.services.voice_profiles import VoiceProfileService
 from app.workers import lifecycle
 
 
@@ -59,6 +61,44 @@ class MediaProcessingWorker:
                 result = await self._stt.transcribe_file(normalized, meeting.language_mode)
                 if not result.segments:
                     raise ValueError("STT provider returned no transcript segments.")
+
+                candidates = await VoiceProfileService(session).list_candidates_for_matching(meeting.id)
+                if candidates and normalized and normalized.is_file():
+                    unique_labels = {s.speaker_label for s in result.segments if s.speaker_label}
+                    for label in unique_labels:
+                        turn = next((s for s in result.segments if s.speaker_label == label and (s.end_ms - s.start_ms) >= 1000), None)
+                        if turn is None:
+                            turn = next((s for s in result.segments if s.speaker_label == label), None)
+                        if turn:
+                            try:
+                                start_sec = turn.start_ms / 1000.0
+                                dur_sec = max(1.0, (turn.end_ms - turn.start_ms) / 1000.0)
+                                proc = subprocess.run(
+                                    [
+                                        "ffmpeg", "-hide_banner", "-loglevel", "error",
+                                        "-ss", str(start_sec), "-t", str(dur_sec),
+                                        "-i", str(normalized),
+                                        "-f", "s16le", "-acodec", "pcm_s16le",
+                                        "-ar", "16000", "-ac", "1", "pipe:1",
+                                    ],
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE,
+                                    timeout=10,
+                                )
+                                if proc.stdout:
+                                    emb = extract_embedding_from_pcm16(proc.stdout)
+                                    match, conf = match_candidate(emb, candidates, threshold=0.72)
+                                    if match:
+                                        await TranscriptService(session)._speaker_for_label(
+                                            meeting.id,
+                                            label,
+                                            candidate_name=match.name,
+                                            voice_profile_id=match.id,
+                                            match_confidence=conf,
+                                        )
+                            except Exception:
+                                pass
+
                 await TranscriptService(session).replace_stt_batch(
                     meeting, meeting.owner_id, result.segments
                 )

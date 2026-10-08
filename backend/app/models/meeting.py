@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from app.models.transcript import Speaker, Transcript, TranscriptVersion
     from app.models.translation import Translation
     from app.models.user import User
+    from app.models.voice_profile import VoiceProfile
 
 
 class Meeting(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -81,6 +82,9 @@ class Meeting(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         back_populates="meeting", cascade="all, delete-orphan", passive_deletes=True
     )
     share_links: Mapped[list[ShareLink]] = relationship(
+        back_populates="meeting", cascade="all, delete-orphan", passive_deletes=True
+    )
+    voice_profiles: Mapped[list[VoiceProfile]] = relationship(
         back_populates="meeting", cascade="all, delete-orphan", passive_deletes=True
     )
     current_transcript_version: Mapped[TranscriptVersion | None] = relationship(
