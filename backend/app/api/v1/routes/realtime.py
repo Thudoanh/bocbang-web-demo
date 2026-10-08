@@ -13,6 +13,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 
 from app.core.config import Settings
 from app.core.errors import ApiError
+from app.core.logging import get_logger
 from app.core.security import TokenService
 from app.db.session import Database
 from app.models.enums import MeetingPermission, MeetingSourceType, MeetingStatus
@@ -23,10 +24,16 @@ from app.providers.contracts import (
     STTProvider,
     STTProviderError,
     STTStream,
+    TranscriptionSegment,
     TranslationProvider,
 )
+from app.providers.storage import MediaStorage
 from app.services.meetings import MeetingService
 from app.services.realtime import RealtimeTranscriptService
+from app.services.realtime_recording import (
+    RealtimeRecordingError,
+    RealtimeRecordingService,
+)
 from app.services.realtime_translation import (
     RealtimeTranslationItem,
     RealtimeTranslationSession,
@@ -34,6 +41,7 @@ from app.services.realtime_translation import (
 
 router = APIRouter()
 SendJson = Callable[[dict[str, object]], Awaitable[None]]
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -49,6 +57,7 @@ async def realtime_transcription(websocket: WebSocket, meeting_id: UUID) -> None
     await websocket.accept()
     stream: STTStream | None = None
     transcript_service: RealtimeTranscriptService | None = None
+    recording_session: RealtimeRecordingService | None = None
     translation_session: RealtimeTranslationSession | None = None
     terminal_failure = False
     retryable_interruption = False
@@ -131,6 +140,12 @@ async def realtime_transcription(websocket: WebSocket, meeting_id: UUID) -> None
                     STTProviderError("The STT provider could not start a realtime session."),
                 )
                 return
+            recording_session = RealtimeRecordingService(
+                session,
+                meeting,
+                cast(MediaStorage, websocket.app.state.media_storage),
+            )
+            await recording_session.start()
             transcript_service = RealtimeTranscriptService(session, meeting, user.id)
             if translation_provider is not None:
                 translation_session = RealtimeTranslationSession(
@@ -161,24 +176,43 @@ async def realtime_transcription(websocket: WebSocket, meeting_id: UUID) -> None
                         )
                         continue
                     try:
-                        events = await stream.send_audio(message["bytes"])
+                        audio_chunk = message["bytes"]
+                        recording_session.write(audio_chunk)
+                        events = await stream.send_audio(audio_chunk)
                         await _emit_events(
                             send_json,
                             transcript_service,
                             events,
                             translation_session=translation_session,
+                            timeline_offset_ms=recording_session.timeline_offset_ms,
                         )
                     except STTProviderError as exc:
                         terminal_failure = not exc.retryable
                         retryable_interruption = exc.retryable
                         if terminal_failure:
                             await transcript_service.recording_failed()
+                        await _save_recording(recording_session, meeting.id)
                         await _handle_provider_error(websocket, send_json, exc)
+                        return
+                    except RealtimeRecordingError:
+                        retryable_interruption = True
+                        await _error_and_close(
+                            websocket,
+                            send_json,
+                            "AUDIO_STORAGE_ERROR",
+                            "The realtime recording could not be saved.",
+                            True,
+                        )
                         return
                     except ValueError as exc:
                         await _send_error(send_json, "STT_RESULT_INVALID", str(exc), False)
                     except Exception:
+                        logger.exception(
+                            "realtime_audio_chunk_failed",
+                            extra={"meeting_id": str(meeting.id)},
+                        )
                         retryable_interruption = True
+                        await _save_recording(recording_session, meeting.id)
                         await _handle_provider_error(
                             websocket,
                             send_json,
@@ -268,6 +302,7 @@ async def realtime_transcription(websocket: WebSocket, meeting_id: UUID) -> None
                             transcript_service,
                             await stream.pause(),
                             translation_session=translation_session,
+                            timeline_offset_ms=recording_session.timeline_offset_ms,
                         )
                     elif command.type == "recording.resume":
                         paused = False
@@ -276,6 +311,7 @@ async def realtime_transcription(websocket: WebSocket, meeting_id: UUID) -> None
                             transcript_service,
                             await stream.resume(),
                             translation_session=translation_session,
+                            timeline_offset_ms=recording_session.timeline_offset_ms,
                         )
                     else:  # recording.stop
                         await _emit_events(
@@ -283,26 +319,53 @@ async def realtime_transcription(websocket: WebSocket, meeting_id: UUID) -> None
                             transcript_service,
                             await stream.close(),
                             translation_session=translation_session,
+                            timeline_offset_ms=recording_session.timeline_offset_ms,
                         )
                         stream = None
                         if translation_session is not None:
                             await translation_session.flush()
                             await translation_session.close()
+                        if not await _save_recording(recording_session, meeting.id):
+                            retryable_interruption = True
+                            await _error_and_close(
+                                websocket,
+                                send_json,
+                                "AUDIO_STORAGE_ERROR",
+                                "The realtime recording could not be saved.",
+                                True,
+                            )
+                            return
                         await transcript_service.recording_completed()
                         await send_json({"type": "meeting.status", "status": "completed"})
                         await websocket.close(code=status.WS_1000_NORMAL_CLOSURE)
                         return
+                except RealtimeRecordingError:
+                    retryable_interruption = True
+                    await _error_and_close(
+                        websocket,
+                        send_json,
+                        "AUDIO_STORAGE_ERROR",
+                        "The realtime recording could not be saved.",
+                        True,
+                    )
+                    return
                 except STTProviderError as exc:
                     terminal_failure = not exc.retryable
                     retryable_interruption = exc.retryable
                     if terminal_failure:
                         await transcript_service.recording_failed()
+                    await _save_recording(recording_session, meeting.id)
                     await _handle_provider_error(websocket, send_json, exc)
                     return
                 except ValueError as exc:
                     await _send_error(send_json, "STT_RESULT_INVALID", str(exc), False)
                 except Exception:
+                    logger.exception(
+                        "realtime_command_failed",
+                        extra={"meeting_id": str(meeting.id)},
+                    )
                     retryable_interruption = True
+                    await _save_recording(recording_session, meeting.id)
                     await _handle_provider_error(
                         websocket,
                         send_json,
@@ -335,14 +398,35 @@ async def realtime_transcription(websocket: WebSocket, meeting_id: UUID) -> None
                         transcript_service,
                         events,
                         send_client=False,
+                        timeline_offset_ms=(
+                            recording_session.timeline_offset_ms
+                            if recording_session is not None
+                            else 0
+                        ),
                     )
             except (STTProviderError, RuntimeError, ValueError):
                 pass
+        if recording_session is not None:
+            await _save_recording(recording_session, meeting_id)
         if transcript_service is not None and not terminal_failure and not retryable_interruption:
             try:
                 await transcript_service.recording_ended()
             except RuntimeError:
                 pass
+
+
+async def _save_recording(
+    recording_session: RealtimeRecordingService, meeting_id: UUID
+) -> bool:
+    try:
+        await recording_session.finalize()
+        return True
+    except Exception:
+        logger.exception(
+            "realtime_recording_save_failed",
+            extra={"meeting_id": str(meeting_id)},
+        )
+        return False
 
 
 async def _websocket_user(websocket: WebSocket, settings: Settings) -> User:
@@ -405,9 +489,10 @@ async def _emit_events(
     *,
     translation_session: RealtimeTranslationSession | None = None,
     send_client: bool = True,
+    timeline_offset_ms: int = 0,
 ) -> None:
     for event in events:
-        segment = event.segment
+        segment = _offset_segment(event.segment, timeline_offset_ms)
         if event.type == "speaker_revision":
             logical_segment_id = await transcript_service.revise_speaker(
                 event.provider_segment_id, segment.speaker_label
@@ -443,6 +528,20 @@ async def _emit_events(
                 translation_session.add_final(
                     RealtimeTranslationItem(logical_segment_id, segment)
                 )
+
+
+def _offset_segment(
+    segment: TranscriptionSegment, timeline_offset_ms: int
+) -> TranscriptionSegment:
+    if timeline_offset_ms <= 0:
+        return segment
+    return TranscriptionSegment(
+        start_ms=segment.start_ms + timeline_offset_ms,
+        end_ms=segment.end_ms + timeline_offset_ms,
+        text=segment.text,
+        speaker_label=segment.speaker_label,
+        confidence=segment.confidence,
+    )
 
 
 async def _send_error(send_json: SendJson, code: str, message: str, retryable: bool) -> None:
