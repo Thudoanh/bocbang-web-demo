@@ -1,19 +1,28 @@
-# Deploy bản `Tunggg`: Vercel + Render
+# Deploy miễn phí bản `Tunggg`: Vercel + Render + Neon
 
-Đây là cấu hình production thực dụng cho ứng dụng hiện tại:
+Đây là cấu hình demo miễn phí cho ứng dụng hiện tại:
 
 - Frontend React/Vite: Vercel.
-- FastAPI, WebSocket, FFmpeg, Dramatiq worker và reconciler: Render.
-- PostgreSQL và Redis-compatible Key Value: Render managed services.
-- Audio, video và file export: bucket private S3-compatible, khuyến nghị Cloudflare R2.
+- FastAPI, WebSocket, FFmpeg, Dramatiq worker và reconciler: một Render Free
+  Web Service.
+- Redis-compatible Key Value: Render Free.
+- PostgreSQL và object storage S3-compatible: Neon Free.
+
+API, worker và reconciler dùng chung một container vì Render không có worker
+miễn phí. Cấu hình này phù hợp demo, không có SLA production. Web Service sẽ
+ngủ sau 15 phút không nhận HTTP/WebSocket và có thể mất khoảng một phút để bật
+lại. Upload được giới hạn 100 MB và media dài tối đa 60 phút để phù hợp 512 MB
+RAM.
 
 Không đưa `.env` lên Git. Không dùng filesystem của web service để lưu media.
 
-## 1. Chuẩn bị object storage
+## 1. Chuẩn bị Neon Free
 
-Tạo một bucket private và một bộ access key riêng cho ứng dụng. Cần các giá trị:
+Tạo một Neon project, database và bucket object storage private. Cần các giá
+trị:
 
 ```text
+DATABASE_URL
 S3_ENDPOINT_URL
 S3_ACCESS_KEY_ID
 S3_SECRET_ACCESS_KEY
@@ -21,8 +30,7 @@ S3_BUCKET_NAME
 S3_REGION=auto
 ```
 
-Nếu dùng Cloudflare R2, cấu hình CORS của bucket chỉ cho phép origin frontend
-production và các phương thức cần thiết. Bucket vẫn phải để private.
+Bucket phải để private. Không đưa các giá trị trên vào frontend hoặc Git.
 
 ## 2. Deploy backend trên Render
 
@@ -37,12 +45,13 @@ production và các phương thức cần thiết. Bucket vẫn phải để pri
    - `STT_API_KEY` của AssemblyAI.
    - `TRANSLATION_API_KEY` và `LLM_API_KEY` của Gemini.
 
-4. Blueprint tạo API, worker, reconciler, PostgreSQL và Key Value trong region
-   Singapore. Migration Alembic chạy trước mỗi lần deploy API.
+4. Blueprint tạo một Web Service và một Key Value miễn phí trong region
+   Singapore. Container chạy migration Alembic rồi khởi động API, worker và
+   reconciler cùng nhau.
 5. Chờ `https://<api-domain>/api/v1/ready` trả về trạng thái `ready`.
 
-Không đổi `STORAGE_BACKEND=s3` sang `local` ở production. API và worker là hai
-máy khác nhau nên ổ đĩa local không thể dùng chung.
+Không đổi `STORAGE_BACKEND=s3` sang `local`: filesystem của Render Free bị xóa
+khi restart, redeploy hoặc spin-down.
 
 ## 3. Deploy frontend trên Vercel
 
@@ -51,7 +60,7 @@ máy khác nhau nên ổ đĩa local không thể dùng chung.
 3. Đặt **Root Directory** là `frontend`.
 4. Framework preset: Vite. Build command: `npm run build`. Output: `dist`.
 5. Thêm bốn biến public từ `frontend/.env.production.example`, thay
-   `<api-domain>` bằng domain API Render thật. Production phải dùng `https://`
+   `<api-domain>` bằng domain API Render thật. Deployment phải dùng `https://`
    và WebSocket phải dùng `wss://`.
 6. Deploy preview trước. Kiểm tra đăng nhập, điều hướng trực tiếp vào một URL
    con và kết nối realtime rồi mới promote production.

@@ -1,7 +1,9 @@
-# Backend production stack for the Tunggg branch.
-# Frontend is deployed separately from frontend/ on Vercel.
+# Free demo stack for the Tunggg branch.
+# Frontend is deployed separately from frontend/ on Vercel. PostgreSQL and
+# private object storage are supplied by Neon Free. The API, Dramatiq worker,
+# and reconciler intentionally share one Render Free web container.
 envVarGroups:
-  - name: bocbang-production
+  - name: bocbang-free-demo
     envVars:
       - key: APP_ENVIRONMENT
         value: production
@@ -23,6 +25,8 @@ envVarGroups:
         value: "300"
       - key: JWT_SECRET
         generateValue: true
+      - key: DATABASE_URL
+        sync: false
       - key: FRONTEND_ORIGINS
         sync: false
       - key: GOOGLE_CLIENT_ID
@@ -72,93 +76,33 @@ envVarGroups:
       - key: GEMINI_MODEL
         value: gemini-3.6-flash
       - key: MAX_UPLOAD_BYTES
-        value: "524288000"
+        value: "104857600"
       - key: MAX_MEDIA_DURATION_SECONDS
-        value: "7200"
+        value: "3600"
 
 services:
   - type: keyvalue
     name: bocbang-redis
     region: singapore
-    plan: 256mb
+    plan: free
     ipAllowList: []
     maxmemoryPolicy: noeviction
-    persistenceMode: journal-snapshot
 
   - type: web
     name: bocbang-api
     runtime: docker
     branch: Tunggg
     region: singapore
-    plan: 0.5c-512mb
+    plan: free
     dockerContext: ./backend
     dockerfilePath: ./docker/backend.Dockerfile
-    dockerCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
-    preDeployCommand: alembic upgrade head
+    dockerCommand: python -m app.free_stack
     healthCheckPath: /api/v1/ready
-    maxShutdownDelaySeconds: 120
     envVars:
-      - fromGroup: bocbang-production
-      - key: DATABASE_URL
-        fromDatabase:
-          name: bocbang-postgres
-          property: connectionString
+      - fromGroup: bocbang-free-demo
       - key: REDIS_URL
         fromService:
           name: bocbang-redis
           type: keyvalue
           property: connectionString
-
-  - type: worker
-    name: bocbang-worker
-    runtime: docker
-    branch: Tunggg
-    region: singapore
-    plan: 1c-2g
-    dockerContext: ./backend
-    dockerfilePath: ./docker/backend.Dockerfile
-    dockerCommand: dramatiq app.workers.worker --processes 1 --threads 4
-    maxShutdownDelaySeconds: 300
-    envVars:
-      - fromGroup: bocbang-production
-      - key: DATABASE_URL
-        fromDatabase:
-          name: bocbang-postgres
-          property: connectionString
-      - key: REDIS_URL
-        fromService:
-          name: bocbang-redis
-          type: keyvalue
-          property: connectionString
-
-  - type: worker
-    name: bocbang-reconciler
-    runtime: docker
-    branch: Tunggg
-    region: singapore
-    plan: 0.5c-512mb
-    dockerContext: ./backend
-    dockerfilePath: ./docker/backend.Dockerfile
-    dockerCommand: python -m app.workers.reconciler
-    maxShutdownDelaySeconds: 60
-    envVars:
-      - fromGroup: bocbang-production
-      - key: DATABASE_URL
-        fromDatabase:
-          name: bocbang-postgres
-          property: connectionString
-      - key: REDIS_URL
-        fromService:
-          name: bocbang-redis
-          type: keyvalue
-          property: connectionString
-
-databases:
-  - name: bocbang-postgres
-    databaseName: bocbang
-    user: bocbang
-    region: singapore
-    plan: 0.5c-1g
-    diskSizeGB: 15
-    ipAllowList: []
 

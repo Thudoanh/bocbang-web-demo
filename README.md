@@ -20,7 +20,7 @@ Repository này tách biệt prototype hiện có với nền tảng production 
 - [ERD](docs/architecture/erd.md)
 - [API specification](docs/architecture/api-spec.md)
 - [Deployment design](docs/deployment/deployment.md)
-- [Production deploy: Vercel + Render](docs/deployment/DEPLOY_VERCEL_RENDER.md)
+- [Free demo deploy: Vercel + Render + Neon](docs/deployment/DEPLOY_VERCEL_RENDER.md)
 - [Implementation plan](docs/planning/implementation-plan.md)
 
 See [agent guidance](agent/README_AGENT.md) before making implementation changes.
