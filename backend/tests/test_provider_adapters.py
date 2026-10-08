@@ -262,7 +262,7 @@ def test_assemblyai_stream_uses_configured_model_waits_for_begin_and_termination
         query = parse_qs(urlparse(captured_url).query)
         assert query["speech_model"] == ["universal-3-6-pro"]
         assert query["mode"] == ["balanced"]
-        assert query["language_codes"] == ["vi"]
+        assert query["language_codes"] == ['["vi"]']
         assert query["encoding"] == ["pcm_s16le"]
         assert query["speaker_labels"] == ["true"]
         assert query["min_turn_silence"] == ["560"]

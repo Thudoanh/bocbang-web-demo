@@ -169,7 +169,10 @@ class AssemblyAIStream:
                 "encoding": options.audio_format or "pcm_s16le",
                 "speech_model": streaming_model,
                 "mode": streaming_mode,
-                "language_code": language,
+                # Universal Streaming expects the plural parameter to contain
+                # a JSON array. Passing a Python list through urlencode with
+                # doseq=True would emit repeated scalars instead.
+                "language_codes": json.dumps([language]),
                 "min_turn_silence": min_turn_silence_ms,
                 "max_turn_silence": max_turn_silence_ms,
             }
