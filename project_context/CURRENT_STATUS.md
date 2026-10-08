@@ -1,8 +1,18 @@
 # Current Status
 
-_Cập nhật lần cuối: 2026-10-07_
+_Cập nhật lần cuối: 2026-10-08_
 
 ## Done
+
+- Speechmatics realtime + batch và nhận diện người nói theo tên:
+  - Speechmatics là STT chính; AssemblyAI là fallback khi không mở được phiên hoặc batch gặp lỗi retryable.
+  - Mẫu WAV/MP3/M4A được FFmpeg chuẩn hóa thành WAV mono PCM16 16 kHz, bắt buộc 10–25 giây và chỉ một người nói.
+  - Mỗi profile lưu tối đa ba Speechmatics speaker identifiers; identifiers không xuất hiện trong REST response, frontend hoặc log.
+  - Alembic `20261008_0012_speechmatics_voiceprints.py` xóa dữ liệu MFCC cũ, đổi schema sang identifier và giữ `0011` để tương thích lịch sử database.
+  - Realtime và batch cùng nhận danh sách known speakers bằng label opaque `VP_<UUID>` rồi map về profile/tên; người lạ tiếp tục dùng nhãn generic.
+  - API hỗ trợ thêm mẫu cho profile cá nhân/khách, giới hạn ba mẫu và phân bổ tối đa 50 identifiers theo round-robin.
+  - Frontend hiển thị số mẫu `N/3`, cho thêm mẫu trước phiên và cảnh báo rõ khi phiên dùng AssemblyAI fallback.
+  - Đã chạy 93 backend tests, frontend production build, Docker migration/health và smoke test thật với Huy/Minh/Conversation cho cả batch lẫn realtime.
 
 - Realtime speaker diarization now honors the meeting option in AssemblyAI,
   preserves turn labels and maps unassigned speech to no speaker. New meeting
@@ -123,20 +133,20 @@ _Cập nhật lần cuối: 2026-10-07_
    by token để share page có thể hiển thị nội dung nhạy cảm an toàn.
 4. Implement `AudioPlayer` đồng bộ segment against the authenticated local
    proxy / short-lived S3 playback URL. Không fake player ở frontend.
-5. Chạy browser/microphone E2E với AssemblyAI thật trên các mẫu tiếng Việt rõ,
-   có tiếng ồn nhẹ và có thuật ngữ tiếng Anh xen kẽ; ghi nhận accuracy/latency.
+5. Chạy browser/microphone E2E với Speechmatics thật trên các mẫu tiếng Việt rõ,
+   có tiếng ồn nhẹ và có thuật ngữ tiếng Anh xen kẽ; ghi nhận accuracy/latency và hành vi fallback.
 6. Chạy backend `pytest`, `ruff check .`, Alembic migration validation và
    browser E2E trên standard CPython + isolated PostgreSQL.
 
 ## Blockers / risks
 
-- Docker Engine is now reachable with elevated Docker access; the frontend
-  container is verified. Full-stack migration/API/worker/upload/export runtime
-  checks remain pending.
+- Docker stack, migration `0012`, API/frontend health và provider capability đã
+  được xác minh. Upload/export E2E qua giao diện vẫn cần kiểm thử thủ công.
 
-- Provider credentials đã được cấu hình trong môi trường local, nhưng chưa chạy
-  browser/microphone E2E có tính phí với AssemblyAI sau thay đổi language
-  steering; không coi unit tests hoặc handshake giả lập là xác minh accuracy.
+- Provider credentials đã được cấu hình và smoke test Speechmatics batch/realtime
+  bằng file thật đã qua. Browser/microphone E2E vẫn cần chạy để đánh giá UX và
+  latency đầu-cuối; một lần kết nối realtime đầu tiên từng timeout 5 giây nhưng
+  lần kế tiếp thành công, đúng trường hợp AssemblyAI fallback cần xử lý.
 - Public share chưa thể công khai transcript hoặc AI result vì backend không
   cấp token-scoped result endpoints; không được mở endpoint authenticated hiện
   có mà không thiết kế ACL riêng.

@@ -149,12 +149,18 @@ complete upload jobs.
 
 ## Production provider adapters
 
-Set `STT_PROVIDER=assemblyai` and `STT_API_KEY` to enable AssemblyAI batch and
-realtime STT. The media worker downloads an object to a temporary file,
-normalizes it to mono PCM WAV at 16 kHz using `ffmpeg`, stores the normalized object, and persists normalized STT
-segments and speaker labels. The browser sends 16 kHz mono PCM16 over the API
-WebSocket; the AssemblyAI credential always stays on the server. `ffmpeg` and
-`ffprobe` must both be present on PATH.
+Set `STT_PROVIDER=speechmatics` and `SPEECHMATICS_API_KEY` to enable Speechmatics
+batch and realtime STT with enrolled-speaker identification. Set
+`STT_FALLBACK_PROVIDER=assemblyai` and `STT_API_KEY` to keep AssemblyAI as the
+connection-time and retryable batch fallback. A fallback session preserves the
+transcript but cannot identify Speechmatics voiceprints by name. The media worker
+downloads an object to a temporary file, normalizes it to mono PCM WAV at 16 kHz
+using `ffmpeg`, stores the normalized object, and persists normalized STT segments
+and speaker labels. The browser sends 16 kHz mono PCM16 over the API WebSocket;
+provider credentials always stay on the server. `ffmpeg` and `ffprobe` must both
+be present on PATH. Realtime turn finalization waits for one second of silence by
+default; tune `SPEECHMATICS_END_OF_UTTERANCE_SILENCE_SECONDS` when speakers use
+materially shorter or longer pauses.
 
 Set `TRANSLATION_PROVIDER=gemini` with `TRANSLATION_API_KEY` (or `LLM_API_KEY`)
 for segment-aligned VI ↔ EN translations. To fall back to Groq for translation,

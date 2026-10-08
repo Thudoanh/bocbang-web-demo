@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from app.models.summary import Summary
     from app.models.translation import Translation
     from app.models.user import User
+    from app.models.voice_profile import VoiceProfile
 
 
 class Transcript(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
@@ -155,6 +156,10 @@ class Speaker(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     meeting_id: Mapped[UUID] = mapped_column(
         ForeignKey("meetings.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    voice_profile_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("voice_profiles.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    match_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     provider_speaker_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -162,4 +167,5 @@ class Speaker(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     is_identified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     meeting: Mapped[Meeting] = relationship(back_populates="speakers")
+    voice_profile: Mapped[VoiceProfile | None] = relationship(back_populates="speakers")
     segments: Mapped[list[SegmentVersion]] = relationship(back_populates="speaker")

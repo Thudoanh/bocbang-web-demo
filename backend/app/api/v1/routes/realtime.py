@@ -28,6 +28,7 @@ from app.providers.contracts import (
 )
 from app.services.meetings import MeetingService
 from app.services.realtime import RealtimeTranscriptService
+from app.services.voice_profiles import VoiceProfileService
 from app.services.realtime_translation import (
     RealtimeTranslationItem,
     RealtimeTranslationSession,
@@ -90,9 +91,13 @@ async def realtime_transcription(websocket: WebSocket, meeting_id: UUID) -> None
             meeting, _ = await MeetingService(session).require_access(
                 meeting_id, user, MeetingPermission.EDIT
             )
+            known_speakers = await VoiceProfileService(session).list_known_speakers(
+                meeting_id
+            )
             options = StreamingOptions(
                 language=meeting.language_mode,
                 diarization=meeting.diarization_enabled,
+                known_speakers=known_speakers,
             )
             if options.diarization and not provider.capabilities().diarization:
                 await _error_and_close(
@@ -125,8 +130,16 @@ async def realtime_transcription(websocket: WebSocket, meeting_id: UUID) -> None
             await send_json(
                 {
                     "type": "session.ready",
-                    "provider": settings.stt_provider or provider.__class__.__name__,
+                    "provider": getattr(
+                        stream,
+                        "provider_name",
+                        settings.stt_provider or provider.__class__.__name__,
+                    ),
                     "language": meeting.language_mode,
+                    "speaker_identification_available": (
+                        getattr(stream, "speaker_identification_available", False)
+                    ),
+                    "fallback_active": getattr(stream, "fallback_active", False),
                 }
             )
             paused = False
@@ -413,6 +426,14 @@ async def _emit_events(
             "text": segment.text,
             "speaker_label": segment.speaker_label
             if transcript_service.diarization_enabled else None,
+            "speaker_name": segment.speaker_name
+            if transcript_service.diarization_enabled else None,
+            "voice_profile_id": str(segment.voice_profile_id)
+            if segment.voice_profile_id and transcript_service.diarization_enabled
+            else None,
+            "is_identified": bool(
+                segment.is_identified and transcript_service.diarization_enabled
+            ),
             "confidence": segment.confidence,
         }
         logical_segment_id: UUID | None = None

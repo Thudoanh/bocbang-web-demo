@@ -1,6 +1,6 @@
 import { config } from "../app/config";
 import { apiClient } from "./client";
-import type { AuthSession, Capabilities, Comment, CreatedShareLink, ExportArtifact, ExportFormat, Job, Meeting, MeetingStatus, MediaFile, Permission, Segment, ShareLink, Speaker, SpeakerSample, Summary, SummaryLanguage, SummaryTemplate, Transcript, Translation, User } from "../types/domain";
+import type { AuthSession, Capabilities, Comment, CreatedShareLink, ExportArtifact, ExportFormat, Job, Meeting, MeetingStatus, MediaFile, Permission, Segment, ShareLink, Speaker, SpeakerSample, Summary, SummaryLanguage, SummaryTemplate, Transcript, Translation, User, VoiceProfile } from "../types/domain";
 
 type Page = { limit?: number; offset?: number; q?: string; status?: MeetingStatus; source_type?: Meeting["source_type"] };
 export type TranscriptMutation = { version_id: string; version_no: number; segment?: Segment };
@@ -69,4 +69,27 @@ export const jobsApi = { get: (id: string) => apiClient.get<Job>(`/jobs/${id}`) 
 export const sharesApi = {
   resolve: (token: string) => apiClient.get<{ meeting: Meeting; permission: Exclude<Permission, "owner"> }>(`/shares/${token}`),
   transcript: (token: string) => apiClient.get<{ meeting: Meeting; permission: Exclude<Permission, "owner">; transcript: Transcript }>(`/shares/${token}/transcript`),
+};
+
+export const voiceProfilesApi = {
+  getMyProfile: () => apiClient.get<VoiceProfile>("/voice-profiles/me"),
+  enrollMyProfile: (audioFile: Blob | File) => {
+    const data = new FormData();
+    data.append("file", audioFile, audioFile instanceof File ? audioFile.name : "sample.webm");
+    return apiClient.post<VoiceProfile>("/voice-profiles/me", data);
+  },
+  deleteMyProfile: () => apiClient.delete<void>("/voice-profiles/me"),
+  listMeetingProfiles: (meetingId: string) => apiClient.get<VoiceProfile[]>(`/meetings/${meetingId}/voice-profiles`),
+  enrollMeetingGuest: (meetingId: string, name: string, audioFile: Blob | File) => {
+    const data = new FormData();
+    data.append("name", name);
+    data.append("file", audioFile, audioFile instanceof File ? audioFile.name : "sample.webm");
+    return apiClient.post<VoiceProfile>(`/meetings/${meetingId}/voice-profiles`, data);
+  },
+  addMeetingGuestSample: (meetingId: string, profileId: string, audioFile: Blob | File) => {
+    const data = new FormData();
+    data.append("file", audioFile, audioFile instanceof File ? audioFile.name : "sample.webm");
+    return apiClient.post<VoiceProfile>(`/meetings/${meetingId}/voice-profiles/${profileId}/samples`, data);
+  },
+  deleteMeetingGuest: (meetingId: string, profileId: string) => apiClient.delete<void>(`/meetings/${meetingId}/voice-profiles/${profileId}`),
 };

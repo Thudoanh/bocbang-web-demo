@@ -19,6 +19,7 @@ import httpx
 
 from app.core.config import Settings
 from app.providers.contracts import (
+    KnownSpeaker,
     StreamingEvent,
     StreamingOptions,
     StreamingSpeakerRevision,
@@ -47,7 +48,12 @@ class AssemblyAIProvider:
     def capabilities(self) -> STTCapabilities:
         return STTCapabilities(True, True, True, True, True, frozenset({"vi", "en"}), True)
 
-    async def transcribe_file(self, source: Path, language: str | None = None) -> TranscriptionResult:
+    async def transcribe_file(
+        self,
+        source: Path,
+        language: str | None = None,
+        known_speakers: tuple[KnownSpeaker, ...] = (),
+    ) -> TranscriptionResult:
         if not source.is_file():
             raise STTProviderError("Normalized media is unavailable.", code="STT_MEDIA_UNAVAILABLE", retryable=False)
         owns_client = self._client is None
@@ -116,6 +122,10 @@ class AssemblyAIProvider:
 
 
 class AssemblyAIStream:
+    provider_name = "assemblyai"
+    speaker_identification_available = False
+    fallback_active = False
+
     def __init__(self, websocket: Any, language: str, diarization: bool = False) -> None:
         self._websocket = websocket
         self._language = language
@@ -387,7 +397,7 @@ def _batch_result(payload: dict[str, Any]) -> TranscriptionResult:
     if not segments:
         raise STTProviderError("AssemblyAI returned no timed transcript segments.", code="STT_RESULT_INVALID", retryable=False)
     language = str(payload.get("language_code") or "und").split("_")[0].lower()
-    return TranscriptionResult(language, tuple(segments))
+    return TranscriptionResult(language, tuple(segments), provider_name="assemblyai")
 
 
 def _speaker_label(value: Any) -> str | None:

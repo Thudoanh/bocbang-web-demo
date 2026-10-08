@@ -61,7 +61,7 @@ docker compose logs -f frontend api worker reconciler
 ```
 
 Compose starts PostgreSQL and Redis, runs `alembic upgrade head` in a one-off
-`migrate` container, then starts the API, Dramatiq worker and reconciler.
+`migrate` container and then starts the API, Dramatiq worker and reconciler.
 The frontend starts after the API readiness check passes and serves the built
 React application with Nginx at `http://localhost:5173`.
 `migrate` exiting with code 0 is expected. If migration fails, inspect
@@ -92,11 +92,12 @@ for real STT/AI processing and email delivery; Docker supplies the runtime
 dependencies only. If SMTP runs on the host machine, use
 `EMAIL_SMTP_HOST=host.docker.internal` with Docker Desktop.
 
-Realtime AssemblyAI defaults to `universal-3-6-pro` in `balanced` mode. The
-backend sends the selected meeting language as `language_codes` and the browser
-captures mono PCM16 audio through an AudioWorklet. Override the provider model
-or latency/accuracy preset with `ASSEMBLYAI_STREAMING_MODEL` and
-`ASSEMBLYAI_STREAMING_MODE` in the root `.env`.
+Speechmatics is the default batch and realtime STT provider. The browser captures
+mono PCM16 audio at 16 kHz through an AudioWorklet, while uploaded files and
+10–25 second enrollment samples are normalized by FFmpeg. Enrolled voiceprints
+allow Speechmatics to return the participant's real name. AssemblyAI remains the
+connection-time fallback; a fallback session continues transcription but cannot
+identify enrolled speakers by name.
 
 Choose **Tự động phân biệt** when creating a realtime meeting to enable speaker
 labels. Final transcript segments and the speaker panel show `Người nói 1`,
@@ -299,9 +300,11 @@ complete.
 4. If a streaming STT adapter is configured, create a realtime meeting, grant
    microphone access, start recording, confirm partial text, then stop and
    confirm final persisted segments.
+5. Pre-meeting Voice Recognition: Enroll a personal voice sample in Settings or add speaker voiceprints in a meeting before recording; verify that speakers are automatically matched with real participant names and the `✓ Đã nhận diện` badge appears.
 
-The AssemblyAI and Gemini adapters activate only through their respective
-backend environment variables. With no batch STT configured uploads fail with
+The Speechmatics, AssemblyAI and Gemini adapters activate only through their
+respective backend environment variables. Configure `SPEECHMATICS_API_KEY` for
+primary STT and `STT_API_KEY` for the optional AssemblyAI fallback. With no batch STT configured uploads fail with
 a provider-capability error once claimed; with no translation/LLM provider the endpoints report capability
 unavailable. This is a backend capability limitation, not a frontend fallback. If the
 frontend cannot reach the API, first verify `VITE_API_BASE_URL`,

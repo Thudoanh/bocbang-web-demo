@@ -12,6 +12,9 @@ dist/
 .env
 .env.local
 
+# Local Speechmatics API testing (audio, voiceprints, and credentials)
+speechmatics-test/
+
 # IDE and OS
 .DS_Store
 Thumbs.db

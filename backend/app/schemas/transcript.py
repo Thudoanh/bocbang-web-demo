@@ -20,6 +20,8 @@ class SpeakerResponse(BaseModel):
     role: str | None
     organization: str | None
     is_identified: bool
+    voice_profile_id: UUID | None = None
+    match_confidence: float | None = None
     created_at: datetime
     updated_at: datetime
 

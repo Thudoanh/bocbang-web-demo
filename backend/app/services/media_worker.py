@@ -20,6 +20,7 @@ from app.models.meeting import Meeting
 from app.providers.contracts import STTProvider, STTProviderError
 from app.providers.storage import MediaStorage
 from app.services.transcripts import TranscriptService
+from app.services.voice_profiles import VoiceProfileService
 from app.workers import lifecycle
 
 
@@ -56,9 +57,23 @@ class MediaProcessingWorker:
                     await self._storage.put_file(normalized, normalized_key)
                     media.normalized_storage_key, job.progress = normalized_key, 45
                     await session.commit()
-                result = await self._stt.transcribe_file(normalized, meeting.language_mode)
+                known_speakers = await VoiceProfileService(session).list_known_speakers(
+                    meeting.id
+                )
+                result = await self._stt.transcribe_file(
+                    normalized, meeting.language_mode, known_speakers
+                )
                 if not result.segments:
                     raise ValueError("STT provider returned no transcript segments.")
+                if result.fallback_active:
+                    payload = dict(job.payload or {})
+                    payload["warning"] = {
+                        "code": "STT_FALLBACK_ACTIVE",
+                        "provider": result.provider_name or "assemblyai",
+                        "speaker_identification_available": False,
+                    }
+                    job.payload = payload
+
                 await TranscriptService(session).replace_stt_batch(
                     meeting, meeting.owner_id, result.segments
                 )
