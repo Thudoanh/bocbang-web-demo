@@ -138,8 +138,9 @@ function MeetingRow({ meeting, onMedia, onDelete }: { meeting: Meeting; onMedia:
   const date = new Intl.DateTimeFormat("vi-VN", { day: "2-digit", month: "2-digit", year: "numeric" }).format(new Date(meeting.updated_at));
   const duration = meeting.duration_ms ? ` · ${Math.max(1, Math.round(meeting.duration_ms / 60000))} phút` : "";
   return <article className="meeting-row manageable-meeting-row">
+    <a className="meeting-row-link" href={`/meetings/${meeting.id}`} aria-label={`Mở cuộc họp ${meeting.title}`} />
     <div className="avatar">{meeting.title.slice(0, 2).toUpperCase()}</div>
-    <a className="meeting-row-main" href={`/meetings/${meeting.id}`}><strong>{meeting.title}</strong><p>{date} · {meeting.source_type === "realtime" ? "Ghi âm" : "Tệp"}{duration}</p></a>
+    <div className="meeting-row-main"><strong>{meeting.title}</strong><p>{date} · {meeting.source_type === "realtime" ? "Ghi âm" : "Tệp"}{duration}</p></div>
     <Status value={meeting.status} />
     <div className="row-actions">
       {meeting.permission === "owner" && <Button className="row-secondary-action" onClick={onMedia}>Tệp</Button>}

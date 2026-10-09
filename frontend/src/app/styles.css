@@ -616,10 +616,17 @@ a.meeting-row:hover { background: var(--surface-hover); }
 .meeting-row strong, .meeting-row p { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .meeting-row strong { display: block; font-size: 14px; font-weight: 700; }
 .meeting-row p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
-.manageable-meeting-row { transition: background .12s; }
+.manageable-meeting-row { position: relative; cursor: pointer; transition: background .12s; }
 .manageable-meeting-row:hover, .manageable-meeting-row:focus-within { background: var(--surface-hover); }
+.meeting-row-link {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  border-radius: inherit;
+}
+.meeting-row-link:focus-visible { outline-offset: -3px; }
 .meeting-row-main { min-width: 0; }
-.row-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+.row-actions { position: relative; z-index: 2; display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
 .row-actions .btn { min-height: 34px; padding: 7px 12px; font-size: 12px; }
 .row-secondary-action { opacity: 0; transition: opacity .12s; }
 .manageable-meeting-row:hover .row-secondary-action,
