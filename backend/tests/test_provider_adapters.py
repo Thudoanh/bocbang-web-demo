@@ -94,6 +94,70 @@ def test_assemblyai_batch_sends_selected_language(tmp_path) -> None:
     assert result.language == "vi"
 
 
+def test_assemblyai_batch_auto_detect_is_limited_to_vietnamese_and_english(
+    tmp_path,
+) -> None:
+    class Response:
+        is_error = False
+
+        def __init__(self, payload: dict[str, object]) -> None:
+            self._payload = payload
+
+        def json(self) -> dict[str, object]:
+            return self._payload
+
+    class Client:
+        def __init__(self) -> None:
+            self.posts: list[tuple[str, dict[str, object]]] = []
+
+        async def post(self, url: str, **kwargs):
+            self.posts.append((url, kwargs))
+            return Response(
+                {"upload_url": "https://upload.test/audio"}
+                if url.endswith("/upload")
+                else {"id": "transcript-id"}
+            )
+
+        async def get(self, *_args, **_kwargs):
+            return Response(
+                {
+                    "status": "completed",
+                    "language_code": "en",
+                    "utterances": [
+                        {"start": 0, "end": 800, "text": "Hello everyone"}
+                    ],
+                }
+            )
+
+    source = tmp_path / "auto.wav"
+    source.write_bytes(b"audio")
+    client = Client()
+    provider = AssemblyAIProvider(
+        Settings(_env_file=None, stt_api_key="key", media_storage_path=tmp_path),
+        client=client,
+    )
+
+    result = asyncio.run(
+        provider.transcribe_file(
+            source,
+            BatchTranscriptionOptions(
+                language="auto", diarization=True, context="Bilingual meeting"
+            ),
+        )
+    )
+
+    request = client.posts[1][1]["json"]
+    assert isinstance(request, dict)
+    assert "language_code" not in request
+    assert request["language_detection"] is True
+    assert request["language_detection_options"] == {
+        "expected_languages": ["vi", "en"],
+        "fallback_language": "auto",
+        "code_switching": True,
+    }
+    assert result.language == "en"
+
+
 def test_gemini_translation_preserves_segment_alignment(monkeypatch) -> None:
     provider = GeminiTranslationProvider("key", "model", "https://gemini.test/v1beta")
 
@@ -313,6 +377,71 @@ def test_assemblyai_stream_uses_configured_model_waits_for_begin_and_termination
         assert await closing == ()
         assert json.loads(str(websocket.sent[-1])) == {"type": "Terminate"}
         assert websocket.closed
+
+    asyncio.run(scenario())
+
+
+def test_assemblyai_stream_auto_detects_each_vietnamese_or_english_turn(
+    monkeypatch,
+) -> None:
+    async def scenario() -> None:
+        websocket = FakeAssemblyWebSocket({"type": "Begin", "id": "session"})
+        captured_url = ""
+
+        async def connect(url: str, **_kwargs):
+            nonlocal captured_url
+            captured_url = url
+            return websocket
+
+        monkeypatch.setattr(websockets, "connect", connect)
+        stream = await AssemblyAIStream.connect(
+            "secret",
+            "wss://streaming.test/v3/ws",
+            "universal-3-6-pro",
+            "balanced",
+            StreamingOptions(
+                language="auto",
+                diarization=True,
+                context="Cuộc họp bilingual",
+                keyterms=("Bóc Băng",),
+            ),
+        )
+        query = parse_qs(urlparse(captured_url).query)
+        assert query["speech_model"] == ["whisper-rt"]
+        assert query["language_detection"] == ["true"]
+        assert query["format_turns"] == ["true"]
+        assert query["speaker_labels"] == ["true"]
+        assert "language_code" not in query
+        assert "mode" not in query
+        assert "prompt" not in query
+        assert "keyterms_prompt" not in query
+
+        await websocket.incoming.put(
+            json.dumps(
+                {
+                    "type": "Turn",
+                    "language_code": "en",
+                    "transcript": "Hello",
+                    "turn_order": 1,
+                    "end_of_turn": True,
+                    "words": [
+                        {"text": "Hello", "start": 0, "end": 400, "confidence": 0.9}
+                    ],
+                }
+            )
+        )
+        await asyncio.sleep(0)
+        events = await stream.send_audio(b"audio")
+        assert len(events) == 1
+        assert events[0].type == "final"
+        assert events[0].language == "en"
+
+        closing = asyncio.create_task(stream.close())
+        await asyncio.sleep(0)
+        await websocket.incoming.put(
+            json.dumps({"type": "Termination", "audio_duration_seconds": 1})
+        )
+        assert await closing == ()
 
     asyncio.run(scenario())
 

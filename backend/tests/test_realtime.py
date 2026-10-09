@@ -105,6 +105,29 @@ class FakeProvider:
         return self.stream
 
 
+class AutoLanguageStream(FakeStream):
+    def __init__(self) -> None:
+        super().__init__()
+        self.turn = 0
+
+    async def send_audio(self, chunk: bytes) -> tuple[StreamingTranscriptionEvent, ...]:
+        language, text = (
+            ("vi", "Xin chào"),
+            ("en", "Good morning"),
+            ("fr", "Bonjour"),
+        )[self.turn]
+        start_ms = self.turn * 1000
+        self.turn += 1
+        return (
+            StreamingTranscriptionEvent(
+                type="final",
+                language=language,
+                segment=TranscriptionSegment(start_ms, start_ms + 800, text),
+                provider_segment_id=str(self.turn),
+            ),
+        )
+
+
 class FakeTranslation:
     def __init__(self, error: TranslationProviderError | None = None) -> None:
         self.error = error
@@ -528,6 +551,65 @@ def test_realtime_translation_only_translates_final_segments(tmp_path: Path) -> 
     assert (source, target) == ("vi", "en")
 
 
+def test_realtime_auto_detect_translates_only_between_vietnamese_and_english(
+    tmp_path: Path,
+) -> None:
+    app, sender, _ = _app(tmp_path)
+    provider, translation = FakeProvider(), FakeTranslation()
+    provider.stream = AutoLanguageStream()
+    app.state.stt_provider = provider
+    app.state.translation_provider = translation
+    with TestClient(app) as client:
+        session = _verified_session(client, sender)
+        meeting_id = _create_realtime_meeting(
+            client, session["access_token"], language_mode="auto"
+        )
+        with client.websocket_connect(
+            f"/api/v1/realtime/{meeting_id}?access_token={session['access_token']}"
+        ) as websocket:
+            ready = websocket.receive_json()
+            assert ready["language"] == "auto"
+            assert provider.options is not None and provider.options.language == "auto"
+            websocket.send_text(
+                '{"type":"translation.enable","target_language":"auto",'
+                '"logical_segment_ids":[]}'
+            )
+            assert websocket.receive_json() == {
+                "type": "translation.status",
+                "enabled": True,
+                "source_language": "auto",
+                "target_language": "auto",
+            }
+
+            websocket.send_bytes(b"vietnamese")
+            vi_final = websocket.receive_json()
+            vi_translation = websocket.receive_json()
+            assert vi_final["language"] == "vi"
+            assert vi_translation["source_language"] == "vi"
+            assert vi_translation["target_language"] == "en"
+
+            websocket.send_bytes(b"english")
+            en_final = websocket.receive_json()
+            en_translation = websocket.receive_json()
+            assert en_final["language"] == "en"
+            assert en_translation["source_language"] == "en"
+            assert en_translation["target_language"] == "vi"
+
+            websocket.send_bytes(b"other-language")
+            other_final = websocket.receive_json()
+            assert other_final["language"] == "fr"
+            websocket.send_text('{"type":"recording.stop"}')
+            assert websocket.receive_json() == {
+                "type": "meeting.status",
+                "status": "completed",
+            }
+
+    assert [(source, target) for _, source, target in translation.calls] == [
+        ("vi", "en"),
+        ("en", "vi"),
+    ]
+
+
 def test_realtime_translation_disable_and_reenable_backfills_without_duplicates(
     tmp_path: Path,
 ) -> None:
@@ -771,7 +853,11 @@ def _verified_session(client: TestClient, sender: CapturingEmailSender) -> dict[
 
 
 def _create_realtime_meeting(
-    client: TestClient, token: object, *, source_type: str = "realtime"
+    client: TestClient,
+    token: object,
+    *,
+    source_type: str = "realtime",
+    language_mode: str = "vi",
 ) -> str:
     response = client.post(
         "/api/v1/meetings",
@@ -779,7 +865,7 @@ def _create_realtime_meeting(
         json={
             "title": "Realtime test",
             "source_type": source_type,
-            "language_mode": "vi",
+            "language_mode": language_mode,
             "diarization_enabled": True,
         },
     )

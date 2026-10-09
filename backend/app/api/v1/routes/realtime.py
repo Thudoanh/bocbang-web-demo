@@ -247,7 +247,6 @@ async def realtime_transcription(websocket: WebSocket, meeting_id: UUID) -> None
                     continue
                 if command.type == "translation.enable":
                     target = command.target_language
-                    supported_target = _opposite_language(meeting.language_mode)
                     if (
                         translation_provider is None
                         or translation_session is None
@@ -260,10 +259,10 @@ async def realtime_transcription(websocket: WebSocket, meeting_id: UUID) -> None
                             False,
                         )
                         continue
-                    if (
-                        target != supported_target
-                        or (meeting.language_mode, target)
-                        not in translation_provider.capabilities().supported_language_pairs
+                    if not _translation_configuration_supported(
+                        meeting.language_mode,
+                        target,
+                        translation_provider.capabilities().supported_language_pairs,
                     ):
                         await _send_translation_error(
                             send_json,
@@ -569,7 +568,7 @@ async def _emit_events(
             await send_json({key: value for key, value in payload.items() if value is not None})
             if logical_segment_id is not None and translation_session is not None:
                 translation_session.add_final(
-                    RealtimeTranslationItem(logical_segment_id, segment)
+                    RealtimeTranslationItem(logical_segment_id, segment, event.language)
                 )
 
 
@@ -634,3 +633,19 @@ async def _send_translation_error(
 
 def _opposite_language(source_language: str) -> str | None:
     return {"vi": "en", "en": "vi"}.get(source_language)
+
+
+def _translation_configuration_supported(
+    source_language: str,
+    target_language: str,
+    supported_pairs: frozenset[tuple[str, str]],
+) -> bool:
+    if source_language == "auto":
+        return target_language == "auto" and {
+            ("vi", "en"),
+            ("en", "vi"),
+        }.issubset(supported_pairs)
+    return (
+        target_language == _opposite_language(source_language)
+        and (source_language, target_language) in supported_pairs
+    )

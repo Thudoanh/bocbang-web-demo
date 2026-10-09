@@ -22,12 +22,14 @@ _TRANSLATION_BATCH_SIZE = 8
 class RealtimeTranslationItem:
     logical_segment_id: UUID
     segment: TranscriptionSegment
+    source_language: str | None = None
 
 
 @dataclass(frozen=True)
 class _QueuedTranslation:
     item: RealtimeTranslationItem
     generation: int
+    source_language: str
     target_language: str
 
 
@@ -114,7 +116,9 @@ class RealtimeTranslationSession:
 
     def _remember(self, items: Iterable[RealtimeTranslationItem]) -> None:
         for item in items:
-            self._known[item.logical_segment_id] = item
+            # A live final event may already contain the detected language. Do not
+            # replace it with a language-less database backfill item.
+            self._known.setdefault(item.logical_segment_id, item)
 
     def _enqueue(self, item: RealtimeTranslationItem) -> None:
         target = self._target_language
@@ -127,8 +131,19 @@ class RealtimeTranslationSession:
             or logical_id in self._in_flight
         ):
             return
+        source = self._source_language
+        if source == "auto":
+            source = _normalized_language(item.source_language)
+        if source not in {"vi", "en"}:
+            return
+        if target == "auto":
+            target = _opposite_language(source)
+        if target is None or target == source:
+            return
         self._queued.add(logical_id)
-        self._queue.put_nowait(_QueuedTranslation(item, self._generation, target))
+        self._queue.put_nowait(
+            _QueuedTranslation(item, self._generation, source, target)
+        )
 
     def _ensure_worker(self) -> None:
         if self._worker is None or self._worker.done():
@@ -170,53 +185,56 @@ class RealtimeTranslationSession:
             for queued in batch
             if self._enabled
             and queued.generation == self._generation
-            and queued.target_language == self._target_language
         ]
         if not current:
             return
         for queued in current:
             self._in_flight.add(queued.item.logical_segment_id)
-        try:
-            translated = await self._provider.translate_segments(
-                tuple(queued.item.segment for queued in current),
-                self._source_language,
-                current[0].target_language,
-            )
-            if len(translated) != len(current):
-                raise TranslationProviderError(
-                    "The translation provider returned invalid segment alignment.",
-                    code="TRANSLATION_RESULT_INVALID",
-                    retryable=False,
+        grouped: dict[tuple[str, str], list[_QueuedTranslation]] = {}
+        for queued in current:
+            grouped.setdefault(
+                (queued.source_language, queued.target_language), []
+            ).append(queued)
+        for (source, target), language_batch in grouped.items():
+            try:
+                translated = await self._provider.translate_segments(
+                    tuple(queued.item.segment for queued in language_batch),
+                    source,
+                    target,
                 )
-        except TranslationProviderError as exc:
-            await self._emit_error(current, exc.code, str(exc), exc.retryable)
-            return
-        except Exception:
-            await self._emit_error(
-                current,
-                "TRANSLATION_PROVIDER_ERROR",
-                "Realtime translation could not process these transcript segments.",
-                True,
-            )
-            return
-        if (
-            not self._enabled
-            or current[0].generation != self._generation
-            or current[0].target_language != self._target_language
-        ):
-            return
-        for queued, result in zip(current, translated, strict=True):
-            logical_id = queued.item.logical_segment_id
-            self._translated.add(logical_id)
-            await self._safe_send(
-                {
-                    "type": "translation.final",
-                    "logical_segment_id": str(logical_id),
-                    "source_language": self._source_language,
-                    "target_language": queued.target_language,
-                    "text": result.text,
-                }
-            )
+                if len(translated) != len(language_batch):
+                    raise TranslationProviderError(
+                        "The translation provider returned invalid segment alignment.",
+                        code="TRANSLATION_RESULT_INVALID",
+                        retryable=False,
+                    )
+            except TranslationProviderError as exc:
+                await self._emit_error(
+                    language_batch, exc.code, str(exc), exc.retryable
+                )
+                continue
+            except Exception:
+                await self._emit_error(
+                    language_batch,
+                    "TRANSLATION_PROVIDER_ERROR",
+                    "Realtime translation could not process these transcript segments.",
+                    True,
+                )
+                continue
+            if not self._enabled or language_batch[0].generation != self._generation:
+                continue
+            for queued, result in zip(language_batch, translated, strict=True):
+                logical_id = queued.item.logical_segment_id
+                self._translated.add(logical_id)
+                await self._safe_send(
+                    {
+                        "type": "translation.final",
+                        "logical_segment_id": str(logical_id),
+                        "source_language": queued.source_language,
+                        "target_language": queued.target_language,
+                        "text": result.text,
+                    }
+                )
 
     async def _emit_error(
         self,
@@ -242,3 +260,14 @@ class RealtimeTranslationSession:
     async def _safe_send(self, payload: dict[str, object]) -> None:
         with suppress(Exception):
             await self._send_event(payload)
+
+
+def _normalized_language(language: str | None) -> str | None:
+    if not language:
+        return None
+    normalized = language.strip().lower().replace("_", "-").split("-", 1)[0]
+    return normalized or None
+
+
+def _opposite_language(language: str) -> str | None:
+    return {"vi": "en", "en": "vi"}.get(language)

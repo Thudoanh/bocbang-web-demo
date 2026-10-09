@@ -121,7 +121,7 @@ function CreateMeeting({ initialSource }: { initialSource?: "realtime" | "upload
       <label className="field full">Tên cuộc họp<input autoFocus placeholder="Họp kế hoạch tuần" value={title} onChange={(event) => setTitle(event.target.value)} /></label>
       <label className="field full">Ghi chú <span>(không bắt buộc)</span><textarea placeholder="Nội dung chính" value={description} onChange={(event) => setDescription(event.target.value)} /></label>
       <div className="field-grid">
-        <label className="field">Ngôn ngữ<select value={language} onChange={(event) => setLanguage(event.target.value)}><option value="vi">Tiếng Việt</option><option value="en">English</option></select></label>
+        <label className="field">Ngôn ngữ<select value={language} onChange={(event) => setLanguage(event.target.value)}><option value="vi">Tiếng Việt</option><option value="en">English</option><option value="auto">Tự nhận diện Việt / Anh</option></select></label>
         <label className="field">Người nói<select value={String(diarization)} onChange={(event) => setDiarization(event.target.value === "true")}><option value="true">Tự phân biệt</option><option value="false">Không phân biệt</option></select></label>
       </div>
       {error && <div className="form-error">{error}</div>}
