@@ -67,6 +67,7 @@ export function SummaryPage({ meetingId }: { meetingId: string }) {
     <PageHeading
       eyebrow="TÓM TẮT"
       title="Tóm tắt"
+      context={meeting.data.title}
       actions={<a className="btn btn-light" href={`/meetings/${meetingId}`}>Bản ghi</a>}
     />
     <section className="summary-controls">
