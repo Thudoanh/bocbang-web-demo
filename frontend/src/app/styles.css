@@ -776,7 +776,7 @@ a.meeting-row:hover { background: var(--surface-hover); }
   box-shadow: 0 1px 4px rgba(0,0,0,.1);
 }
 
-.recording {
+.recording-panel {
   margin-bottom: 16px;
   padding: 20px 22px;
   border-color: color-mix(in srgb, var(--accent) 22%, var(--border));
