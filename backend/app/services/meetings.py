@@ -7,12 +7,13 @@ import secrets
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import ApiError
 from app.models.enums import MeetingPermission, MeetingSourceType, MeetingStatus
 from app.models.meeting import Meeting, MeetingMember, ShareLink
+from app.models.transcript import CurrentSegment, Transcript
 from app.models.user import User
 from app.schemas.auth import UserResponse
 from app.schemas.meeting import (
@@ -21,12 +22,11 @@ from app.schemas.meeting import (
     MeetingMemberCreateRequest,
     MeetingResponse,
     MeetingUpdateRequest,
-    ShareLinkCreateRequest,
     ShareLinkCreatedResponse,
+    ShareLinkCreateRequest,
     ShareLinkResponse,
     ShareLinkUpdateRequest,
 )
-
 
 _PERMISSION_RANK = {
     MeetingPermission.READ: 1,
@@ -88,6 +88,34 @@ class MeetingService:
         meeting, permission = await self.require_access(meeting_id, user, MeetingPermission.EDIT)
         for field, value in payload.model_dump(exclude_unset=True).items():
             setattr(meeting, field, value)
+        await self._session.commit()
+        await self._session.refresh(meeting)
+        return self._meeting_response(meeting, permission)
+
+    async def complete_realtime(self, meeting_id: UUID, user: User) -> MeetingResponse:
+        meeting, permission = await self.require_access(
+            meeting_id, user, MeetingPermission.EDIT
+        )
+        if meeting.source_type != MeetingSourceType.REALTIME:
+            raise ApiError(
+                "MEETING_SOURCE_TYPE_MISMATCH",
+                "Only realtime meetings can be completed here.",
+                409,
+            )
+        if meeting.status == MeetingStatus.COMPLETED:
+            return self._meeting_response(meeting, permission)
+        segment_count = await self._session.scalar(
+            select(func.count(CurrentSegment.id))
+            .join(Transcript, CurrentSegment.transcript_id == Transcript.id)
+            .where(Transcript.meeting_id == meeting.id)
+        )
+        if not segment_count:
+            raise ApiError(
+                "TRANSCRIPT_EMPTY",
+                "The recording has no confirmed transcript to complete.",
+                409,
+            )
+        meeting.status = MeetingStatus.COMPLETED
         await self._session.commit()
         await self._session.refresh(meeting)
         return self._meeting_response(meeting, permission)

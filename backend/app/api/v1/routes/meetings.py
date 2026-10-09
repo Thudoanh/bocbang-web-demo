@@ -5,12 +5,13 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request, Response, status
+from fastapi import APIRouter, Depends, Query, Response, status
 
 from app.api.v1.routes.auth import CurrentUserDependency
-from app.api.v1.routes.media import MediaServiceDependency
 from app.api.v1.routes.exports import ExportServiceDependency
+from app.api.v1.routes.media import MediaServiceDependency
 from app.core.dependencies import DatabaseSessionDependency
+from app.models.enums import MeetingSourceType, MeetingStatus
 from app.schemas.meeting import (
     MeetingCreateRequest,
     MeetingMemberCreateRequest,
@@ -18,12 +19,11 @@ from app.schemas.meeting import (
     MeetingMemberUpdateRequest,
     MeetingResponse,
     MeetingUpdateRequest,
-    ShareLinkCreateRequest,
     ShareLinkCreatedResponse,
+    ShareLinkCreateRequest,
     ShareLinkResponse,
     ShareLinkUpdateRequest,
 )
-from app.models.enums import MeetingSourceType, MeetingStatus
 from app.services.meetings import MeetingService
 
 router = APIRouter(prefix="/meetings")
@@ -73,6 +73,15 @@ async def update_meeting(
     service: MeetingServiceDependency,
 ) -> MeetingResponse:
     return await service.update(meeting_id, user, payload)
+
+
+@router.post("/{meeting_id}/complete", response_model=MeetingResponse)
+async def complete_realtime_meeting(
+    meeting_id: UUID,
+    user: CurrentUserDependency,
+    service: MeetingServiceDependency,
+) -> MeetingResponse:
+    return await service.complete_realtime(meeting_id, user)
 
 
 @router.delete("/{meeting_id}", status_code=status.HTTP_204_NO_CONTENT)

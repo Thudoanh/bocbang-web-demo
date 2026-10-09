@@ -78,11 +78,16 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
   const realtimeTarget = meeting.data.language_mode === "vi" ? "en" : meeting.data.language_mode === "en" ? "vi" : undefined;
   const realtimeTranslationSupported = Boolean(realtimeTarget && capabilities.data?.translation.language_pairs?.some(([source, target]) => source === meeting.data?.language_mode && target === realtimeTarget));
   const displayedSegments = transcript.data?.segments.slice().reverse() ?? [];
+  const initialRecordingDurationMs = Math.max(
+    meeting.data.duration_ms ?? 0,
+    media.data?.[0]?.duration_ms ?? 0,
+    ...(transcript.data?.segments.map((segment) => segment.end_ms) ?? [0]),
+  );
   return <>
     <PageHeading eyebrow="BẢN GHI" title={meeting.data.title} description={`${meeting.data.language_mode.toUpperCase()} · ${meeting.data.source_type === "realtime" ? "Ghi âm" : "Tệp"}`} actions={<>{meeting.data.source_type === "upload" && <a className="btn btn-light" href={`/meetings/${meetingId}/upload`}>Tải tệp</a>}{owner && <Button tone="dark" onClick={() => setShareOpen(true)}>Chia sẻ</Button>}</>} />
     {notice && <div className="notice">{notice}</div>}
     <div className="meeting-layout"><section>
-      {editable && meeting.data.source_type === "realtime" && meeting.data.status !== "completed" && capabilities.data?.stt.streaming && <RecordingPanel meetingId={meetingId} targetLanguage={realtimeTranslationSupported ? realtimeTarget : undefined} translationVisible={showRealtimeTranslations} onTranslationVisibleChange={setShowRealtimeTranslations} onTranslation={(logicalSegmentId, translation) => setRealtimeTranslations((current) => ({ ...current, [logicalSegmentId]: translation }))} onFinal={() => void transcript.reload()} onComplete={() => { void meeting.reload(); void transcript.reload(); void media.reload(); }} hasStartedBefore={transcript.data?.segments !== undefined && transcript.data.segments.length > 0} />}
+      {editable && meeting.data.source_type === "realtime" && meeting.data.status !== "completed" && capabilities.data?.stt.streaming && <RecordingPanel meetingId={meetingId} targetLanguage={realtimeTranslationSupported ? realtimeTarget : undefined} translationVisible={showRealtimeTranslations} onTranslationVisibleChange={setShowRealtimeTranslations} onTranslation={(logicalSegmentId, translation) => setRealtimeTranslations((current) => ({ ...current, [logicalSegmentId]: translation }))} onFinal={() => void transcript.reload()} onComplete={() => { void meeting.reload(); void transcript.reload(); void media.reload(); }} hasStartedBefore={transcript.data?.segments !== undefined && transcript.data.segments.length > 0} initialElapsedMs={initialRecordingDurationMs} />}
       {media.data?.[0] && <MediaPlayer ref={player} meetingId={meetingId} mediaId={media.data[0].id} filename={media.data[0].original_filename} segments={transcript.data?.segments ?? []} onActiveSegment={setActiveSegmentId} />}
       <div className="section-title"><h2>Nội dung</h2>{transcript.data && <Status>v{transcript.data.version_no}</Status>}</div>
       {mergeFirst && <div className="notice">Chọn một đoạn liền kề để gộp với đoạn đã chọn, hoặc bấm “Gộp” lần nữa để hủy.</div>}
@@ -115,12 +120,12 @@ function ConfirmDialog({ title, detail, confirmLabel, close, confirm }: { title:
 function SplitDialog({ segment, close, confirm }: { segment: Segment; close: () => void; confirm: (splitAt: number) => void }) { const [splitAt, setSplitAt] = useState(formatTimestampInput(Math.floor((segment.start_ms + segment.end_ms) / 2))); const splitAtMs = parseTimestampInput(splitAt); const valid = splitAtMs !== undefined && splitAtMs > segment.start_ms && splitAtMs < segment.end_ms; return <div className="dialog-backdrop" role="presentation"><section className="dialog" role="dialog" aria-modal="true" aria-labelledby="split-title"><h2 id="split-title">Tách đoạn transcript</h2><p>Chọn mốc nằm giữa {formatTime(segment.start_ms)} và {formatTime(segment.end_ms)}. Nội dung sẽ được chia thành hai đoạn và tạo phiên bản mới.</p><label>Mốc tách (mm:ss)<input inputMode="numeric" placeholder="01:15" value={splitAt} onChange={(event) => setSplitAt(event.target.value)} /></label>{!valid && <div className="form-error">Nhập mm:ss hoặc hh:mm:ss; mốc tách phải nằm bên trong đoạn hiện tại.</div>}<div className="dialog-actions"><Button onClick={close}>Hủy</Button><Button tone="dark" disabled={!valid} onClick={() => confirm(splitAtMs!)}>Tách đoạn</Button></div></section></div>; }
 function ShareDialog({ meetingId, close }: { meetingId: string; close: () => void }) { const [email, setEmail] = useState(""); const [permission, setPermission] = useState<"read" | "comment" | "edit">("read"); const [message, setMessage] = useState(""); async function submit(event: React.FormEvent) { event.preventDefault(); try { await meetingsApi.addMember(meetingId, email, permission); setMessage("Đã mời cộng tác viên."); } catch (cause) { setMessage((cause as Error).message); } } return <div className="dialog-backdrop"><form className="dialog" onSubmit={submit}><button className="close" onClick={close} type="button">×</button><h2>Chia sẻ cuộc họp</h2><p>Chỉ owner có thể quản lý quyền truy cập.</p><label>Email<input type="email" value={email} required onChange={(event) => setEmail(event.target.value)} /></label><label>Quyền<select value={permission} onChange={(event) => setPermission(event.target.value as typeof permission)}><option value="read">Xem</option><option value="comment">Bình luận</option><option value="edit">Chỉnh sửa</option></select></label>{message && <div className="form-error">{message}</div>}<Button tone="dark">Gửi lời mời</Button></form></div>; }
 function CommentsPanel({ meetingId, canComment, comments }: { meetingId: string; canComment: boolean; comments: { data?: Comment[]; setData: React.Dispatch<React.SetStateAction<Comment[] | undefined>> } }) { const [body, setBody] = useState(""); const [editing, setEditing] = useState<Comment>(); const [error, setError] = useState(""); async function submit(event: React.FormEvent) { event.preventDefault(); try { const comment = await meetingsApi.addComment(meetingId, body); comments.setData((items) => [...(items ?? []), comment]); setBody(""); setError(""); } catch (cause) { setError((cause as Error).message); } } async function update() { if (!editing) return; try { const comment = await meetingsApi.updateComment(editing.id, editing.body); comments.setData((items) => items?.map((item) => item.id === comment.id ? comment : item)); setEditing(undefined); setError(""); } catch (cause) { setError((cause as Error).message); } } async function remove(id: string) { try { await meetingsApi.deleteComment(id); comments.setData((items) => items?.filter((item) => item.id !== id)); setError(""); } catch (cause) { setError((cause as Error).message); } } return <section className="panel"><h2>Bình luận</h2>{comments.data?.map((comment) => <div className="speaker" key={comment.id}>{editing?.id === comment.id ? <><textarea aria-label="Sửa bình luận" value={editing.body} onChange={(event) => setEditing({ ...editing, body: event.target.value })} /><Button onClick={() => void update()}>Lưu</Button><Button onClick={() => setEditing(undefined)}>Hủy</Button></> : <><strong>{comment.body}</strong><span>{new Date(comment.created_at).toLocaleString("vi-VN")}</span>{canComment && <><Button onClick={() => setEditing(comment)}>Sửa</Button><Button tone="danger" onClick={() => void remove(comment.id)}>Xóa</Button></>}</>}</div>)}{canComment ? <form className="comments-form" onSubmit={submit}><textarea aria-label="Bình luận" value={body} required onChange={(event) => setBody(event.target.value)} /><Button tone="dark">Gửi bình luận</Button>{error && <div className="form-error">{error}</div>}</form> : <p>Bạn chỉ có quyền xem bình luận.</p>}</section>; }
-function RecordingPanel({ meetingId, targetLanguage, translationVisible, onTranslationVisibleChange, onTranslation, onFinal, onComplete, hasStartedBefore }: { meetingId: string; targetLanguage?: string; translationVisible: boolean; onTranslationVisibleChange: (visible: boolean) => void; onTranslation: (logicalSegmentId: string, translation: RealtimeTranslation) => void; onFinal: () => void; onComplete: () => void; hasStartedBefore?: boolean }) {
+function RecordingPanel({ meetingId, targetLanguage, translationVisible, onTranslationVisibleChange, onTranslation, onFinal, onComplete, hasStartedBefore, initialElapsedMs }: { meetingId: string; targetLanguage?: string; translationVisible: boolean; onTranslationVisibleChange: (visible: boolean) => void; onTranslation: (logicalSegmentId: string, translation: RealtimeTranslation) => void; onFinal: () => void; onComplete: () => void; hasStartedBefore?: boolean; initialElapsedMs: number }) {
   const { accessToken } = useAuth();
   const socket = useRef<MeetingSocket | undefined>(undefined);
   const capture = useRef<MicrophonePcmCapture | undefined>(undefined);
   const startedAt = useRef<number | undefined>(undefined);
-  const elapsedBeforePause = useRef(0);
+  const elapsedBeforePause = useRef(Math.floor(initialElapsedMs / 1000));
   const translationEnabled = useRef(false);
   const finalSegmentIds = useRef(new Set<string>());
   const translatedSegmentIds = useRef(new Set<string>());
@@ -128,9 +133,15 @@ function RecordingPanel({ meetingId, targetLanguage, translationVisible, onTrans
   const [translationStatus, setTranslationStatus] = useState("");
   const [partial, setPartial] = useState("");
   const [state, setState] = useState<"idle" | "connecting" | "recording" | "paused" | "stopping" | "failed">("idle");
-  const [elapsed, setElapsed] = useState(0);
+  const [elapsed, setElapsed] = useState(Math.floor(initialElapsedMs / 1000));
 
   useEffect(() => () => { void stop(true); }, []);
+  useEffect(() => {
+    if (state !== "idle") return;
+    const initialSeconds = Math.floor(initialElapsedMs / 1000);
+    elapsedBeforePause.current = initialSeconds;
+    setElapsed(initialSeconds);
+  }, [initialElapsedMs, state]);
   useEffect(() => {
     if (state !== "recording") return;
     const timer = window.setInterval(() => setElapsed(elapsedBeforePause.current + Math.floor((Date.now() - (startedAt.current ?? Date.now())) / 1000)), 1000);
@@ -259,8 +270,21 @@ function RecordingPanel({ meetingId, targetLanguage, translationVisible, onTrans
     socket.current?.command("recording.stop");
   }
 
+  async function finishExisting() {
+    setState("stopping");
+    setStatus("Đang kết thúc bản ghi…");
+    try {
+      await meetingsApi.complete(meetingId);
+      setStatus("Đã kết thúc ghi âm.");
+      onComplete();
+    } catch (cause) {
+      setState("failed");
+      setStatus(cause instanceof Error ? cause.message : "Không thể kết thúc bản ghi.");
+    }
+  }
+
   const canToggleTranslation = state === "recording" || state === "paused" || state === "stopping";
-  return <section className="panel recording-panel"><div className="recording-heading"><div><h2>Ghi âm</h2><p>{status}</p></div><strong className="recording-timer">{formatDuration(elapsed)}</strong></div>{partial && <p className="partial-segment">{partial}</p>}{translationStatus && <p className="realtime-translation-status">{translationStatus}</p>}<div className="recording-actions">{(state === "idle" || state === "failed") && <Button tone="dark" onClick={() => void start()}>{state === "failed" ? "Kết nối lại" : (hasStartedBefore ? "Tiếp tục" : "Bắt đầu")}</Button>}{state === "connecting" && <Button disabled>Đang kết nối…</Button>}{state === "recording" && <><Button onClick={() => void pause()}>Tạm dừng</Button><Button tone="danger" onClick={() => void stop()}>Kết thúc</Button></>}{state === "paused" && <><Button tone="dark" onClick={() => void resume()}>Tiếp tục</Button><Button tone="danger" onClick={() => void stop()}>Kết thúc</Button></>}{state === "stopping" && <Button disabled>Đã kết thúc</Button>}{canToggleTranslation && <Button disabled={!targetLanguage} onClick={toggleTranslation}>{targetLanguage ? (translationVisible ? "Ẩn bản dịch" : "Dịch trực tiếp") : "Không thể dịch"}</Button>}</div></section>;
+  return <section className="panel recording-panel"><div className="recording-heading"><div><h2>Ghi âm</h2><p>{status}</p></div><strong className="recording-timer">{formatDuration(elapsed)}</strong></div>{partial && <p className="partial-segment">{partial}</p>}{translationStatus && <p className="realtime-translation-status">{translationStatus}</p>}<div className="recording-actions">{(state === "idle" || state === "failed") && <><Button tone="dark" onClick={() => void start()}>{state === "failed" ? "Kết nối lại" : (hasStartedBefore ? "Tiếp tục" : "Bắt đầu")}</Button>{hasStartedBefore && <Button tone="danger" onClick={() => void finishExisting()}>Kết thúc</Button>}</>}{state === "connecting" && <Button disabled>Đang kết nối…</Button>}{state === "recording" && <><Button onClick={() => void pause()}>Tạm dừng</Button><Button tone="danger" onClick={() => void stop()}>Kết thúc</Button></>}{state === "paused" && <><Button tone="dark" onClick={() => void resume()}>Tiếp tục</Button><Button tone="danger" onClick={() => void stop()}>Kết thúc</Button></>}{state === "stopping" && <Button disabled>Đang kết thúc…</Button>}{canToggleTranslation && <Button disabled={!targetLanguage} onClick={toggleTranslation}>{targetLanguage ? (translationVisible ? "Ẩn bản dịch" : "Dịch trực tiếp") : "Không thể dịch"}</Button>}</div></section>;
 }
 function meetingErrorMessage(cause: unknown) {
   const message = cause instanceof Error ? cause.message : "Không thể thực hiện thao tác.";

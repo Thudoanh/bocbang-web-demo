@@ -203,6 +203,20 @@ class TranscriptService:
         if not segment.text.strip() or segment.start_ms < 0 or segment.end_ms <= segment.start_ms:
             raise ValueError("Final transcript result is invalid.")
         transcript = await self._ensure_transcript(meeting.id)
+        latest_end_ms = await self._session.scalar(
+            select(func.max(CurrentSegment.end_ms)).where(
+                CurrentSegment.transcript_id == transcript.id
+            )
+        )
+        if latest_end_ms is not None and segment.start_ms < latest_end_ms:
+            duration_ms = segment.end_ms - segment.start_ms
+            segment = TranscriptionSegment(
+                start_ms=latest_end_ms,
+                end_ms=latest_end_ms + duration_ms,
+                text=segment.text,
+                speaker_label=segment.speaker_label,
+                confidence=segment.confidence,
+            )
         version = await self._session.scalar(
             select(TranscriptVersion)
             .where(TranscriptVersion.transcript_id == transcript.id, TranscriptVersion.source == TranscriptVersionSource.STT)

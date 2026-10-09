@@ -211,9 +211,36 @@ def test_realtime_continue_appends_transcript_timeline_and_recording(tmp_path: P
                 raise STTProviderError("Temporary interruption.", retryable=True)
             return await super().send_audio(chunk)
 
+    class ShortStream(FakeStream):
+        async def send_audio(
+            self, chunk: bytes
+        ) -> tuple[StreamingTranscriptionEvent, ...]:
+            assert isinstance(chunk, bytes) and chunk
+            return (
+                StreamingTranscriptionEvent(
+                    type="partial",
+                    language="vi",
+                    segment=TranscriptionSegment(0, 80, "Đoạn tiếp theo"),
+                ),
+                StreamingTranscriptionEvent(
+                    type="final",
+                    language="vi",
+                    segment=TranscriptionSegment(0, 100, "Đoạn tiếp theo"),
+                    provider_segment_id="2",
+                ),
+            )
+
     app, sender, database_url = _app(tmp_path)
     first_provider = FakeProvider()
     first_provider.stream = InterruptingStream()
+    first_provider.stream.close_events = (
+        StreamingTranscriptionEvent(
+            type="final",
+            language="vi",
+            segment=TranscriptionSegment(900, 1000, "Đoạn chốt khi ngắt kết nối"),
+            provider_segment_id="1",
+        ),
+    )
     app.state.stt_provider = first_provider
     with TestClient(app) as client:
         session = _verified_session(client, sender)
@@ -239,19 +266,39 @@ def test_realtime_continue_appends_transcript_timeline_and_recording(tmp_path: P
                 f"/api/v1/meetings/{meeting_id}/media",
                 headers={"Authorization": f"Bearer {session['access_token']}"},
             ).json()
-            if persisted_media:
+            persisted_transcript = client.get(
+                f"/api/v1/meetings/{meeting_id}/transcript",
+                headers={"Authorization": f"Bearer {session['access_token']}"},
+            )
+            if persisted_media and len(persisted_transcript.json().get("segments", [])) == 2:
                 break
             time.sleep(0.01)
         assert persisted_media
+        assert len(persisted_transcript.json()["segments"]) == 2
 
-        app.state.stt_provider = FakeProvider()
+        async def make_duration_metadata_stale() -> None:
+            engine = create_async_engine(database_url)
+            session_factory = async_sessionmaker(engine)
+            async with session_factory() as database_session:
+                meeting = (await database_session.scalars(select(Meeting))).one()
+                media = (await database_session.scalars(select(MediaFile))).one()
+                meeting.duration_ms = 200
+                media.duration_ms = 200
+                await database_session.commit()
+            await engine.dispose()
+
+        asyncio.run(make_duration_metadata_stale())
+
+        second_provider = FakeProvider()
+        second_provider.stream = ShortStream()
+        app.state.stt_provider = second_provider
         with client.websocket_connect(socket_url) as websocket:
             assert websocket.receive_json()["type"] == "session.ready"
             websocket.send_bytes(b"\x00\x00" * 1600)
             partial = websocket.receive_json()
             assert partial["type"] == "transcript.partial", partial
             second = websocket.receive_json()
-            assert (second["start_ms"], second["end_ms"]) == (900, 1800)
+            assert (second["start_ms"], second["end_ms"]) == (1000, 1100)
             websocket.send_text('{"type":"recording.stop"}')
             assert websocket.receive_json() == {
                 "type": "meeting.status",
@@ -272,11 +319,51 @@ def test_realtime_continue_appends_transcript_timeline_and_recording(tmp_path: P
         await engine.dispose()
         assert [(item.start_ms, item.end_ms) for item in segments] == [
             (0, 900),
-            (900, 1800),
+            (900, 1000),
+            (1000, 1100),
         ]
         assert len(media) == 1
-        assert media[0].duration_ms == 300
-        assert meeting.duration_ms == 1800
+        assert media[0].duration_ms == 1100
+        assert meeting.duration_ms == 1100
+
+    asyncio.run(verify())
+
+
+def test_realtime_can_finish_existing_recording_without_reopening_microphone(
+    tmp_path: Path,
+) -> None:
+    app, sender, database_url = _app(tmp_path)
+    app.state.stt_provider = FakeProvider()
+    with TestClient(app) as client:
+        session = _verified_session(client, sender)
+        meeting_id = _create_realtime_meeting(client, session["access_token"])
+        socket_url = (
+            f"/api/v1/realtime/{meeting_id}?access_token={session['access_token']}"
+        )
+        with client.websocket_connect(socket_url) as websocket:
+            assert websocket.receive_json()["type"] == "session.ready"
+            websocket.send_bytes(b"\x00\x00" * 1600)
+            assert websocket.receive_json()["type"] == "transcript.partial"
+            assert websocket.receive_json()["type"] == "transcript.final"
+
+        response = client.post(
+            f"/api/v1/meetings/{meeting_id}/complete",
+            headers={"Authorization": f"Bearer {session['access_token']}"},
+        )
+        assert response.status_code == 200
+        assert response.json()["status"] == "completed"
+
+        with client.websocket_connect(socket_url) as websocket:
+            completed = websocket.receive_json()
+            assert completed["code"] == "MEETING_ALREADY_COMPLETED"
+
+    async def verify() -> None:
+        engine = create_async_engine(database_url)
+        session_factory = async_sessionmaker(engine)
+        async with session_factory() as database_session:
+            meeting = (await database_session.scalars(select(Meeting))).one()
+        await engine.dispose()
+        assert meeting.status == "completed"
 
     asyncio.run(verify())
 

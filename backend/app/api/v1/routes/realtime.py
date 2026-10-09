@@ -191,6 +191,12 @@ async def realtime_transcription(websocket: WebSocket, meeting_id: UUID) -> None
                         retryable_interruption = exc.retryable
                         if terminal_failure:
                             await transcript_service.recording_failed()
+                        await _flush_interrupted_stream(
+                            stream,
+                            transcript_service,
+                            recording_session.timeline_offset_ms,
+                        )
+                        stream = None
                         await _save_recording(recording_session, meeting.id)
                         await _handle_provider_error(websocket, send_json, exc)
                         return
@@ -212,6 +218,12 @@ async def realtime_transcription(websocket: WebSocket, meeting_id: UUID) -> None
                             extra={"meeting_id": str(meeting.id)},
                         )
                         retryable_interruption = True
+                        await _flush_interrupted_stream(
+                            stream,
+                            transcript_service,
+                            recording_session.timeline_offset_ms,
+                        )
+                        stream = None
                         await _save_recording(recording_session, meeting.id)
                         await _handle_provider_error(
                             websocket,
@@ -429,6 +441,28 @@ async def _save_recording(
         return False
 
 
+async def _flush_interrupted_stream(
+    stream: STTStream,
+    transcript_service: RealtimeTranscriptService,
+    timeline_offset_ms: int,
+) -> None:
+    """Persist provider-finalized segments before closing an interrupted socket."""
+    try:
+        await _emit_events(
+            _discard_json,
+            transcript_service,
+            await stream.close(),
+            send_client=False,
+            timeline_offset_ms=timeline_offset_ms,
+        )
+    except (STTProviderError, RuntimeError, ValueError):
+        pass
+
+
+async def _discard_json(_: dict[str, object]) -> None:
+    return None
+
+
 async def _websocket_user(websocket: WebSocket, settings: Settings) -> User:
     token = websocket.query_params.get("access_token")
     if not token:
@@ -521,6 +555,15 @@ async def _emit_events(
                 segment, event.provider_segment_id
             )
             logical_segment_id = stored.logical_segment_id
+            segment = TranscriptionSegment(
+                start_ms=stored.start_ms,
+                end_ms=stored.end_ms,
+                text=stored.text,
+                speaker_label=segment.speaker_label,
+                confidence=stored.confidence,
+            )
+            payload["start_ms"] = segment.start_ms
+            payload["end_ms"] = segment.end_ms
             payload["logical_segment_id"] = str(logical_segment_id)
         if send_client:
             await send_json({key: value for key, value in payload.items() if value is not None})

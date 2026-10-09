@@ -68,7 +68,7 @@ class RealtimeTranscriptService:
         )
         if provider_segment_id is not None:
             self._provider_segments[provider_segment_id] = stored.logical_segment_id
-        self._meeting.duration_ms = max(self._meeting.duration_ms or 0, segment.end_ms)
+        self._meeting.duration_ms = max(self._meeting.duration_ms or 0, stored.end_ms)
         await self._session.commit()
         return stored
 

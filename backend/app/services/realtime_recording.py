@@ -9,11 +9,12 @@ import wave
 from pathlib import Path
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.media import MediaFile
 from app.models.meeting import Meeting
+from app.models.transcript import CurrentSegment, Transcript
 from app.providers.storage import MediaStorage
 
 _CHANNELS = 1
@@ -66,6 +67,17 @@ class RealtimeRecordingService:
             self._timeline_offset_ms = max(
                 self._timeline_offset_ms, self._media.duration_ms
             )
+        transcript_end_ms = await self._session.scalar(
+            select(func.max(CurrentSegment.end_ms))
+            .join(Transcript, CurrentSegment.transcript_id == Transcript.id)
+            .where(Transcript.meeting_id == self._meeting.id)
+        )
+        self._timeline_offset_ms = max(
+            self._timeline_offset_ms, int(transcript_end_ms or 0)
+        )
+        if self._timeline_offset_ms > (self._meeting.duration_ms or 0):
+            self._meeting.duration_ms = self._timeline_offset_ms
+            await self._session.commit()
 
     def write(self, chunk: bytes) -> None:
         if self._finalized or self._raw_file.closed or not chunk:
@@ -102,6 +114,7 @@ class RealtimeRecordingService:
                 self._raw_path,
                 output_path,
                 old_path,
+                self._timeline_offset_ms,
             )
             duration_ms = max(1, round(total_frames * 1000 / _SAMPLE_RATE))
             size_bytes = output_path.stat().st_size
@@ -131,7 +144,6 @@ class RealtimeRecordingService:
                 self._meeting.duration_ms or 0, duration_ms
             )
             await self._session.commit()
-            self._timeline_offset_ms = duration_ms
             self._finalized = True
             return self._media
         except Exception as exc:
@@ -165,6 +177,7 @@ def _append_pcm_to_wav(
     raw_path: Path,
     output_path: Path,
     existing_wav_path: Path | None,
+    timeline_offset_ms: int = 0,
 ) -> int:
     total_frames = 0
     with wave.open(str(output_path), "wb") as destination:
@@ -182,6 +195,11 @@ def _append_pcm_to_wav(
                 while frames := existing.readframes(_COPY_FRAMES):
                     destination.writeframesraw(frames)
                     total_frames += len(frames) // _SAMPLE_WIDTH_BYTES
+        target_frames = round(max(0, timeline_offset_ms) * _SAMPLE_RATE / 1000)
+        while total_frames < target_frames:
+            silent_frames = min(_COPY_FRAMES, target_frames - total_frames)
+            destination.writeframesraw(b"\x00" * silent_frames * _SAMPLE_WIDTH_BYTES)
+            total_frames += silent_frames
         with raw_path.open("rb") as raw:
             while chunk := raw.read(_COPY_FRAMES * _SAMPLE_WIDTH_BYTES):
                 if len(chunk) % _SAMPLE_WIDTH_BYTES:
