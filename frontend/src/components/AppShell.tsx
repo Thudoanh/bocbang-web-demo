@@ -8,18 +8,6 @@ const primaryNav: Array<[string, IconName, string]> = [
   ["/meetings", "meeting", "Cuộc họp"],
 ];
 
-function pageLabel(path: string) {
-  if (path === "/history") return "Cuộc họp";
-  if (path === "/meetings/create") return "Cuộc họp mới";
-  if (path.includes("/upload")) return "Tải bản ghi";
-  if (path.includes("/summary")) return "Tóm tắt";
-  if (path.includes("/speakers")) return "Người nói";
-  if (path.includes("/translation")) return "Bản dịch";
-  if (path.includes("/export-share")) return "Xuất & chia sẻ";
-  if (path.match(/^\/meetings\/[^/]+$/)) return "Bản ghi";
-  return "Cuộc họp";
-}
-
 export function AppShell({ children }: { children: ReactNode }) {
   const { user, logout, updateProfile } = useAuth();
   const path = window.location.pathname;
@@ -62,13 +50,16 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return <div className="shell">
     <aside className="sidebar">
-      <a className="brand" href="/meetings" aria-label="Bóc Băng">
-        <span className="brand-mark"><Icon name="brand" /></span>
-        <strong>Bóc Băng</strong>
-      </a>
+      <div className="sidebar-header">
+        <a className="brand" href="/meetings" aria-label="Bóc Băng">
+          <span className="brand-mark"><Icon name="brand" /></span>
+          <strong>Bóc Băng</strong>
+        </a>
+        <ThemeToggle className="sidebar-theme-toggle" />
+      </div>
 
       <a className="btn btn-dark side-create" href="/meetings/create">
-        <Icon name="plus" /> Cuộc họp mới
+        <Icon name="plus" /><span className="side-create-label">Cuộc họp mới</span>
       </a>
 
       <nav className="primary-nav" aria-label="Điều hướng chính">
@@ -77,6 +68,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             className={path === href || (href === "/meetings" && path === "/history") ? "selected" : ""}
             href={href}
             key={href}
+            aria-label={label}
           >
             <Icon name={icon} />{label}
           </a>
@@ -136,12 +128,6 @@ export function AppShell({ children }: { children: ReactNode }) {
     </aside>
 
     <main>
-      <header className="topbar">
-        <strong>{pageLabel(path)}</strong>
-        <div className="top-icons">
-          <ThemeToggle />
-        </div>
-      </header>
       <div className="content">{children}</div>
     </main>
 
