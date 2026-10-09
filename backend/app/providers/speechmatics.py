@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import deque
 from collections.abc import Callable
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 from app.core.config import Settings
@@ -20,6 +22,8 @@ from app.providers.contracts import (
     TranscriptionResult,
     TranscriptionSegment,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class SpeechmaticsProvider:
@@ -40,6 +44,10 @@ class SpeechmaticsProvider:
         self._sensitivity = settings.speechmatics_speaker_sensitivity
         self._prefer_current = settings.speechmatics_prefer_current_speaker
         self._silence_trigger = settings.speechmatics_end_of_utterance_silence_seconds
+        self._max_delay = settings.speechmatics_max_delay_seconds
+        self._finalization_delay = settings.speechmatics_finalization_delay_seconds
+        if self._silence_trigger >= self._max_delay:
+            raise ValueError("Speechmatics silence trigger must be lower than max delay.")
         self._batch_client_factory = batch_client_factory
         self._voice_client_factory = voice_client_factory
 
@@ -198,6 +206,7 @@ class SpeechmaticsProvider:
                     # Final fragments are debounced into durable turns below.
                     speech_segment_config=SpeechSegmentConfig(emit_sentences=False),
                     include_partials=True,
+                    max_delay=self._max_delay,
                     include_results=True,
                     sample_rate=16000,
                 )
@@ -211,7 +220,7 @@ class SpeechmaticsProvider:
             stream = SpeechmaticsStream(
                 client,
                 options,
-                finalization_delay_seconds=max(3.0, self._silence_trigger * 3),
+                finalization_delay_seconds=self._finalization_delay,
                 max_segment_gap_seconds=self._silence_trigger,
             )
             await stream.connect()
@@ -240,6 +249,7 @@ class SpeechmaticsStream:
         self._known = {item.provider_label: item for item in options.known_speakers}
         self.speaker_identification_available = bool(options.diarization and self._known)
         self._events: deque[StreamingEvent] = deque()
+        self._events_ready = asyncio.Event()
         self._failure: STTProviderError | None = None
         self._pending_finals: dict[
             tuple[int, int, str | None], tuple[str, TranscriptionSegment]
@@ -247,7 +257,9 @@ class SpeechmaticsStream:
         self._finalization_delay_seconds = finalization_delay_seconds
         self._max_segment_gap_ms = round(max_segment_gap_seconds * 1000)
         self._pending_flush_handle: asyncio.TimerHandle | None = None
+        self._pending_started_at: float | None = None
         self._final_keys: set[tuple[int, int, str | None, str]] = set()
+        self._completed_fragments: set[tuple[int, int, str | None, str]] = set()
         self._turn_order = 0
         self._closed = False
 
@@ -313,6 +325,10 @@ class SpeechmaticsStream:
                 captured,
                 key=lambda item: (item[1].start_ms, item[1].end_ms),
             ):
+                if (
+                    segment.start_ms, segment.end_ms, segment.speaker_label, segment.text
+                ) in self._completed_fragments:
+                    continue
                 if self._pending_finals:
                     _, previous = max(
                         self._pending_finals.values(),
@@ -324,21 +340,36 @@ class SpeechmaticsStream:
                         or gap_ms > self._max_segment_gap_ms
                     ):
                         self._flush_pending_finals()
+                if self._pending_started_at is None:
+                    self._pending_started_at = perf_counter()
                 self._pending_finals[
                     (segment.start_ms, segment.end_ms, segment.speaker_label)
                 ] = (language, segment)
             if captured:
                 self._schedule_final_flush()
+                # Stable fragments remain visible during the durable-turn debounce.
+                self._preview(list(self._pending_finals.values()))
             return
 
+        self._preview(captured)
+
+    def _preview(self, captured: list[tuple[str, TranscriptionSegment]]) -> None:
         for language, segment in _coalesce_stream_segments(captured):
-            self._events.append(
-                StreamingTranscriptionEvent(
-                    "partial",
-                    language,
-                    segment,
-                )
+            event = StreamingTranscriptionEvent(
+                "partial", language, segment,
+                stream_segment_id=self._segment_id(segment),
             )
+            self._events.append(event)
+            logger.debug(
+                "STT provider event=%s type=partial segment=%s audio_end_ms=%s",
+                event.event_id, event.stream_segment_id, segment.end_ms,
+            )
+        if captured:
+            self._events_ready.set()
+
+    @staticmethod
+    def _segment_id(segment: TranscriptionSegment) -> str:
+        return f"{segment.start_ms}:{segment.speaker_label or ''}"
 
     def _flush_pending_finals(self) -> None:
         if self._pending_flush_handle is not None:
@@ -348,7 +379,13 @@ class SpeechmaticsStream:
             self._pending_finals.values(),
             key=lambda item: (item[1].start_ms, item[1].end_ms),
         )
+        captured_at = self._pending_started_at or perf_counter()
+        self._pending_started_at = None
         self._pending_finals.clear()
+        self._completed_fragments.update(
+            (segment.start_ms, segment.end_ms, segment.speaker_label, segment.text)
+            for _, segment in pending
+        )
         for language, segment in _coalesce_stream_segments(pending):
             key = (
                 segment.start_ms,
@@ -365,9 +402,13 @@ class SpeechmaticsStream:
                     language,
                     segment,
                     turn_order=self._turn_order,
+                    stream_segment_id=self._segment_id(segment),
+                    captured_at=captured_at,
                 )
             )
             self._turn_order += 1
+        if pending:
+            self._events_ready.set()
 
     def _schedule_final_flush(self) -> None:
         if not self._pending_finals:
@@ -386,6 +427,12 @@ class SpeechmaticsStream:
             code="STT_STREAM_PROVIDER_ERROR",
             retryable=True,
         )
+        self._events_ready.set()
+
+    async def receive_events(self) -> tuple[StreamingEvent, ...]:
+        await self._events_ready.wait()
+        self._raise_failure()
+        return self._drain()
 
     async def send_audio(self, chunk: bytes) -> tuple[StreamingEvent, ...]:
         if self._closed:
@@ -435,6 +482,7 @@ class SpeechmaticsStream:
     def _drain(self) -> tuple[StreamingEvent, ...]:
         events = tuple(self._events)
         self._events.clear()
+        self._events_ready.clear()
         return events
 
 

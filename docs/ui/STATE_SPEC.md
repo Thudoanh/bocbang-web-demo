@@ -1,5 +1,10 @@
 # Bóc Băng AI — UI State Specification
 
+> Đây là yêu cầu giao diện tham chiếu BA, không phải danh sách chức năng đã
+> kiểm thử. Trạng thái implementation cập nhật ngày 2026-10-08 nằm trong
+> [frontend README](../../frontend/README.md) và
+> [Current Status](../../project_context/CURRENT_STATUS.md).
+
 This document translates the BA's business states and interaction rules into frontend presentation requirements.
 
 ## 1. Meeting / job lifecycle states

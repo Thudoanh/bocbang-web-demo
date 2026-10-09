@@ -1,216 +1,102 @@
-# Deployment Design --- Demo
+# Triển khai Bóc Băng AI
 
-## Decisions đã chốt
+_Đối chiếu Compose, Dockerfiles và runtime entrypoints: 2026-10-08._
 
--   **Phân quyền:** không có global Admin trong web demo. Mỗi meeting có
-    `owner` và cộng tác viên theo ACL `read | comment | edit`. Đây là
-    phân quyền theo tài nguyên, cần thiết vì hệ thống có chia sẻ/cộng
-    tác.
--   **Đăng ký:** email + password và bắt buộc xác minh email bằng OTP
-    trước khi kích hoạt đầy đủ.
--   **Google Login:** Google OAuth thật.
--   **Upload demo:** tối đa **500 MB/file** và **2 giờ/file**, cấu hình
-    bằng environment. Hỗ trợ đầu vào phổ biến:
-    `mp3, wav, m4a, aac, flac, ogg, opus, webm, mp4, mov, mkv, avi, mpeg/mpg`.
-    Backend dùng **FFmpeg** để probe/normalize audio trước STT, vì
-    provider không nhất thiết nhận mọi container/codec.
--   **STT:** kiến trúc provider mở. Demo phải có ít nhất một adapter
-    thật; provider được chọn qua config. Capability model quyết định
-    `batch`, `streaming`, `diarization`, `languages`, `timestamps`,
-    `confidence`.
--   **Ngôn ngữ STT:** demo bảo đảm Việt + Anh; kiến trúc hỗ trợ mở rộng
-    multilingual theo capability provider.
--   **Diarization:** bắt buộc trong demo nếu provider được chọn hỗ trợ;
-    UI hiển thị Speaker 1, Speaker 2...
--   **Translation:** provider mở; demo bảo đảm VI ↔ EN; mở rộng
-    multilingual theo provider.
--   **LLM:** provider mở; không hard-code vendor/model vào business
-    service.
--   **Summary:** `general`, `briefing`, `voting`.
--   **Export:** PDF, DOCX, TXT, SRT, VTT, JSON.
--   **Share:** `read`, `comment`, `edit`.
--   **Retention:** không tự xóa audio theo thời gian trong demo; user có
-    thể xóa audio hoặc meeting.
--   **Delete meeting:** xóa toàn bộ dữ liệu phụ thuộc và object storage
-    liên quan.
--   **Versioning:** giữ lịch sử transcript và summary. Không overwrite
-    version cũ.
--   **Xin ý kiến:** loại khỏi scope.
--   **Deploy demo:** ưu tiên **Render** cho frontend static, FastAPI web
-    service, background worker, PostgreSQL và Redis-compatible Key
-    Value; object storage dùng S3-compatible managed storage bên ngoài.
-    Kiến trúc không phụ thuộc Render.
--   **Frontend:** không tiếp tục maintain bundle `script.js`; agent dựng
-    lại source React/TypeScript maintainable từ UI hiện tại.
+## Local Docker Compose
 
-## 1. Recommended demo target
+Repo có stack local hoàn chỉnh, chạy từ root với Docker Desktop/Linux containers:
 
-**Render** is the preferred first deployment target because it can
-host: - static frontend; - FastAPI web service; - background worker; -
-managed PostgreSQL; - Redis-compatible Key Value; - environment/secrets
-and Git-based deploy.
-
-Object media should remain in S3-compatible object storage rather than
-service filesystem.
-
-The current filesystem `MediaStorage` adapter is development/test-only. Before
-deployment, configure and register an S3-compatible adapter behind the same
-storage boundary; do not rely on `MEDIA_STORAGE_PATH` in a Render web service.
-
-## 2. Services
-
-``` text
-bocbang-frontend   Render Static Site
-bocbang-api        Render Web Service
-bocbang-worker     Render Background Worker
-bocbang-postgres   Render PostgreSQL
-bocbang-redis      Render Key Value
-bocbang-media      S3-compatible object storage
+```powershell
+if (!(Test-Path .env)) { Copy-Item .env.example .env }
+# Điền JWT_SECRET và credentials cần dùng trong .env trước khi khởi động.
+docker compose up --build -d
+docker compose ps -a
+docker compose logs -f api worker reconciler
 ```
 
-## 3. Why not local filesystem
+| Service | Vai trò |
+| --- | --- |
+| `postgres`, `redis` | PostgreSQL 16, Redis 7.4; dữ liệu lưu volume, không publish host port. |
+| `migrate` | `alembic upgrade head`, one-off; exit 0 là thành công. |
+| `api` | FastAPI port `127.0.0.1:8000`; readiness database gate. |
+| `worker` | Dramatiq, một process/bốn threads; xử lý media/STT, AI và export. |
+| `reconciler` | Phát lại durable queued/due-retrying jobs. |
+| `frontend` | Node 22 build + Nginx SPA fallback tại `127.0.0.1:5173`. |
 
-Deployment filesystem may be ephemeral. Audio, normalized media and
-exports must use object storage.
+API/worker/reconciler chờ PostgreSQL/Redis healthy và migration thành công.
+Frontend chờ API ready. Backend image Python 3.12 có FFmpeg/ffprobe và Unicode
+PDF fonts. API/worker dùng chung `media_data`; DB/Redis dùng volume riêng.
 
-## 4. Repo target
+Compose ghi đè `APP_ENVIRONMENT`, `DATABASE_URL`, `REDIS_URL`, `QUEUE_BACKEND`,
+`STORAGE_BACKEND`, `MEDIA_STORAGE_PATH`. Root `.env` cung cấp provider/auth
+config và frontend public build arguments; `frontend/.env` không cần cho stack.
+Browser truy cập API qua `localhost:8000`, không qua hostname service `api`.
 
-``` text
-/
-  frontend/
-  backend/
-  docs/
-  render.yaml
-  README.md
+## Cập nhật và kiểm tra
+
+```powershell
+# Migration mới trên stack đã có
+docker compose run --rm migrate
+# Source, dependency hoặc Vite build config thay đổi
+docker compose up --build -d
+# Chỉ đổi backend env
+docker compose up -d
+# Dừng stack, giữ volume
+docker compose down
 ```
 
-## 5. Environment
+`docker compose down -v` xóa database, queue và toàn bộ uploaded/exported files
+trong volume. Đừng dùng để cập nhật ứng dụng. Để live-edit frontend, dừng
+`docker compose stop frontend` và chạy Vite trên host theo
+[frontend README](../../frontend/README.md).
 
-Frontend:
+- UI: `http://localhost:5173`.
+- Swagger/OpenAPI: `http://localhost:8000/api/v1/docs`, `/api/v1/openapi.json`.
+- Liveness: `/api/v1/health`; readiness: `/api/v1/ready` (chỉ database).
+- Capability: `/api/v1/capabilities`; không chứng minh provider request thành công.
+- Migration lỗi: đọc `docker compose logs migrate`.
+- Job không chạy: kiểm tra worker/reconciler, Redis và job state từ API.
 
-``` text
-VITE_API_BASE_URL=https://<api-domain>/api/v1
-VITE_WS_BASE_URL=wss://<api-domain>/api/v1
-```
+## Triển khai public
 
-Backend:
+Render là target thiết kế của dự án; chưa có `render.yaml` hoặc deploy tự động
+trong repo. Phần này mô tả topology và runtime cần cấu hình, không phải một
+deployment đã được xác minh.
 
-``` text
-DATABASE_URL
-REDIS_URL
-QUEUE_BACKEND=redis
-WORKER_MAX_RETRIES=3
-WORKER_RETRY_MIN_BACKOFF_MS=10000
-WORKER_RETRY_MAX_BACKOFF_MS=60000
-WORKER_RECONCILE_INTERVAL_SECONDS=15
-WORKER_RECONCILE_BATCH_SIZE=100
-WORKER_DELIVERY_TIMEOUT_SECONDS=300
-FRONTEND_ORIGIN
-JWT_SECRET
+| Process / dependency | Cấu hình |
+| --- | --- |
+| Static frontend | Build `npm ci`, `npm run build` từ `frontend/`; publish `dist/`, SPA fallback. |
+| API | Backend image; `uvicorn app.main:app --host 0.0.0.0 --port <platform-port>`. |
+| Worker | Cùng backend image; `dramatiq app.workers.worker`. |
+| Reconciler | Cùng backend image; `python -m app.workers.reconciler`. |
+| Migration | One-off `alembic upgrade head` trước application rollout. |
+| Database / queue | Managed PostgreSQL và Redis-compatible service. |
+| Storage | S3-compatible private bucket; adapter đã có, chọn `STORAGE_BACKEND=s3`. |
 
-GOOGLE_CLIENT_ID
-GOOGLE_CLIENT_SECRET
-GOOGLE_REDIRECT_URI
+Các Python process chạy từ backend working directory, cùng database/Redis và
+config storage/provider phù hợp. Với S3 không cần shared filesystem; API cần
+ffprobe/FFmpeg cho upload/enrollment, worker cần FFmpeg/ffprobe cho processing.
+Không dùng local ephemeral filesystem để giữ media/export public deployment.
 
-EMAIL_PROVIDER
-EMAIL_API_KEY
-EMAIL_FROM
+Thiết lập `APP_ENVIRONMENT=production`, exact HTTPS frontend origin, HTTPS REST
+và WSS browser URL, OAuth callback public, JWT secret và SMTP delivery. Frontend
+chỉ nhận `VITE_*`; S3/OAuth/provider credentials chỉ ở backend. Cho phép bucket
+CORS theo frontend origin khi browser dùng presigned URLs. Xem đầy đủ
+[cấu hình môi trường](environment.md).
 
-STORAGE_BACKEND=s3
-S3_ENDPOINT_URL
-S3_BUCKET_NAME
-S3_ACCESS_KEY_ID
-S3_SECRET_ACCESS_KEY
-S3_REGION=auto
+## Smoke test sau triển khai
 
-STT_PROVIDER=assemblyai
-STT_API_KEY
-STT_MODEL=universal-3-pro
-ASSEMBLYAI_STREAMING_MODEL=universal-3-6-pro
-ASSEMBLYAI_STREAMING_MODE=balanced
+1. Register → OTP verification → login; Google OAuth; recovery.
+2. Tạo upload meeting, upload file hợp lệ, job hoàn tất và transcript/speakers.
+3. Nghe retained media, seek theo segment, edit/split/merge/rollback và reload.
+4. Đăng ký voice profile 10–25 giây; realtime hai người với diarization,
+   kiểm tra tên, partial/final, pause/resume/stop, fallback warning và reload.
+5. Dịch VI ↔ EN, summary ba template/VI-EN, export sáu formats và tải kết quả.
+6. Kiểm tra ACL owner/read/comment/edit; public share transcript, expiry/revoke.
+7. Xóa media vẫn giữ transcript; xóa meeting loại bỏ dữ liệu và storage objects.
 
-TRANSLATION_PROVIDER
-TRANSLATION_API_KEY
-
-LLM_PROVIDER
-LLM_API_KEY
-LLM_MODEL
-
-MAX_UPLOAD_BYTES=524288000
-MAX_MEDIA_DURATION_SECONDS=7200
-```
-
-The object bucket must remain private. Store S3 credentials only as backend
-deployment secrets; do not expose them through `VITE_*`. The API issues
-short-lived presigned GET URLs after meeting ACL checks. For local development,
-set `STORAGE_BACKEND=local` and `MEDIA_STORAGE_PATH=.local-media`.
-If the frontend fetches a signed object directly, allow only the frontend
-origin in the bucket's CORS policy; this does not require public bucket access.
-
-Run the API service with `uvicorn app.main:app --host 0.0.0.0 --port 8000`,
-the separate worker service with `dramatiq app.workers.worker`, and a queue
-reconciler with `python -m app.workers.reconciler`. They need PostgreSQL and
-the same managed Redis URL; workers need private object storage and provider
-secrets. Install FFmpeg and FFprobe in the worker image. The reconciler scans
-durable queued/due-retrying jobs on a bounded interval, repairing an API crash
-or Redis outage between DB commit and broker publish. Redis carries delivery
-only; PostgreSQL remains the job-state source of truth. No shared API/worker
-filesystem is required.
-
-## 6. Deploy gate
-
-Không deploy public nếu chưa: - HTTPS/WSS; - CORS exact origin; -
-secrets server-side; - DB migration; - object storage; - worker; - OTP
-email delivery; - Google OAuth redirect URI; - health checks; - smoke
-test.
-
-## 7. Smoke test
-
-``` text
-register -> OTP verify -> login
-Google OAuth login
-create meeting
-upload supported file
-job processing
-STT + diarization
-view transcript
-edit -> new version
-share read/comment/edit
-translation VI<->EN
-summary 3 templates
-export 6 formats
-delete media
-delete meeting cascade
-```
-
-## 8. Portability
-
-`render.yaml` là deployment adapter, không phải domain architecture.
-Backend vẫn chạy local Docker hoặc platform khác chỉ bằng env/dependency
-URLs.
-
-## 9. Local Docker Compose
-
-The root `compose.yaml` provides the React frontend, PostgreSQL, Redis, a one-off
-Alembic migration, FastAPI, a Dramatiq worker and the queue reconciler. All Python services use
-`docker/backend.Dockerfile`, which includes FFmpeg/ffprobe and DejaVu fonts for
-Unicode PDF exports and runs as an unprivileged user. Database health and
-successful migration gate application startup; Redis health gates the queue
-consumers and API.
-
-Create the root `.env` from `.env.example`, set `JWT_SECRET` and needed provider
-credentials, then run `docker compose up --build -d`. No host Node.js/Python
-installation is required. `docker/frontend.Dockerfile` installs locked npm
-dependencies and builds with Node.js; its final Nginx stage serves static files
-with SPA fallback for deep links. Only explicit public Vite build arguments are
-passed to the frontend, and `frontend/.dockerignore` excludes local env files.
-The browser connects directly to `localhost:8000` for REST/WebSocket and Google
-OAuth. Changing frontend build arguments requires a rebuild. See the root README
-for commands and troubleshooting.
-
-This development stack overrides database/Redis URLs and selects local storage.
-The API and worker share `media_data`; PostgreSQL and Redis have their own
-persistent volumes. The frontend is published on `127.0.0.1:5173` after the API
-becomes healthy; the API is published on `127.0.0.1:8000`. Its database
-credentials are local defaults. Production continues to use managed databases,
-private S3-compatible storage and deployment secrets as described above.
+Public share hiện chỉ đọc metadata/transcript, không có comment/edit bằng token
+hay endpoint share summary/translation/media. Media download route hiện có lỗi
+`request` chưa khai báo trong handler; cần sửa và smoke-test trước khi coi luồng
+download media là hoạt động. Export download có handler riêng. Những kiểm tra
+provider/browser ở trên phải chạy thật; tài liệu cập nhật không thay thế E2E.

@@ -1,47 +1,6 @@
 # ERD v2
 
-## Decisions đã chốt
-
--   **Phân quyền:** không có global Admin trong web demo. Mỗi meeting có
-    `owner` và cộng tác viên theo ACL `read | comment | edit`. Đây là
-    phân quyền theo tài nguyên, cần thiết vì hệ thống có chia sẻ/cộng
-    tác.
--   **Đăng ký:** email + password và bắt buộc xác minh email bằng OTP
-    trước khi kích hoạt đầy đủ.
--   **Google Login:** Google OAuth thật.
--   **Upload demo:** tối đa **500 MB/file** và **2 giờ/file**, cấu hình
-    bằng environment. Hỗ trợ đầu vào phổ biến:
-    `mp3, wav, m4a, aac, flac, ogg, opus, webm, mp4, mov, mkv, avi, mpeg/mpg`.
-    Backend dùng **FFmpeg** để probe/normalize audio trước STT, vì
-    provider không nhất thiết nhận mọi container/codec.
--   **STT:** kiến trúc provider mở. Demo phải có ít nhất một adapter
-    thật; provider được chọn qua config. Capability model quyết định
-    `batch`, `streaming`, `diarization`, `languages`, `timestamps`,
-    `confidence`.
--   **Ngôn ngữ STT:** demo bảo đảm Việt + Anh; kiến trúc hỗ trợ mở rộng
-    multilingual theo capability provider.
--   **Diarization:** bắt buộc trong demo nếu provider được chọn hỗ trợ;
-    UI hiển thị Speaker 1, Speaker 2...
--   **Translation:** provider mở; demo bảo đảm VI ↔ EN; mở rộng
-    multilingual theo provider.
--   **LLM:** provider mở; không hard-code vendor/model vào business
-    service.
--   **Summary:** `general`, `briefing`, `voting`.
--   **Export:** PDF, DOCX, TXT, SRT, VTT, JSON.
--   **Share:** `read`, `comment`, `edit`.
--   **Retention:** không tự xóa audio theo thời gian trong demo; user có
-    thể xóa audio hoặc meeting.
--   **Delete meeting:** xóa toàn bộ dữ liệu phụ thuộc và object storage
-    liên quan.
--   **Versioning:** giữ lịch sử transcript và summary. Không overwrite
-    version cũ.
--   **Xin ý kiến:** loại khỏi scope.
--   **Deploy demo:** ưu tiên **Render** cho frontend static, FastAPI web
-    service, background worker, PostgreSQL và Redis-compatible Key
-    Value; object storage dùng S3-compatible managed storage bên ngoài.
-    Kiến trúc không phụ thuộc Render.
--   **Frontend:** không tiếp tục maintain bundle `script.js`; agent dựng
-    lại source React/TypeScript maintainable từ UI hiện tại.
+_Đối chiếu SQLAlchemy models và Alembic head `20261008_0012`: 2026-10-08._
 
 ## 1. Core relationships
 
@@ -62,6 +21,11 @@ MEETING 1---N SUMMARY
 SUMMARY 1---N SUMMARY_VERSION
 MEETING 1---N EXPORT
 MEETING 1---N SHARE_LINK
+TRANSCRIPT 1---N CURRENT_SEGMENT
+TRANSCRIPT_VERSION 1---N TRANSCRIPT_EDIT_EVENT
+USER 1---0..1 VOICE_PROFILE(personal)
+MEETING 1---N VOICE_PROFILE(guest)
+VOICE_PROFILE 1---N SPEAKER(optional)
 ```
 
 ## 2. Access control
@@ -194,8 +158,42 @@ original_stt_text TEXT NULL
 confidence DOUBLE NULL
 ```
 
-MVP có thể snapshot toàn bộ segment list mỗi version để implementation
-rõ ràng. Tối ưu delta/version diff để phase sau.
+Implementation dùng `current_segments` projection cho trạng thái hiện tại và
+append-only `transcript_edit_events` cho edit/rollback/correction. Lịch sử được
+dựng từ STT/checkpoint snapshots và edit events; không phải mỗi edit sao chép
+toàn bộ `segment_versions`.
+
+```text
+transcripts.current_projection_initialized_at TIMESTAMPTZ NULL
+transcript_versions.checkpointed_at TIMESTAMPTZ NULL
+
+current_segments:
+id UUID PK
+transcript_id UUID FK
+logical_segment_id UUID UNIQUE
+speaker_id UUID NULL FK
+position NUMERIC(30,15)
+start_ms BIGINT
+end_ms BIGINT
+text TEXT
+original_stt_text TEXT NULL
+confidence FLOAT NULL
+created_at, updated_at
+UNIQUE(transcript_id, position)
+
+transcript_edit_events:
+id UUID PK
+transcript_id UUID FK
+version_id UUID FK
+actor_id UUID NULL FK
+event_order INTEGER
+event_type VARCHAR(32)
+payload JSON
+created_at
+UNIQUE(version_id, event_order)
+```
+
+Current pointer nằm ở `meetings.current_transcript_version_id`.
 
 ## 6. Speaker
 
@@ -204,6 +202,8 @@ speakers:
 id
 meeting_id
 provider_speaker_id
+voice_profile_id UUID NULL FK (ON DELETE SET NULL)
+match_confidence FLOAT NULL
 name
 role
 organization
@@ -211,6 +211,27 @@ is_identified
 created_at
 updated_at
 ```
+
+### Voice profiles
+
+```text
+voice_profiles:
+id UUID PK
+user_id UUID NULL FK (ON DELETE SET NULL, unique non-null)
+meeting_id UUID NULL FK (ON DELETE CASCADE)
+name VARCHAR(255)
+sample_duration_ms INTEGER
+audio_storage_path VARCHAR(512) NULL
+speaker_identifiers JSON
+provider VARCHAR(32)
+sample_count INTEGER
+created_at, updated_at
+```
+
+Personal profile có user_id và meeting_id null; guest có meeting_id và user_id
+null. Service giới hạn ba identifiers/profile, không trả identifiers/audio path
+qua REST. Hiện enrollment chỉ dùng file tạm, không lưu sample recording lâu dài.
+Migration `0012` xóa profile MFCC cũ và thay representation bằng Speechmatics.
 
 ## 7. Comments
 
@@ -237,13 +258,15 @@ id
 meeting_id
 transcript_version_id
 template_type
+output_language VARCHAR(2)
 created_at
+UNIQUE(meeting_id, transcript_version_id, template_type, output_language)
 
 summary_versions:
 id
 summary_id
 version_no
-content JSONB
+content JSON
 provider
 model
 created_by
@@ -257,14 +280,18 @@ Giữ entity: - `translations` - `translation_segments` - `exports` -
 
 Mỗi output phải ghi input transcript version để truy vết.
 
-Persistence baseline lưu tối thiểu `meeting_id` cho cả bốn entity; `translations`,
-`summaries` và `exports` lưu `transcript_version_id`. Translation lưu cặp ngôn
-ngữ BCP-47 và snapshot theo `logical_segment_id`; export lưu `format`; job lưu
-trạng thái `queued | processing | completed | failed`. Media-processing jobs
-cũng lưu `media_file_id` (nullable cho future job types), `job_type`,
-`progress`, `error_code` và `error_message` để client theo dõi tác vụ durable.
-Các field payload, kết quả provider và storage output còn lại sẽ được xác định
-cùng các vertical slice tương ứng, không suy diễn trước ở persistence baseline.
+Models hiện có các field phục vụ xử lý và kết quả:
+
+- `translations`: meeting/input version, source/target language, created_at;
+  `translation_segments`: translation_id, logical_segment_id, sequence, text.
+- `exports`: meeting/input version, format, storage_key, content_type, filename,
+  created_at. Job export lưu reference/options trong payload.
+- `jobs`: meeting_id, media_file_id nullable, job_type, status, progress,
+  error_code/message/retryable, payload JSON, attempts, started_at,
+  next_attempt_at, completed_at, created_at/updated_at.
+- Job status: `queued | processing | retrying | completed | failed`.
+  PostgreSQL là authority; Redis message chỉ chứa job ID.
+- Dịch realtime không lưu vào translation tables.
 
 ## 10. Delete rule
 

@@ -1,6 +1,8 @@
 # Phase 0 — BA/API/frontend gap decision record
 
-Updated: 2026-10-01. Scope: Phase 0 and Phase 1 of the Bóc Băng AI BA implementation.
+Originally recorded: 2026-10-01. Source reconciliation: 2026-10-08.
+The Phase 1 decisions remain a historical record; gap status below reflects
+current code, not a new browser acceptance run.
 
 ## Decisions implemented in Phase 1
 
@@ -15,21 +17,21 @@ Updated: 2026-10-01. Scope: Phase 0 and Phase 1 of the Bóc Băng AI BA implemen
 | Merge segments | `POST /segments/merge` | UI allows selecting two adjacent segments, then delegates merge to backend. |
 | Delete segment confirmation | `DELETE /segments/{logical_segment_id}` | A confirmation dialog is required before invoking delete. |
 
-## API already available, deferred to later phases
+## APIs now integrated in frontend
 
 - Create/update speakers: `POST /meetings/{id}/speakers`, `PATCH /speakers/{id}`.
 - Translation/summary creation and result reads.
 - Export creation/download and member-based collaboration.
 - Meeting/media deletion and share-link management.
 
-## Backend/API gaps that block BA parity
+## Current gap status
 
 | BA requirement | Gap | Required contract decision |
 | --- | --- | --- |
-| Audio playback and per-segment replay | No browser-safe media playback/download URL is exposed by the current media routes. | Provide an authenticated download/stream endpoint or time-limited signed media URL; define retention behaviour and 404/error response. |
+| Audio playback and per-segment replay | Implemented: playback-url, local ticket/Range proxy, S3 signed URL and segment-synced player. | Browser expiry/seek QA remains; media download handler has an undeclared `request` reference. |
 | Login by phone | Auth request currently accepts email/password. | Confirm phone login is MVP; if yes, define normalized phone identifier, uniqueness and recovery rules. |
 | Registration fields | Current auth contract covers email, password and full name only. | Confirm whether phone, organization, password confirmation and consent must be persisted or remain UI validation only. |
-| Realtime reconnect policy | Socket retries transport reconnection, but provider/session resume semantics are not a product contract. | Define retry count, user-visible state and whether a reconnect creates a new STT stream. |
+| Realtime reconnect policy | New upstream stream and speaker-label scope per connection; final timestamps continue from saved duration. | Generic identity is not resumed; validate reconnect UX and latency in browser. |
 | Upload retry | Upload retry currently uploads the selected file again. | Decide whether failed jobs can be retried server-side without a new upload. |
 | Delete/retention policy | Delete APIs exist, but UI retention metadata and audio-only policy are not exposed. | Define retention dates, what survives audio deletion, and user-facing deletion confirmations. |
 

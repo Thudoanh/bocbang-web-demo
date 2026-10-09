@@ -1,9 +1,10 @@
 """Normalized contracts that keep vendor SDKs out of domain services."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from time import perf_counter
 from typing import Literal, Protocol
-from uuid import UUID
+from uuid import UUID, uuid4
 
 
 @dataclass(frozen=True)
@@ -69,6 +70,9 @@ class StreamingTranscriptionEvent:
     language: str
     segment: TranscriptionSegment
     turn_order: int | None = None
+    stream_segment_id: str | None = None
+    event_id: str = field(default_factory=lambda: uuid4().hex)
+    captured_at: float = field(default_factory=perf_counter)
 
 
 @dataclass(frozen=True)
@@ -105,6 +109,10 @@ class STTStream(Protocol):
     fallback_active: bool
 
     async def send_audio(self, chunk: bytes) -> tuple[StreamingEvent, ...]: ...
+
+    async def receive_events(self) -> tuple[StreamingEvent, ...]:
+        """Wait for provider output independently of incoming audio; cancellation safe."""
+        ...
 
     async def pause(self) -> tuple[StreamingEvent, ...]: ...
 

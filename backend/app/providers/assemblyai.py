@@ -132,6 +132,7 @@ class AssemblyAIStream:
         self._diarization = diarization
         self._final_turns: set[int] = set()
         self._events: deque[StreamingEvent] = deque()
+        self._events_ready = asyncio.Event()
         self._failure: STTProviderError | None = None
         self._terminated = asyncio.Event()
         self._closing = False
@@ -239,6 +240,7 @@ class AssemblyAIStream:
                                 self._events.append(StreamingSpeakerRevision(
                                     order, _speaker_label(revision.get("speaker_label"))
                                 ))
+                                self._events_ready.set()
                     continue
                 event = _stream_event(payload, self._language, self._diarization)
                 if event is not None:
@@ -248,6 +250,7 @@ class AssemblyAIStream:
                         if event.type == "final":
                             self._final_turns.add(event.turn_order)
                     self._events.append(event)
+                    self._events_ready.set()
         except asyncio.CancelledError:
             raise
         except json.JSONDecodeError:
@@ -270,6 +273,12 @@ class AssemblyAIStream:
                 )
         finally:
             self._terminated.set()
+            self._events_ready.set()
+
+    async def receive_events(self) -> tuple[StreamingEvent, ...]:
+        await self._events_ready.wait()
+        self._raise_failure()
+        return self._drain()
 
     async def send_audio(self, chunk: bytes) -> tuple[StreamingEvent, ...]:
         if self._closed or self._closing:
@@ -344,6 +353,7 @@ class AssemblyAIStream:
     def _drain(self) -> tuple[StreamingEvent, ...]:
         events = tuple(self._events)
         self._events.clear()
+        self._events_ready.clear()
         return events
 
 
@@ -428,6 +438,7 @@ def _stream_event(
             confidence=float(confidence) if isinstance(confidence, (int, float)) else None,
         ),
         turn_order=order if type(order) is int and order >= 0 else None,
+        stream_segment_id=f"turn:{order}" if type(order) is int and order >= 0 else None,
     )
 
 

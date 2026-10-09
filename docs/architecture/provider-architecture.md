@@ -1,208 +1,97 @@
-# Open Provider Architecture
+# Provider architecture
 
-## Decisions đã chốt
+_Đối chiếu `backend/app/providers/`: 2026-10-08._
 
--   **Phân quyền:** không có global Admin trong web demo. Mỗi meeting có
-    `owner` và cộng tác viên theo ACL `read | comment | edit`. Đây là
-    phân quyền theo tài nguyên, cần thiết vì hệ thống có chia sẻ/cộng
-    tác.
--   **Đăng ký:** email + password và bắt buộc xác minh email bằng OTP
-    trước khi kích hoạt đầy đủ.
--   **Google Login:** Google OAuth thật.
--   **Upload demo:** tối đa **500 MB/file** và **2 giờ/file**, cấu hình
-    bằng environment. Hỗ trợ đầu vào phổ biến:
-    `mp3, wav, m4a, aac, flac, ogg, opus, webm, mp4, mov, mkv, avi, mpeg/mpg`.
-    Backend dùng **FFmpeg** để probe/normalize audio trước STT, vì
-    provider không nhất thiết nhận mọi container/codec.
--   **STT:** kiến trúc provider mở. Demo phải có ít nhất một adapter
-    thật; provider được chọn qua config. Capability model quyết định
-    `batch`, `streaming`, `diarization`, `languages`, `timestamps`,
-    `confidence`.
--   **Ngôn ngữ STT:** demo bảo đảm Việt + Anh; kiến trúc hỗ trợ mở rộng
-    multilingual theo capability provider.
--   **Diarization:** bắt buộc trong demo nếu provider được chọn hỗ trợ;
-    UI hiển thị Speaker 1, Speaker 2...
--   **Translation:** provider mở; demo bảo đảm VI ↔ EN; mở rộng
-    multilingual theo provider.
--   **LLM:** provider mở; không hard-code vendor/model vào business
-    service.
--   **Summary:** `general`, `briefing`, `voting`.
--   **Export:** PDF, DOCX, TXT, SRT, VTT, JSON.
--   **Share:** `read`, `comment`, `edit`.
--   **Retention:** không tự xóa audio theo thời gian trong demo; user có
-    thể xóa audio hoặc meeting.
--   **Delete meeting:** xóa toàn bộ dữ liệu phụ thuộc và object storage
-    liên quan.
--   **Versioning:** giữ lịch sử transcript và summary. Không overwrite
-    version cũ.
--   **Xin ý kiến:** loại khỏi scope.
--   **Deploy demo:** ưu tiên **Render** cho frontend static, FastAPI web
-    service, background worker, PostgreSQL và Redis-compatible Key
-    Value; object storage dùng S3-compatible managed storage bên ngoài.
-    Kiến trúc không phụ thuộc Render.
--   **Frontend:** không tiếp tục maintain bundle `script.js`; agent dựng
-    lại source React/TypeScript maintainable từ UI hiện tại.
+## Contracts và registry
 
-## 1. Khả thi không?
+Domain services dùng normalized contracts trong `contracts.py`; SDK/HTTP vendor
+nằm trong adapter modules. STT, translation và LLM có registry/factory backend,
+storage/email có factory riêng. Provider credentials không xuất hiện trong
+frontend bundle hay WebSocket events.
 
-Có. Provider mở là kiến trúc phù hợp cho dự án này, nhưng **không thể
-giả định mọi provider có cùng capability**. Vì vậy cần
-`Provider Interface + Capability Discovery + Normalized Domain Model`.
+| Contract | API chính |
+| --- | --- |
+| `STTProvider` | `capabilities()`, `transcribe_file(source, language=None, known_speakers=())`, `open_stream(options)`. |
+| `STTStream` | `send_audio/pause/resume/close` trả tuple `StreamingEvent`; metadata `provider_name`, `speaker_identification_available`, `fallback_active`. |
+| `SpeakerEnrollmentProvider` | `enroll_speaker(source, language="vi")` trả `SpeakerEnrollment`. |
+| `TranslationProvider` | `capabilities()`, `translate_segments(segments, source, target)`. |
+| `LLMProvider` | `capabilities()`, `generate_summary(transcript, template, output_language)`. |
 
-## 2. STT contract
+STT capability gồm batch, streaming, diarization, timestamps, confidence,
+supported languages và multilingual auto-detect. Translation khai báo cặp
+ngôn ngữ; LLM khai báo structured output và optional context limit.
+`GET /api/v1/capabilities` chuyển các field này thành public configuration;
+không phải phép thử kết nối/provider health.
 
-``` python
-class STTCapabilities:
-    batch: bool
-    streaming: bool
-    diarization: bool
-    timestamps: bool
-    confidence: bool
-    supported_languages: set[str]
-    multilingual_auto_detect: bool
+Normalized `TranscriptionSegment` có start/end ms, text, speaker label,
+confidence và optional speaker name/voice profile/identified flag.
+`TranscriptionResult` có language, segments, provider name và fallback flag.
+`StreamingOptions` nhận language, diarization, audio format và known speakers.
 
-class STTProvider:
-    def capabilities(self) -> STTCapabilities: ...
-    async def transcribe_file(self, media, options): ...
-    async def open_stream(self, options): ...
+## Adapters hiện có
 
-class STTStream:
-    async def send_audio(self, chunk: bytes) -> tuple[StreamingTranscriptionEvent, ...]: ...
-    async def pause(self) -> tuple[StreamingTranscriptionEvent, ...]: ...
-    async def resume(self) -> tuple[StreamingTranscriptionEvent, ...]: ...
-    async def close(self) -> tuple[StreamingTranscriptionEvent, ...]: ...
-```
+| Chức năng | Adapter / cấu hình |
+| --- | --- |
+| STT primary trong env mẫu | Speechmatics batch/realtime, `STT_PROVIDER=speechmatics`, `SPEECHMATICS_API_KEY`. |
+| STT fallback hoặc primary tùy chọn | AssemblyAI, `STT_FALLBACK_PROVIDER=assemblyai` hoặc `STT_PROVIDER=assemblyai`, `STT_API_KEY`. |
+| Enrollment | Speechmatics voice, được tạo khi có Speechmatics key. |
+| Translation | Gemini hoặc Groq, VI ↔ EN, segment-aligned output. |
+| Summary | Gemini hoặc Groq; `general/briefing/voting`, output VI/EN. |
+| Storage | Local filesystem và private S3-compatible bucket. |
+| Email | SMTP cho delivery thật; console cho dev in OTP ra stdout, không gửi mail. Chưa có email API adapter. |
 
-Normalized output:
+Settings mặc định không chọn STT/translation/LLM provider; lựa chọn trong
+`.env.example` là cấu hình demo. Gemini model default trong code là
+`gemini-2.5-flash`; AssemblyAI batch `universal-3-pro`, streaming
+`universal-3-6-pro`/`balanced`; Groq `openai/gpt-oss-20b`. Đây là defaults
+của repository, không phải danh sách model từ vendor. Xem
+[cấu hình](../deployment/environment.md).
 
-``` json
-{
-  "language": "vi",
-  "segments": [
-    {
-      "start_ms": 0,
-      "end_ms": 4200,
-      "text": "...",
-      "speaker_label": "speaker_1",
-      "confidence": 0.94
-    }
-  ]
-}
-```
+## Fallback
 
-Nếu provider không hỗ trợ diarization/streaming, adapter phải báo
-capability false. UI/backend không được giả tính năng.
+`FallbackSTTProvider` giữ capabilities của primary. Secondary chỉ được thử khi
+primary ném `STTProviderError(retryable=True)` lúc mở stream hoặc transcribe
+batch. Không fallback cho lỗi non-retryable, không chuyển giữa stream đã mở.
+AssemblyAI nhận known speakers rỗng vì không hiểu Speechmatics identifiers.
+Result/stream gắn `fallback_active` để UI báo thiếu nhận diện tên.
 
-Realtime adapter emits normalized `partial` or `final` events. Partial events
-are delivery-only and must never be persisted. Each final event is mapped to a
-`SegmentVersion` in the active STT `TranscriptVersion`; provider speaker labels
-are mapped to the meeting's `Speaker` records. `STTProviderError` includes a
-stable code and `retryable` flag so a retryable interruption leaves the socket
-usable while a non-retryable one fails the meeting. Provider SDK credentials,
-including `STT_API_KEY`, stay inside the adapter factory/process.
+Translation/LLM fallback cấu hình qua `TRANSLATION_FALLBACK_PROVIDER` và
+`LLM_FALLBACK_PROVIDER`; Groq được gọi sau lỗi provider primary, không chạy song
+song. Lỗi chuẩn hóa có stable code/retryable; worker lưu failed/retry state.
 
-## 3. Translation contract
+## Enrollment và known speakers
 
-``` python
-class TranslationCapabilities:
-    supported_language_pairs: set[tuple[str, str]]
+FFmpeg chuẩn hóa sample thành mono PCM16 WAV/16 kHz; sample bắt buộc 10–25 giây
+và một người nói. Profile lưu tối đa ba Speechmatics identifiers, provider và
+sample count; REST schema không trả identifiers hay audio storage path.
+Audio mẫu được xử lý qua temporary files, không giữ durable sample recording.
 
-class TranslationProvider:
-    def capabilities(self): ...
-    async def translate_segments(self, segments, source, target): ...
-```
+Candidates gồm guest profiles thuộc meeting và personal profiles của owner/
+members. Tối đa 50 profiles có identifiers; mỗi phiên phân bổ tối đa 50
+identifiers round-robin. Label opaque `VP_<UUID hex>` được map về profile/name.
+Người chưa nhận diện giữ nhãn generic. Migration `0012` bỏ dữ liệu MFCC cũ,
+không còn local MFCC matching.
 
-Demo requirement: VI ↔ EN.
+## Realtime và versioning
 
-Translation and LLM factories are registered in their backend-only registries.
-Business services use only these contracts. The durable AI job payload stores
-the transcript version and provider-neutral request fields; a worker claims it,
-normalizes the provider result, and records a stable failure code/retryability
-when no result can be persisted.
+Browser gửi PCM16 mono 16 kHz bằng AudioWorklet. Speechmatics/AssemblyAI stream
+được mở server-side; AssemblyAI pin language của meeting và diarization option.
+Partial chỉ socket, final persisted; service scope speaker label theo connection.
 
-## 4. LLM contract
+`StreamingEvent` là union `StreamingTranscriptionEvent` và
+`StreamingSpeakerRevision(turn_order, speaker_label)`. Correction áp dụng theo
+thứ tự đến, tạo revision history, không tạo transcript text mới; manual speaker
+assignment/unassignment và split/merge/delete được bảo vệ. AssemblyAI Turn với
+speaker chưa gán map null; nhiều speaker trong một Turn không tự tách per-word.
+Reconnect tạo upstream mới, không hứa resume identity của generic speaker.
 
-``` python
-class LLMCapabilities:
-    structured_output: bool
-    max_context_tokens: int | None
+Dịch realtime dùng cùng translation contract nhưng queue tạm theo socket,
+không lưu translation tables. Saved translation/summary/export dùng worker
+và immutable transcript input.
 
-class LLMProvider:
-    def capabilities(self): ...
-    async def generate_summary(self, transcript, template, schema): ...
-```
+## Thêm provider
 
-Summary normalized schema: - overview - key_points - action_items -
-decisions - risks_notes
-
-Templates: `general`, `briefing`, `voting`.
-
-## 5. Provider registry
-
-``` text
-STT_PROVIDER=<name>
-TRANSLATION_PROVIDER=<name>
-LLM_PROVIDER=<name>
-```
-
-Registry maps name → adapter factory.
-
-Không import vendor SDK trong domain/service layer.
-
-## 6. Adding a new provider
-
-Agent phải: 1. implement adapter; 2. map vendor response → normalized
-model; 3. declare capabilities; 4. add config validation; 5. add
-contract tests; 6. add integration test behind env flag; 7. không sửa
-public API nếu capability đã nằm trong abstraction.
-
-## 7. Demo provider selection
-
-Chưa khóa vendor trong architecture. Trước deploy, chọn ít nhất một STT
-adapter thật đáp ứng Việt + Anh, batch, diarization và nếu demo realtime
-thì streaming. Provider có thể đổi mà không thay public frontend API.
-
-## 8. Current deployment adapters
-
-- `STT_PROVIDER=assemblyai` registers an AssemblyAI adapter for batch STT and
-  server-side Universal Streaming. Batch jobs normalize source media with
-  FFmpeg to mono PCM WAV/16 kHz before upload. The worker persists one complete
-  immutable STT transcript version only after a valid normalized response.
-- `TRANSLATION_PROVIDER=gemini` registers Gemini segment-aligned VI ↔ EN
-  translation. Output count must match the input segment count.
-- `TRANSLATION_PROVIDER=groq` registers Groq segment-aligned VI ↔ EN
-  translation. `TRANSLATION_FALLBACK_PROVIDER=groq` tries it only if the
-  configured primary translator fails.
-- `LLM_PROVIDER=gemini` registers Gemini structured summaries for `general`,
-  `briefing`, and `voting`; the adapter asks Gemini for the normalized summary
-  JSON schema and the service remains responsible for validation/persistence.
-- `LLM_PROVIDER=groq` registers Groq structured summaries. Set
-  `LLM_FALLBACK_PROVIDER=groq` with `GROQ_API_KEY` to use it only after the
-  configured primary LLM provider fails; provider credentials remain backend-only.
-
-For realtime AssemblyAI, an AudioWorklet captures browser audio as 16 kHz mono
-PCM16 chunks and sends them to this API WebSocket. The API opens the upstream
-WebSocket with the API key, pins `language_codes` to the meeting language, and
-uses the configured streaming model/mode. No provider secret is exposed to the
-browser.
-
-### Realtime speaker labels and corrections
-
-AssemblyAI streaming sends `speaker_labels=true/false` from the meeting's
-diarization option. Enabled connections request
-`speaker_labels_revision_interval_ms=300000` for mid-session corrections and
-also consume the final `SpeakerRevision` before `Termination`.
-The adapter maps a Turn's dominant `speaker_label` to the normalized segment;
-PENDING/UNKNOWN or missing labels map to null. Per-word speaker changes within
-one turn are not split into separate transcript segments in this implementation.
-Duplicate final turns with the same `turn_order` are suppressed.
-
-`StreamingTranscriptionEvent` now has optional `turn_order`.
-`StreamingSpeakerRevision(turn_order, speaker_label)` is a separate normalized
-event in the `StreamingEvent` union returned by send/pause/resume/close. It is
-consumed in arrival order, including null corrections, and never translated or
-persisted as new text. The domain service scopes labels by socket session,
-protects manual assignments and records accepted changes in revision history.
-No new database columns or migration are required.
-
-Protocol reference: [AssemblyAI streaming reference](https://github.com/AssemblyAI/assemblyai-skill/blob/main/skills/assemblyai/references/streaming.md).
+Implement contract và capability trung thực; normalize response; đăng ký factory
+và config backend; bổ sung contract tests, integration verification khi có
+credentials. Giữ vendor SDK ngoài service, không thay public API nếu contract
+hiện tại đủ diễn đạt chức năng. Không fake capability hoặc provider result.

@@ -2,6 +2,8 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "re
 import { useAuth } from "../auth/AuthContext";
 import { MeetingSocket, type RealtimeEvent } from "../realtime/meetingSocket";
 import { MicrophonePcmCapture } from "../realtime/microphonePcm";
+import { updateLiveTranscript, type LiveTranscript, type TranscriptEvent } from "../realtime/liveTranscript";
+import { recordRender } from "../realtime/diagnostics";
 import { capabilitiesApi, meetingsApi, voiceProfilesApi, type TranscriptMutation } from "../api/endpoints";
 import { ApiError } from "../api/client";
 import { useAsync } from "../hooks/useAsync";
@@ -33,6 +35,7 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
   const [voiceEnrollOpen, setVoiceEnrollOpen] = useState(false);
   const [voiceEnrollTarget, setVoiceEnrollTarget] = useState<VoiceProfile>();
   const [recordingActive, setRecordingActive] = useState(false);
+  const [liveTranscript, setLiveTranscript] = useState<LiveTranscript>({});
   const [pendingDelete, setPendingDelete] = useState<Segment>();
   const [pendingSplit, setPendingSplit] = useState<Segment>();
   const [mergeFirst, setMergeFirst] = useState<Segment>();
@@ -44,6 +47,13 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
   const [showRealtimeTranslations, setShowRealtimeTranslations] = useState(false);
   const player = useRef<AudioPlayerHandle>(null);
   const jobMonitor = useJobMonitor();
+
+  useEffect(() => {
+    const stored = new Set(transcript.data?.segments.map((segment) => segment.logical_segment_id));
+    setLiveTranscript((current) => Object.fromEntries(Object.entries(current).filter(
+      ([, event]) => event.type !== "transcript.final" || !stored.has(event.logical_segment_id),
+    )));
+  }, [transcript.data]);
 
   useEffect(() => { if (editing) setDraft({ text: editing.text, startTime: formatTimestampInput(editing.start_ms), endTime: formatTimestampInput(editing.end_ms), speakerId: editing.speaker_id ?? "" }); }, [editing]);
   useEffect(() => { if (!activeSegmentId || editing) return; document.getElementById(`segment-${activeSegmentId}`)?.scrollIntoView({ block: "nearest", behavior: "smooth" }); }, [activeSegmentId, editing]);
@@ -102,7 +112,7 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
   const realtimeTarget = meeting.data.language_mode === "vi" ? "en" : meeting.data.language_mode === "en" ? "vi" : undefined;
   const realtimeTranslationSupported = Boolean(realtimeTarget && capabilities.data?.translation.language_pairs?.some(([source, target]) => source === meeting.data?.language_mode && target === realtimeTarget));
   return <>
-    <PageHeading eyebrow={meeting.data.status === "recording" ? "GHI ÂM TRỰC TIẾP" : "PHÁT LẠI & CHI TIẾT"} title={meeting.data.title} description={meeting.data.status === "recording" ? "Các đoạn tạm thời được hiển thị riêng và chỉ được lưu khi máy chủ xác nhận." : `${meeting.data.language_mode.toUpperCase()} · quyền ${meeting.data.permission}`} actions={<><a className="btn btn-light" href={`/meetings/${meetingId}/translation`}>Dịch</a><a className="btn btn-light" href={`/meetings/${meetingId}/summary`}>Tóm tắt</a><a className="btn btn-light" href={`/meetings/${meetingId}/export-share`}>Xuất</a><a className="btn btn-light" href={`/meetings/${meetingId}/upload`}>⇧ Tải tệp</a>{owner && <Button tone="dark" onClick={() => setShareOpen(true)}>⌘ Chia sẻ</Button>}</>} />
+    <PageHeading eyebrow={meeting.data.status === "recording" ? "GHI ÂM TRỰC TIẾP" : "PHÁT LẠI & CHI TIẾT"} title={meeting.data.title} description={meeting.data.status === "recording" ? "Chữ đang nói được cập nhật trực tiếp trong transcript và lưu khi máy chủ xác nhận." : `${meeting.data.language_mode.toUpperCase()} · quyền ${meeting.data.permission}`} actions={<><a className="btn btn-light" href={`/meetings/${meetingId}/translation`}>Dịch</a><a className="btn btn-light" href={`/meetings/${meetingId}/summary`}>Tóm tắt</a><a className="btn btn-light" href={`/meetings/${meetingId}/export-share`}>Xuất</a><a className="btn btn-light" href={`/meetings/${meetingId}/upload`}>⇧ Tải tệp</a>{owner && <Button tone="dark" onClick={() => setShareOpen(true)}>⌘ Chia sẻ</Button>}</>} />
     {notice && <div className="notice">{notice}</div>}{jobMonitor.job && <div className={`job-state ${jobMonitor.job.status}`}>Tác vụ {jobMonitor.job.status}{jobMonitor.job.progress !== undefined ? ` · ${jobMonitor.job.progress}%` : ""}{jobMonitor.job.error ? ` · ${jobMonitor.job.error.message}` : ""}</div>}{latestExport && (latestExport.status === "completed" || (latestExport.job_id === jobMonitor.job?.id && jobMonitor.job?.status === "completed")) && <a className="btn btn-dark" href={meetingsApi.exportDownloadUrl(latestExport.id)}>Tải {latestExport.filename ?? latestExport.format.toUpperCase()}</a>}
     <div className="meeting-layout"><section>
       {editable && (meeting.data.status === "created" || (voiceProfiles.data && voiceProfiles.data.length > 0)) && (
@@ -117,7 +127,7 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
           onDeleteProfile={deleteMeetingVoiceProfile}
         />
       )}
-      {editable && capabilities.data?.stt.streaming && <RecordingPanel meetingId={meetingId} targetLanguage={realtimeTranslationSupported ? realtimeTarget : undefined} translationVisible={showRealtimeTranslations} onTranslationVisibleChange={setShowRealtimeTranslations} onTranslation={(logicalSegmentId, translation) => setRealtimeTranslations((current) => ({ ...current, [logicalSegmentId]: translation }))} onFinal={() => { void transcript.reload(); void speakers.reload(); void versions.reload(); }} onRecordingStateChange={setRecordingActive} />}
+      {editable && capabilities.data?.stt.streaming && <RecordingPanel meetingId={meetingId} targetLanguage={realtimeTranslationSupported ? realtimeTarget : undefined} translationVisible={showRealtimeTranslations} onTranslationVisibleChange={setShowRealtimeTranslations} onTranslation={(logicalSegmentId, translation) => setRealtimeTranslations((current) => ({ ...current, [logicalSegmentId]: translation }))} onTranscript={(event) => setLiveTranscript((current) => updateLiveTranscript(current, event))} onResetTranscript={() => setLiveTranscript((current) => Object.fromEntries(Object.entries(current).filter(([, event]) => event.type === "transcript.final")))} onFinal={() => { void transcript.reload(); void speakers.reload(); void versions.reload(); }} onRecordingStateChange={setRecordingActive} />}
       {media.data?.[0] && <MediaPlayer ref={player} meetingId={meetingId} mediaId={media.data[0].id} filename={media.data[0].original_filename} segments={transcript.data?.segments ?? []} onActiveSegment={setActiveSegmentId} />}
       <div className="section-title"><h2>Transcript hiện tại</h2>{transcript.data && <Status>Phiên bản {transcript.data.version_no}</Status>}</div>
       {mergeFirst && <div className="notice">Chọn một đoạn liền kề để gộp với đoạn đã chọn, hoặc bấm “Gộp” lần nữa để hủy.</div>}
@@ -207,6 +217,10 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
           </article>
         );
       })}
+      {Object.entries(liveTranscript)
+        .filter(([, event]) => event.type !== "transcript.final" || !transcript.data?.segments.some((segment) => segment.logical_segment_id === event.logical_segment_id))
+        .sort(([, a], [, b]) => a.start_ms - b.start_ms)
+        .map(([key, event]) => <LiveTranscriptRow key={key} event={event} />)}
     </section><MeetingSidePanel activeTab={activeTab} setActiveTab={setActiveTab} meeting={meeting.data} segmentCount={transcript.data?.segments.length ?? 0} speakerCount={speakers.data?.length ?? 0} editable={editable} capabilities={capabilities.data} run={run} speakers={speakers.data} updateSpeaker={async (id, body) => { const speaker = await meetingsApi.updateSpeaker(id, body); speakers.setData((items) => items?.map((item) => item.id === speaker.id ? speaker : item)); }} meetingId={meetingId} canComment={can(meeting.data.permission, "comment")} comments={comments} versions={versions} voiceProfiles={voiceProfiles.data} onOpenVoiceModal={() => { if (recordingActive) { setNotice("Không thể sửa mẫu giọng khi đang ghi; thay đổi chỉ áp dụng từ phiên kết nối tiếp theo."); return; } setVoiceEnrollTarget(undefined); setVoiceEnrollOpen(true); }} /></div>
     {shareOpen && <ShareDialog meetingId={meetingId} close={() => setShareOpen(false)} />}
     {voiceEnrollOpen && (
@@ -520,7 +534,18 @@ function SpeakerPanel({ speakers, editable, onUpdate, voiceProfiles, onOpenVoice
   );
 }
 function CommentsPanel({ meetingId, canComment, comments }: { meetingId: string; canComment: boolean; comments: { data?: Comment[]; setData: React.Dispatch<React.SetStateAction<Comment[] | undefined>> } }) { const [body, setBody] = useState(""); const [editing, setEditing] = useState<Comment>(); const [error, setError] = useState(""); async function submit(event: React.FormEvent) { event.preventDefault(); try { const comment = await meetingsApi.addComment(meetingId, body); comments.setData((items) => [...(items ?? []), comment]); setBody(""); setError(""); } catch (cause) { setError((cause as Error).message); } } async function update() { if (!editing) return; try { const comment = await meetingsApi.updateComment(editing.id, editing.body); comments.setData((items) => items?.map((item) => item.id === comment.id ? comment : item)); setEditing(undefined); setError(""); } catch (cause) { setError((cause as Error).message); } } async function remove(id: string) { try { await meetingsApi.deleteComment(id); comments.setData((items) => items?.filter((item) => item.id !== id)); setError(""); } catch (cause) { setError((cause as Error).message); } } return <section className="panel"><h2>Bình luận</h2>{comments.data?.map((comment) => <div className="speaker" key={comment.id}>{editing?.id === comment.id ? <><textarea aria-label="Sửa bình luận" value={editing.body} onChange={(event) => setEditing({ ...editing, body: event.target.value })} /><Button onClick={() => void update()}>Lưu</Button><Button onClick={() => setEditing(undefined)}>Hủy</Button></> : <><strong>{comment.body}</strong><span>{new Date(comment.created_at).toLocaleString("vi-VN")}</span>{canComment && <><Button onClick={() => setEditing(comment)}>Sửa</Button><Button tone="danger" onClick={() => void remove(comment.id)}>Xóa</Button></>}</>}</div>)}{canComment ? <form className="comments-form" onSubmit={submit}><textarea aria-label="Bình luận" value={body} required onChange={(event) => setBody(event.target.value)} /><Button tone="dark">Gửi bình luận</Button>{error && <div className="form-error">{error}</div>}</form> : <p>Bạn chỉ có quyền xem bình luận.</p>}</section>; }
-function RecordingPanel({ meetingId, targetLanguage, translationVisible, onTranslationVisibleChange, onTranslation, onFinal, onRecordingStateChange }: { meetingId: string; targetLanguage?: string; translationVisible: boolean; onTranslationVisibleChange: (visible: boolean) => void; onTranslation: (logicalSegmentId: string, translation: RealtimeTranslation) => void; onFinal: () => void; onRecordingStateChange: (active: boolean) => void }) {
+function LiveTranscriptRow({ event }: { event: TranscriptEvent }) {
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => recordRender(event));
+    return () => cancelAnimationFrame(frame);
+  }, [event]);
+  return <article className="segment live-segment" aria-live="polite" aria-atomic="true">
+    <div><strong>{event.speaker_name ?? (event.speaker_label ? `Người nói ${event.speaker_label}` : "Chưa xác định")}</strong><small>{formatTime(event.start_ms)} – {formatTime(event.end_ms)}</small></div>
+    <div><small>{event.type === "transcript.partial" ? "Đang nhận diện…" : "Đã xác nhận"}</small><p>{event.text}</p></div>
+  </article>;
+}
+
+function RecordingPanel({ meetingId, targetLanguage, translationVisible, onTranslationVisibleChange, onTranslation, onTranscript, onResetTranscript, onFinal, onRecordingStateChange }: { meetingId: string; targetLanguage?: string; translationVisible: boolean; onTranslationVisibleChange: (visible: boolean) => void; onTranslation: (logicalSegmentId: string, translation: RealtimeTranslation) => void; onTranscript: (event: TranscriptEvent) => void; onResetTranscript: () => void; onFinal: () => void; onRecordingStateChange: (active: boolean) => void }) {
   const { accessToken } = useAuth();
   const socket = useRef<MeetingSocket | undefined>(undefined);
   const capture = useRef<MicrophonePcmCapture | undefined>(undefined);
@@ -531,8 +556,6 @@ function RecordingPanel({ meetingId, targetLanguage, translationVisible, onTrans
   const translatedSegmentIds = useRef(new Set<string>());
   const [status, setStatus] = useState("Sẵn sàng ghi âm");
   const [translationStatus, setTranslationStatus] = useState("");
-  const [partial, setPartial] = useState("");
-  const [partialSpeaker, setPartialSpeaker] = useState<string>();
   const [fallbackWarning, setFallbackWarning] = useState("");
   const [state, setState] = useState<"idle" | "connecting" | "recording" | "paused" | "stopping" | "failed">("idle");
   const [elapsed, setElapsed] = useState(0);
@@ -557,6 +580,7 @@ function RecordingPanel({ meetingId, targetLanguage, translationVisible, onTrans
 
   function event(event: RealtimeEvent) {
     if (event.type === "session.ready") {
+      onResetTranscript();
       void capture.current?.resume();
       setState("recording");
       setStatus("Đang ghi âm và nhận transcript trực tiếp.");
@@ -567,12 +591,10 @@ function RecordingPanel({ meetingId, targetLanguage, translationVisible, onTrans
       }
     }
     if (event.type === "transcript.partial") {
-      setPartial(event.text);
-      setPartialSpeaker(event.speaker_name ?? (event.speaker_label ? `Người nói ${event.speaker_label}` : undefined));
+      onTranscript(event);
     }
     if (event.type === "transcript.final") {
-      setPartial("");
-      setPartialSpeaker(undefined);
+      onTranscript(event);
       finalSegmentIds.current.add(event.logical_segment_id);
       onFinal();
     }
@@ -672,6 +694,6 @@ function RecordingPanel({ meetingId, targetLanguage, translationVisible, onTrans
   }
 
   const canToggleTranslation = state === "recording" || state === "paused" || state === "stopping";
-  return <section className="panel recording"><div className="recording-heading"><div><h2>Ghi âm trực tiếp</h2><p>{status}</p></div><strong className="recording-timer">{formatDuration(elapsed)}</strong></div>{fallbackWarning && <div className="notice">{fallbackWarning}</div>}{partial && <p className="partial-segment"><strong>{partialSpeaker ? `${partialSpeaker} · tạm thời` : "Chưa xác định · tạm thời"}</strong><br />{partial}</p>}{translationStatus && <p className="realtime-translation-status">{translationStatus}</p>}<div className="recording-actions">{(state === "idle" || state === "failed") && <Button tone="dark" onClick={() => void start()}>{state === "failed" ? "Thử kết nối lại" : "Bắt đầu ghi âm"}</Button>}{state === "connecting" && <Button disabled>Đang kết nối…</Button>}{state === "recording" && <><Button onClick={() => void pause()}>Tạm dừng</Button><Button tone="danger" onClick={() => void stop()}>Kết thúc ghi âm</Button></>}{state === "paused" && <><Button tone="dark" onClick={() => void resume()}>Tiếp tục</Button><Button tone="danger" onClick={() => void stop()}>Kết thúc ghi âm</Button></>}{state === "stopping" && <Button disabled>Đã kết thúc</Button>}{canToggleTranslation && <Button disabled={!targetLanguage} onClick={toggleTranslation}>{targetLanguage ? (translationVisible ? "Ẩn dịch realtime" : "Hiện dịch realtime") : "Dịch realtime không khả dụng"}</Button>}</div></section>;
+  return <section className="panel recording"><div className="recording-heading"><div><h2>Ghi âm trực tiếp</h2><p>{status}</p></div><strong className="recording-timer">{formatDuration(elapsed)}</strong></div>{fallbackWarning && <div className="notice">{fallbackWarning}</div>}{translationStatus && <p className="realtime-translation-status">{translationStatus}</p>}<div className="recording-actions">{(state === "idle" || state === "failed") && <Button tone="dark" onClick={() => void start()}>{state === "failed" ? "Thử kết nối lại" : "Bắt đầu ghi âm"}</Button>}{state === "connecting" && <Button disabled>Đang kết nối…</Button>}{state === "recording" && <><Button onClick={() => void pause()}>Tạm dừng</Button><Button tone="danger" onClick={() => void stop()}>Kết thúc ghi âm</Button></>}{state === "paused" && <><Button tone="dark" onClick={() => void resume()}>Tiếp tục</Button><Button tone="danger" onClick={() => void stop()}>Kết thúc ghi âm</Button></>}{state === "stopping" && <Button disabled>Đã kết thúc</Button>}{canToggleTranslation && <Button disabled={!targetLanguage} onClick={toggleTranslation}>{targetLanguage ? (translationVisible ? "Ẩn dịch realtime" : "Hiện dịch realtime") : "Dịch realtime không khả dụng"}</Button>}</div></section>;
 }
 function formatTime(milliseconds: number) { const seconds = Math.floor(milliseconds / 1000); return `${Math.floor(seconds / 60).toString().padStart(2, "0")}:${(seconds % 60).toString().padStart(2, "0")}`; } function formatDuration(seconds: number) { return `${Math.floor(seconds / 3600).toString().padStart(2, "0")}:${Math.floor((seconds % 3600) / 60).toString().padStart(2, "0")}:${(seconds % 60).toString().padStart(2, "0")}`; }

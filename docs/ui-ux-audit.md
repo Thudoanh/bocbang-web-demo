@@ -1,5 +1,14 @@
 # Audit UI/UX — Bóc Băng AI
 
+> Báo cáo lịch sử trước các cập nhật UI tiếp theo; không dùng các issue bên dưới
+> làm backlog hiện tại khi chưa đối chiếu source. Rà soát ngày 2026-10-08 đã thấy
+> routes login/register/forgot-password/create, player đồng bộ transcript,
+> speaker sample, split timestamp và public transcript có implementation.
+> Voice profile/Speechmatics enrollment và summary output language cũng đã có.
+> Việc cập nhật chú thích này là source review, không phải browser/visual QA mới.
+> Trạng thái hiện tại: [Current Status](../project_context/CURRENT_STATUS.md),
+> [QA checklist](planning/phase-4-qa.md).
+
 ## 1. Tổng quan
 
 Qua quá trình đối chiếu toàn bộ **Tài liệu nghiệp vụ BA (BocBang_AI_BA.docx.md)**, **Tài liệu thiết kế giao diện (UI/Screen/State Specs)**, **Source code frontend hiện tại (React/TypeScript)** và **Giao diện thực tế đang chạy trên web demo (http://localhost:5173)**:

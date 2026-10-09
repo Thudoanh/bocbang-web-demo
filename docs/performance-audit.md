@@ -2,6 +2,11 @@
 
 Audit date: 2026-10-01. Scope excludes STT, translation, summary, and export jobs.
 
+> Historical static audit, not a current benchmark. Subsequent code includes
+> transcript projection/edit events/checkpoints, immutable export input reads and
+> query indexes. Re-measure current source before treating findings below as
+> unresolved. Source reconciliation date: 2026-10-08.
+
 ## Measurement status
 
 This is a static code trace, not a production benchmark: no configured database

@@ -87,6 +87,8 @@ class Settings(BaseSettings):
     speechmatics_speaker_sensitivity: float = 0.75
     speechmatics_prefer_current_speaker: bool = False
     speechmatics_end_of_utterance_silence_seconds: float = 1.0
+    speechmatics_max_delay_seconds: float = Field(default=1.5, ge=0.7, le=4.0)
+    speechmatics_finalization_delay_seconds: float = Field(default=0.75, ge=0.0, le=5.0)
     assemblyai_api_base_url: str = "https://api.assemblyai.com/v2"
     assemblyai_streaming_base_url: str = "wss://streaming.assemblyai.com/v3/ws"
     assemblyai_streaming_model: str = "universal-3-6-pro"

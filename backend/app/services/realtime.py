@@ -39,6 +39,14 @@ class RealtimeTranscriptService:
     def diarization_enabled(self) -> bool:
         return self._diarization_enabled
 
+    @property
+    def time_offset_ms(self) -> int:
+        return self._time_offset_ms
+
+    @property
+    def stream_session_id(self) -> str:
+        return self._speaker_scope
+
     async def recording_started(self) -> None:
         if self._meeting.status in {
             MeetingStatus.CREATED,

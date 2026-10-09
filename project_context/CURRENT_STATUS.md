@@ -1,157 +1,86 @@
 # Current Status
 
-_Cập nhật lần cuối: 2026-10-08_
+_Cập nhật lần cuối: 2026-10-08 — đối chiếu source trong đợt đồng bộ tài liệu._
 
 ## Done
 
-- Speechmatics realtime + batch và nhận diện người nói theo tên:
-  - Speechmatics là STT chính; AssemblyAI là fallback khi không mở được phiên hoặc batch gặp lỗi retryable.
-  - Mẫu WAV/MP3/M4A được FFmpeg chuẩn hóa thành WAV mono PCM16 16 kHz, bắt buộc 10–25 giây và chỉ một người nói.
-  - Mỗi profile lưu tối đa ba Speechmatics speaker identifiers; identifiers không xuất hiện trong REST response, frontend hoặc log.
-  - Alembic `20261008_0012_speechmatics_voiceprints.py` xóa dữ liệu MFCC cũ, đổi schema sang identifier và giữ `0011` để tương thích lịch sử database.
-  - Realtime và batch cùng nhận danh sách known speakers bằng label opaque `VP_<UUID>` rồi map về profile/tên; người lạ tiếp tục dùng nhãn generic.
-  - API hỗ trợ thêm mẫu cho profile cá nhân/khách, giới hạn ba mẫu và phân bổ tối đa 50 identifiers theo round-robin.
-  - Frontend hiển thị số mẫu `N/3`, cho thêm mẫu trước phiên và cảnh báo rõ khi phiên dùng AssemblyAI fallback.
-  - Đã chạy 93 backend tests, frontend production build, Docker migration/health và smoke test thật với Huy/Minh/Conversation cho cả batch lẫn realtime.
+- React + TypeScript + Vite frontend đang dùng API thật: auth/OTP/recovery/
+  Google OAuth, meeting ACL, History filter và full-name update.
+- FastAPI modular monolith với async SQLAlchemy; Alembic head `20261008_0012`.
+- Upload/media: size/duration validation, FFmpeg normalization, local/S3 storage,
+  durable job; Redis/Dramatiq worker và reconciler chạy process riêng.
+- Speechmatics batch/realtime là primary trong env mẫu; AssemblyAI fallback
+  khi lỗi retryable lúc mở stream/batch, không nhận diện tên theo voiceprints.
+- Personal/guest voice profiles: sample 10–25 giây, tối đa ba identifiers/profile,
+  tối đa 50 identifiers/session round-robin. Migration 0012 bỏ MFCC cũ.
+- Realtime PCM16 mono 16 kHz AudioWorklet, start/pause/resume/stop, partial/final,
+  speaker correction bảo vệ manual edits, reconnect scope/timestamps.
+- Optional realtime VI ↔ EN translation dùng queue theo socket, không lưu DB.
+- Transcript edit/split/merge/delete/speaker assignment, current projection,
+  snapshots/edit events/checkpoints, history và rollback revision.
+- Uploaded-media player đã có signed playback URL/ticket, Range, seek theo
+  segment và highlight đoạn đang phát. Realtime capture không lưu audio replay.
+- Translation và summary Gemini/Groq, summary output language VI/EN; export sáu
+  formats qua worker đọc immutable input revision.
+- Comments, members và share management; public `/share/:token` đã hiển thị
+  metadata + current transcript qua token-scoped read endpoint.
+- Docker Compose có PostgreSQL, Redis, migrate, API, worker, reconciler,
+  frontend; local volumes persist database/queue/media.
+- Đã đồng bộ README, env example, kiến trúc/provider/API/ERD, deployment/config,
+  migration guide, planning/QA và trạng thái dự án theo source hiện tại.
+- README root đã rút gọn thành hướng dẫn local bằng Docker: tạo env, điền key
+  hoặc tắt AI, khởi động, lấy OTP từ log và các lệnh quản lý stack thường dùng.
+- `.env` local đã đối chiếu với Settings/env example: thêm 17 biến queue/worker,
+  storage/realtime/Speechmatics, chuẩn hóa bốn S3 aliases. Giữ nguyên giá trị
+  đã có, credentials và model overrides.
+- Đã cập nhật cấu hình STT trong `.env` dự án từ env tham chiếu: Speechmatics
+  primary, AssemblyAI fallback và Speechmatics key; giữ các tuning mặc định
+  hiện có cùng mọi cấu hình khác. Chưa recreate/restart stack.
 
-- Realtime speaker diarization now honors the meeting option in AssemblyAI,
-  preserves turn labels and maps unassigned speech to no speaker. New meeting
-  speakers receive `Người nói N` names, final events include persisted speaker
-  IDs, and the frontend refreshes transcript/speakers/history on final or
-  correction events. Provider SpeakerRevision deltas are applied in order and
-  recorded as transcript revisions; manual assignments/unassignments and
-  split/merge/delete edits are protected. Each upstream connection scopes its
-  labels separately and starts a fresh STT snapshot, preserving earlier session
-  history; saved timestamps continue from retained meeting duration. No database
-  migration is required. All 83 backend tests and frontend production build
-  pass. Focused lint passes (pre-existing E501/UP037 excluded in legacy files);
-  realtime service/route and new regression tests also pass without exclusions.
-  Browser/microphone verification and real two-voice accuracy remain pending;
-  README contains the smoke-test procedure. Source changes require rebuilding
-  the Docker stack before testing the container-served application.
+## Verification
 
-- Export workers now read immutable transcript revisions through a shared
-  snapshot/edit-event reader also used by history and rollback. Edited revisions
-  without snapshots, legacy snapshots, checkpointed revisions and exports queued
-  before later edits are covered by regression tests. All 66 backend tests pass;
-  focused lint passes (pre-existing long lines in `transcripts.py` excluded).
-  The local worker was restarted after confirming no executing jobs or Redis
-  messages. Six fresh exports of the previously failing revision completed via
-  real Redis/Dramatiq and their stored downloads were verified; API is ready.
-  Browser interaction remains unverified; export UI error display/completion
-  effect issues are a separate follow-up. No database migration was needed.
-
-- Realtime recording now supports optional, transient VI ↔ EN translation on
-  the existing authenticated WebSocket. Final STT segments are translated on a
-  separate per-session queue, rendered under their source segment, and can be
-  hidden to stop provider calls. Re-enabling backfills missing trusted segment
-  IDs without persisting or replacing the existing batch translation feature.
-  Frontend production build and seven focused realtime WebSocket tests pass.
-
-- Realtime AssemblyAI now steers every stream to the meeting language with a
-  single `language_codes` value, keeps the language-specific verbatim prompt,
-  and defaults to Universal 3.6 in `balanced` mode. Unsupported languages fail
-  before an upstream connection is opened. Browser microphone capture now uses
-  AudioWorklet, mono 16 kHz PCM16 chunks, browser audio cleanup constraints,
-  stateful resampling and explicit pause/stop flushing. Docker frontend/API
-  builds, 18 focused provider/realtime tests and HTTP readiness smoke checks
-  passed; the export/queue test failure observed then is now fixed by the
-  immutable-revision export change above.
-
-- Added a local Docker Compose stack for the React frontend, PostgreSQL, Redis,
-  Alembic migrations, API, worker and reconciler. Another machine needs only
-  Docker, source and the root `.env`. Frontend uses a Node build stage and Nginx
-  with SPA fallback; public build arguments are isolated from backend secrets.
-  Shared backend image includes FFmpeg/ffprobe and
-  Unicode PDF fonts; local media and database/queue data persist in volumes.
-  README documents setup, rebuilds, environment overrides and shutdown.
-  Compose configuration and startup/storage assertions passed. Frontend image
-  build and container HTTP/SPA/assets smoke checks passed; full backend/provider
-  integration checks remain pending.
-
-- Backend queue worker foundation now uses Dramatiq + Redis: durable Job
-  lifecycle fields and retry schedule, Redis-only enqueue after commit,
-  separate consumer and reconciliation entrypoints, and media/STT, AI, and
-  export execution outside the FastAPI process.
-
-- Frontend React + TypeScript + Vite đã dùng REST/WebSocket backend thật, có
-  auth/OTP/recovery/Google OAuth, meeting ACL, realtime recording, upload job,
-  transcript versioning, comments và export download có xác thực.
-- UI shell đã được căn chỉnh theo BA references trong `docs/ui/references/`:
-  sidebar, app bar, auth shell, panel/form/button/status token và responsive
-  desktop-first layout.
-- Phase 0 đã hoàn tất: mapping BA/API/frontend, quyết định contract đang dùng
-  và các API gap được ghi tại `docs/planning/phase-0-api-gap.md`.
-- Phase 1 đã hoàn tất ở frontend:
-  - tách tạo meeting `realtime` và `upload`;
-  - realtime có timer, start/pause/resume/stop, partial/final transcript và
-    trạng thái lỗi/kết nối;
-  - upload theo dõi `queued/processing/completed/failed`, chỉ mở transcript
-    sau khi job hoàn tất;
-  - transcript sửa text/timestamp/speaker, split/merge, delete có confirm,
-    và cập nhật immutable version.
-- Phase 2 đã hoàn tất ở frontend:
-  - route theo meeting cho speaker management, translation, summary/minutes,
-    export/share;
-  - translation và summary tạo job thật, polling trạng thái và đọc kết quả từ
-    backend;
-  - export chọn format/options thực có, tải blob bằng Authorization;
-  - share link tạo từ backend và có public metadata page `/share/:token`.
-- Phase 3 đã hoàn tất cho contract/UI hiện có:
-  - `GET /meetings` nhận `q`, `status`, `source_type`; History gửi filter
-    lên server thay vì lọc toàn bộ dữ liệu trong browser;
-  - owner có thể xem/xóa tệp media riêng và xóa meeting qua confirmation;
-  - `PATCH /auth/me` cho phép cập nhật tên hồ sơ, đồng bộ session frontend.
-- Phase 4 đã hoàn tất ở mức code/build QA: shared SVG icon primitive thay cho
-  glyph navigation/auth, responsive/static reference checklist và acceptance
-  matrix tại `docs/planning/phase-4-qa.md`.
-- Backend hiện có FastAPI modular monolith, async SQLAlchemy/Alembic domain,
-  meeting ACL, auth, upload/media job, realtime STT boundary, immutable
-  transcript/speaker APIs, translation/summary, exports, share links và
-  performance instrumentation/audit tài liệu.
-- Durable media, normalized media and exports now use a local/S3-compatible
-  storage boundary. Production uses private object storage and short-lived
-  presigned downloads; no persistent media depends on the API filesystem.
-- LLM summary và dịch segment VI ↔ EN có thể dùng Groq làm primary hoặc
-  fallback sau Gemini qua biến môi trường backend; key Groq không bao giờ được
-  gửi ra frontend.
-- Xác minh frontend gần nhất: `npm.cmd run build` thành công sau Phase 2.
+- Task trước ghi nhận 93 backend tests, frontend build, Docker migration/health
+  và Speechmatics batch/realtime smoke test bằng file thật. Xem `TASK_LOG.md`
+  để biết phạm vi và thời điểm; không coi đó là test mới trong đợt sửa tài liệu.
+- Đợt này chỉ sửa tài liệu và config example; xác minh đường dẫn, nội dung
+  cấu hình, route/schema/model references và diff. Không chạy provider/browser
+  E2E hay thay đổi runtime code.
+- Lượt rút gọn README chỉ sửa tài liệu; kiểm tra liên kết, code fences và lệnh
+  theo Compose/provider config. Không khởi động lại stack hoặc sửa `.env`.
+- Lượt cập nhật `.env`: đủ biến trong env example, không trùng key, kiểm tra
+  bảo toàn giá trị có sẵn. Python virtualenv đã validate Settings/queue và
+  khởi tạo STT/translation/LLM/email adapter thành công; không gọi provider hay
+  kết nối database/Redis, không restart stack.
+- Lượt chuyển Speechmatics: kiểm tra key khớp file tham chiếu và chỉ ba biến
+  STT được thay đổi, không hiển thị secret. Chưa gọi provider thật để kiểm tra
+  key hoặc khởi tạo lại adapter với cấu hình mới.
 
 ## In progress
 
-- Chưa có lượt kiểm thử browser/E2E với backend/provider thật cho các luồng
-  realtime, upload processing, translation, summary, export và public share.
+- Chưa có kết quả browser/microphone E2E đầy đủ cho upload, playback, AI, export,
+  sharing, reconnect và name identification trong toàn bộ UX.
 
 ## Next
 
-1. Bổ sung pagination/count cho History nếu số lượng meeting tăng; API hiện có
-   `limit/offset` và server-side filtering nhưng chưa trả tổng số/cursor.
-2. Chốt và thiết kế migration/API cho default language, diarization, số điện
-   thoại, storage/retention metadata trước khi thêm các field settings còn lại.
-3. Mở rộng public share contract: endpoint capability-link hiện chỉ trả meeting
-   metadata + permission; cần read-only transcript/summary/translation scoped
-   by token để share page có thể hiển thị nội dung nhạy cảm an toàn.
-4. Implement `AudioPlayer` đồng bộ segment against the authenticated local
-   proxy / short-lived S3 playback URL. Không fake player ở frontend.
-5. Chạy browser/microphone E2E với Speechmatics thật trên các mẫu tiếng Việt rõ,
-   có tiếng ồn nhẹ và có thuật ngữ tiếng Anh xen kẽ; ghi nhận accuracy/latency và hành vi fallback.
-6. Chạy backend `pytest`, `ruff check .`, Alembic migration validation và
-   browser E2E trên standard CPython + isolated PostgreSQL.
+1. Sửa media download handler: dùng `request` chưa khai báo; kiểm tra local/S3.
+2. Browser/microphone E2E Speechmatics VI/EN, noise/known-unknown voices và
+   AssemblyAI fallback; đo accuracy/latency, không suy ra từ fixtures.
+3. Kiểm thử browser upload → transcript edit/rollback → playback → AI/export,
+   ACL, share expiry/revoke và playback URL expiry.
+4. Backend pytest/lint, Alembic validation và integration với isolated PostgreSQL.
+5. History pagination/count; settings default language/diarization/phone/storage/
+   retention metadata cần contract/migration trước khi thêm UI.
+6. Public share summary/translation/media hoặc token-based writes cần thiết kế
+   ACL riêng. Endpoint hiện tại chỉ đọc metadata/current transcript.
+7. Cấu hình deployment public; Render manifest chưa có trong repo.
 
 ## Blockers / risks
 
-- Docker stack, migration `0012`, API/frontend health và provider capability đã
-  được xác minh. Upload/export E2E qua giao diện vẫn cần kiểm thử thủ công.
-
-- Provider credentials đã được cấu hình và smoke test Speechmatics batch/realtime
-  bằng file thật đã qua. Browser/microphone E2E vẫn cần chạy để đánh giá UX và
-  latency đầu-cuối; một lần kết nối realtime đầu tiên từng timeout 5 giây nhưng
-  lần kế tiếp thành công, đúng trường hợp AssemblyAI fallback cần xử lý.
-- Public share chưa thể công khai transcript hoặc AI result vì backend không
-  cấp token-scoped result endpoints; không được mở endpoint authenticated hiện
-  có mà không thiết kế ACL riêng.
-- Audio playback BA vẫn bị chặn bởi thiếu media stream/download contract.
-- Backend test/lint có thể cần standard CPython và database độc lập tùy môi
-  trường local/deploy; không coi frontend build là E2E verification.
-- Browser automation was unavailable in the current agent environment; visual
-  comparison is recorded as static QA, not an interactive acceptance result.
+- `/ready` chỉ kiểm tra database; không khẳng định Redis/worker/provider khỏe.
+- Media download bug nêu trên được ghi nhận từ source, chưa sửa trong task docs.
+- Signed playback URL có TTL; cần kiểm tra UX khi URL hết hạn.
+- Reconnect tạo stream và generic speaker scope mới, không đảm bảo cùng voice
+  giữ ID qua nhiều phiên.
+- Storage cleanup chạy trước DB cascade, không atomic với object storage.
+- Lint/test môi trường local và provider credentials ảnh hưởng verification;
+  không coi build/static QA là acceptance browser.

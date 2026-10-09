@@ -12,6 +12,58 @@ Mục mới nhất được thêm ở đầu file. Dùng format ngắn dưới �
 - Follow-up / blocker: ...
 ```
 
+## 2026-10-08 — Cập nhật Speechmatics trong .env dự án
+
+- Status: done
+- Scope: Áp dụng cấu hình Speechmatics từ env tham chiếu đã đối chiếu.
+- Changed: `.env` (Git ignored), `project_context/CURRENT_STATUS.md`, `project_context/TASK_LOG.md`.
+- Verified: Chỉ đổi `SPEECHMATICS_API_KEY`, `STT_PROVIDER` và
+  `STT_FALLBACK_PROVIDER`; key khớp tham chiếu, các cấu hình khác giữ nguyên.
+  Không in credentials, không sửa file tham chiếu, không gọi provider thật.
+- Follow-up / blocker: Recreate/restart runtime để áp dụng; Speechmatics key
+  cần provider smoke test sau khi áp dụng.
+
+## 2026-10-08 — Đối chiếu và cập nhật .env local
+
+- Status: done
+- Scope: Đồng bộ cấu hình local với Settings và env example mà không đổi
+  credentials, URLs hoặc model/provider lựa chọn đã có.
+- Changed: `.env` (Git ignored), `project_context/CURRENT_STATUS.md`, `project_context/TASK_LOG.md`.
+- Verified: Thêm 17 biến còn thiếu; đổi bốn S3 aliases sang tên canonical, kiểm
+  tra giá trị có sẵn được giữ nguyên và không trùng key. Python virtualenv
+  validate Settings/queue và khởi tạo provider/email adapters thành công.
+  Không in secret, không gọi API ngoài hay kiểm tra kết nối DB/Redis.
+- Follow-up / blocker: Giữ AssemblyAI primary; muốn Speechmatics cần điền key
+  và đổi provider. Cấu hình được áp dụng ở lần restart/recreate process tiếp theo;
+  chưa restart stack trong task này.
+
+## 2026-10-08 — Rút gọn README hướng dẫn chạy local
+
+- Status: done
+- Scope: Viết lại README bằng tiếng Việt, ưu tiên Docker Compose với ba bước
+  tạo cấu hình, khởi động và đăng ký/sử dụng; hướng dẫn khi chưa có AI key.
+- Changed: `README.md`, `project_context/CURRENT_STATUS.md`, `project_context/TASK_LOG.md`.
+- Verified: Liên kết và code fences; đối chiếu lệnh với Compose, provider/email
+  factory; kiểm tra diff. Không chạy ứng dụng, không sửa runtime hoặc `.env`.
+- Follow-up / blocker: Không có blocker cho task tài liệu; các việc E2E/bug
+  đã ghi nhận trước vẫn giữ nguyên.
+
+## 2026-10-08 — Đồng bộ tài liệu theo codebase hiện tại
+
+- Status: done
+- Scope: Đối chiếu source để cập nhật setup/config, feature scope, architecture,
+  provider, API, ERD, migrations, deployment, planning và project handoff.
+- Changed: root/backend/frontend/prototype README, `agent/README_AGENT.md`,
+  `.env.example`, `docs/architecture/*`, `docs/deployment/*`, `docs/planning/*`,
+  chú thích lịch sử audit/UI specs, `project_context/CURRENT_STATUS.md`,
+  `project_context/DECISIONS.md`. Gemini model trong env mẫu đồng bộ default
+  Settings (`gemini-2.5-flash`); không sửa `.env` hiện có hay runtime code.
+- Verified: Markdown local links/code fences; toàn bộ REST route inventory từ
+  AST của backend đối chiếu API spec; diff whitespace theo CRLF của repo.
+  Không chạy lại application tests, provider requests hoặc browser E2E.
+- Follow-up / blocker: Media download handler dùng `request` chưa khai báo;
+  ghi nhận trong docs/backlog. Browser E2E và public deployment vẫn cần xác minh.
+
 ## 2026-10-08 — Speechmatics realtime, batch và known-speaker identification
 
 - Status: done

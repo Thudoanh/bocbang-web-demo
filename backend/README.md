@@ -2,19 +2,28 @@
 
 FastAPI backend for the Bóc Băng AI modular monolith. Public endpoints are
 versioned under `/api/v1`; liveness/readiness, authentication, and the meeting
-ownership/ACL slice are currently available. Media processing remains deferred
-to a later vertical slice.
+ownership/ACL, media/STT, realtime, transcript editing/versioning, translation,
+summary, exports, public transcript sharing and voice profiles are implemented.
+Providers require backend configuration; see [environment settings](../docs/deployment/environment.md).
 
 ## Local development
 
-From `backend/`, create an environment and install the project (including the
-test tools), then run:
+Create the root `.env` from `.env.example`; set a reachable PostgreSQL/Redis URL,
+JWT secret and needed SMTP/OAuth/provider credentials. From `backend/`:
 
 ```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e ".[dev]"
+alembic upgrade head
 python -m uvicorn app.main:app --reload
 pytest
 ruff check .
 ```
+
+Run `dramatiq app.workers.worker` and `python -m app.workers.reconciler` in separate
+processes with the same configuration. FFmpeg/ffprobe must be on PATH. Full
+Docker startup is documented in the [root README](../README.md).
 
 The API docs are served at `http://localhost:8000/api/v1/docs`.
 
@@ -26,8 +35,9 @@ deployment and for Alembic migrations. PostgreSQL URLs are normalized to the
 alembic upgrade head
 ```
 
-The initial revision creates the ERD v2 persistence schema, including immutable
-transcript and summary version histories. `TEST_DATABASE_URL`, when configured
+The migration chain currently ends at `20261008_0012`; it includes transcript
+projection/edit events, job retries/reconciliation, summary output language and
+Speechmatics voiceprints. See [migration history](alembic/versions/README.md). `TEST_DATABASE_URL`, when configured
 by a future PostgreSQL integration environment, must point to an isolated test
 database; it is never read by the application itself.
 
@@ -57,7 +67,11 @@ Email/password authentication requires `DATABASE_URL` and `JWT_SECRET`. Email
 verification and password reset only send mail through an explicitly configured
 adapter; the built-in production adapter is selected with `EMAIL_PROVIDER=smtp`
 and requires `EMAIL_FROM` and `EMAIL_SMTP_HOST` (plus optional SMTP credentials).
-The application never logs or persists a plaintext OTP.
+OTP values are hashed at rest. The current development console adapter prints
+the plaintext OTP to API stdout without sending mail; blank `EMAIL_PROVIDER`
+in development selects it. `console/dev/local` also select it explicitly.
+Use SMTP for real delivery/public deployment; do not treat console output as
+email verification delivery to the recipient.
 
 Google OAuth uses the standard Google authorization-code flow. Set
 `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GOOGLE_REDIRECT_URI` to enable
@@ -109,7 +123,8 @@ Production rejects a missing Redis URL; there is no inline fallback. Use
 retry delivery. Queue messages contain only `job_id`; workers load inputs from
 PostgreSQL and private object storage and use temporary local files only while
 processing. The worker needs the same database, storage, provider secrets, and
-FFmpeg runtime as the API image, but never a shared filesystem.
+FFmpeg runtime as the API image, and requires a shared media directory/volume when `STORAGE_BACKEND=local`.
+S3 mode uses the same private bucket without a shared filesystem.
 
 Run the recovery loop as a companion production process:
 
@@ -152,7 +167,7 @@ complete upload jobs.
 Set `STT_PROVIDER=speechmatics` and `SPEECHMATICS_API_KEY` to enable Speechmatics
 batch and realtime STT with enrolled-speaker identification. Set
 `STT_FALLBACK_PROVIDER=assemblyai` and `STT_API_KEY` to keep AssemblyAI as the
-connection-time and retryable batch fallback. A fallback session preserves the
+retryable connection-time and batch fallback. A fallback session preserves the
 transcript but cannot identify Speechmatics voiceprints by name. The media worker
 downloads an object to a temporary file, normalizes it to mono PCM WAV at 16 kHz
 using `ffmpeg`, stores the normalized object, and persists normalized STT segments
@@ -166,7 +181,7 @@ Set `TRANSLATION_PROVIDER=gemini` with `TRANSLATION_API_KEY` (or `LLM_API_KEY`)
 for segment-aligned VI ↔ EN translations. To fall back to Groq for translation,
 set `TRANSLATION_FALLBACK_PROVIDER=groq` with `GROQ_API_KEY`; Groq is called
 only after the primary translator returns an error. Set `LLM_PROVIDER=gemini` with
-`LLM_API_KEY` for structured `general`, `briefing`, and `voting` summaries.
+`LLM_API_KEY` (or `TRANSLATION_API_KEY`) for structured `general`, `briefing`, and `voting` summaries.
 `GEMINI_MODEL` defaults to `gemini-2.5-flash`; `LLM_MODEL` overrides it for
 summary generation. Provider keys are backend-only values.
 To fall back from Gemini to Groq, set `LLM_FALLBACK_PROVIDER=groq` and provide

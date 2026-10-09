@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import Awaitable, Callable
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, replace
+from time import perf_counter
 from typing import Any, cast
 from uuid import UUID
 
+from anyio import CancelScope
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 
 from app.core.config import Settings
@@ -28,14 +32,15 @@ from app.providers.contracts import (
 )
 from app.services.meetings import MeetingService
 from app.services.realtime import RealtimeTranscriptService
-from app.services.voice_profiles import VoiceProfileService
 from app.services.realtime_translation import (
     RealtimeTranslationItem,
     RealtimeTranslationSession,
 )
+from app.services.voice_profiles import VoiceProfileService
 
 router = APIRouter()
 SendJson = Callable[[dict[str, object]], Awaitable[None]]
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -55,6 +60,7 @@ async def realtime_transcription(websocket: WebSocket, meeting_id: UUID) -> None
     terminal_failure = False
     retryable_interruption = False
     send_lock = asyncio.Lock()
+    session_stack = AsyncExitStack()
 
     async def send_json(payload: dict[str, object]) -> None:
         async with send_lock:
@@ -87,207 +93,93 @@ async def realtime_transcription(websocket: WebSocket, meeting_id: UUID) -> None
             return
         user = await _websocket_user(websocket, settings)
         database = cast(Database, websocket.app.state.database)
-        async with database.session() as session:
-            meeting, _ = await MeetingService(session).require_access(
-                meeting_id, user, MeetingPermission.EDIT
+        session = await session_stack.enter_async_context(database.session())
+        meeting, _ = await MeetingService(session).require_access(
+            meeting_id, user, MeetingPermission.EDIT
+        )
+        known_speakers = await VoiceProfileService(session).list_known_speakers(
+            meeting_id
+        )
+        options = StreamingOptions(
+            language=meeting.language_mode,
+            diarization=meeting.diarization_enabled,
+            known_speakers=known_speakers,
+        )
+        if options.diarization and not provider.capabilities().diarization:
+            await _error_and_close(
+                websocket, send_json, "PROVIDER_CAPABILITY_UNAVAILABLE",
+                "The configured STT provider does not support diarization.", False,
             )
-            known_speakers = await VoiceProfileService(session).list_known_speakers(
-                meeting_id
+            return
+        try:
+            stream = await provider.open_stream(options)
+        except STTProviderError as exc:
+            if not exc.retryable:
+                await RealtimeTranscriptService(session, meeting, user.id).recording_failed()
+            await _handle_provider_error(websocket, send_json, exc)
+            return
+        except Exception:
+            await _handle_provider_error(
+                websocket,
+                send_json,
+                STTProviderError("The STT provider could not start a realtime session."),
             )
-            options = StreamingOptions(
-                language=meeting.language_mode,
-                diarization=meeting.diarization_enabled,
-                known_speakers=known_speakers,
+            return
+        transcript_service = RealtimeTranscriptService(session, meeting, user.id)
+        if translation_provider is not None:
+            translation_session = RealtimeTranslationSession(
+                translation_provider,
+                meeting.language_mode,
+                send_json,
             )
-            if options.diarization and not provider.capabilities().diarization:
-                await _error_and_close(
-                    websocket, send_json, "PROVIDER_CAPABILITY_UNAVAILABLE",
-                    "The configured STT provider does not support diarization.", False,
-                )
-                return
+        await transcript_service.recording_started()
+        await send_json(
+            {
+                "type": "session.ready",
+                "provider": getattr(
+                    stream,
+                    "provider_name",
+                    settings.stt_provider or provider.__class__.__name__,
+                ),
+                "language": meeting.language_mode,
+                "speaker_identification_available": (
+                    getattr(stream, "speaker_identification_available", False)
+                ),
+                "fallback_active": getattr(stream, "fallback_active", False),
+            }
+        )
+        paused = False
+        while True:
             try:
-                stream = await provider.open_stream(options)
+                message = await _receive_with_events(
+                    websocket, stream, send_json, transcript_service, translation_session
+                )
             except STTProviderError as exc:
-                if not exc.retryable:
-                    await RealtimeTranscriptService(session, meeting, user.id).recording_failed()
+                terminal_failure = not exc.retryable
+                retryable_interruption = exc.retryable
+                if terminal_failure:
+                    await transcript_service.recording_failed()
                 await _handle_provider_error(websocket, send_json, exc)
                 return
-            except Exception:
-                await _handle_provider_error(
-                    websocket,
-                    send_json,
-                    STTProviderError("The STT provider could not start a realtime session."),
-                )
-                return
-            transcript_service = RealtimeTranscriptService(session, meeting, user.id)
-            if translation_provider is not None:
-                translation_session = RealtimeTranslationSession(
-                    translation_provider,
-                    meeting.language_mode,
-                    send_json,
-                )
-            await transcript_service.recording_started()
-            await send_json(
-                {
-                    "type": "session.ready",
-                    "provider": getattr(
-                        stream,
-                        "provider_name",
-                        settings.stt_provider or provider.__class__.__name__,
-                    ),
-                    "language": meeting.language_mode,
-                    "speaker_identification_available": (
-                        getattr(stream, "speaker_identification_available", False)
-                    ),
-                    "fallback_active": getattr(stream, "fallback_active", False),
-                }
-            )
-            paused = False
-            while True:
-                message = await websocket.receive()
-                if message["type"] == "websocket.disconnect":
-                    break
-                if message.get("bytes") is not None:
-                    if paused:
-                        await _send_error(
-                            send_json,
-                            "SESSION_PAUSED",
-                            "Resume recording before sending audio.",
-                            False,
-                        )
-                        continue
-                    try:
-                        events = await stream.send_audio(message["bytes"])
-                        await _emit_events(
-                            send_json,
-                            transcript_service,
-                            events,
-                            translation_session=translation_session,
-                        )
-                    except STTProviderError as exc:
-                        terminal_failure = not exc.retryable
-                        retryable_interruption = exc.retryable
-                        if terminal_failure:
-                            await transcript_service.recording_failed()
-                        await _handle_provider_error(websocket, send_json, exc)
-                        return
-                    except ValueError as exc:
-                        await _send_error(send_json, "STT_RESULT_INVALID", str(exc), False)
-                    except Exception:
-                        retryable_interruption = True
-                        await _handle_provider_error(
-                            websocket,
-                            send_json,
-                            STTProviderError(
-                                "The STT provider could not process this audio chunk."
-                            ),
-                        )
-                        return
-                    continue
-                if message.get("text") is None:
+            if message["type"] == "websocket.disconnect":
+                break
+            if message.get("bytes") is not None:
+                if paused:
                     await _send_error(
-                        send_json, "INVALID_MESSAGE", "Audio chunks must be binary.", False
+                        send_json,
+                        "SESSION_PAUSED",
+                        "Resume recording before sending audio.",
+                        False,
                     )
-                    continue
-                command = _command(message["text"])
-                if command is None:
-                    await _send_error(
-                        send_json, "INVALID_MESSAGE", "Realtime command is invalid.", False
-                    )
-                    continue
-                if command.type == "translation.enable":
-                    target = command.target_language
-                    supported_target = _opposite_language(meeting.language_mode)
-                    if (
-                        translation_provider is None
-                        or translation_session is None
-                        or target is None
-                    ):
-                        await _send_translation_error(
-                            send_json,
-                            "PROVIDER_CAPABILITY_UNAVAILABLE",
-                            "Realtime translation is not configured.",
-                            False,
-                        )
-                        continue
-                    if (
-                        target != supported_target
-                        or (meeting.language_mode, target)
-                        not in translation_provider.capabilities().supported_language_pairs
-                    ):
-                        await _send_translation_error(
-                            send_json,
-                            "PROVIDER_CAPABILITY_UNAVAILABLE",
-                            "This realtime translation language pair is not supported.",
-                            False,
-                        )
-                        continue
-                    try:
-                        trusted = await transcript_service.translation_inputs(
-                            command.logical_segment_ids
-                        )
-                    except ValueError as exc:
-                        await _send_translation_error(
-                            send_json,
-                            "TRANSLATION_SEGMENT_NOT_FOUND",
-                            str(exc),
-                            False,
-                            command.logical_segment_ids,
-                        )
-                        continue
-                    await translation_session.enable(
-                        target,
-                        (
-                            RealtimeTranslationItem(logical_id, segment)
-                            for logical_id, segment in trusted
-                        ),
-                    )
-                    await send_json(
-                        {
-                            "type": "translation.status",
-                            "enabled": True,
-                            "source_language": meeting.language_mode,
-                            "target_language": target,
-                        }
-                    )
-                    continue
-                if command.type == "translation.disable":
-                    if translation_session is not None:
-                        await translation_session.disable()
-                    await send_json({"type": "translation.status", "enabled": False})
                     continue
                 try:
-                    if command.type == "recording.pause":
-                        paused = True
-                        await _emit_events(
-                            send_json,
-                            transcript_service,
-                            await stream.pause(),
-                            translation_session=translation_session,
-                        )
-                    elif command.type == "recording.resume":
-                        paused = False
-                        await _emit_events(
-                            send_json,
-                            transcript_service,
-                            await stream.resume(),
-                            translation_session=translation_session,
-                        )
-                    else:  # recording.stop
-                        await _emit_events(
-                            send_json,
-                            transcript_service,
-                            await stream.close(),
-                            translation_session=translation_session,
-                        )
-                        stream = None
-                        if translation_session is not None:
-                            await translation_session.flush()
-                            await translation_session.close()
-                        await transcript_service.recording_ended()
-                        await send_json({"type": "meeting.status", "status": "processing"})
-                        await websocket.close(code=status.WS_1000_NORMAL_CLOSURE)
-                        return
+                    events = await stream.send_audio(message["bytes"])
+                    await _emit_events(
+                        send_json,
+                        transcript_service,
+                        events,
+                        translation_session=translation_session,
+                    )
                 except STTProviderError as exc:
                     terminal_failure = not exc.retryable
                     retryable_interruption = exc.retryable
@@ -303,10 +195,134 @@ async def realtime_transcription(websocket: WebSocket, meeting_id: UUID) -> None
                         websocket,
                         send_json,
                         STTProviderError(
-                            "The STT provider could not process this realtime command."
+                            "The STT provider could not process this audio chunk."
                         ),
                     )
                     return
+                continue
+            if message.get("text") is None:
+                await _send_error(
+                    send_json, "INVALID_MESSAGE", "Audio chunks must be binary.", False
+                )
+                continue
+            command = _command(message["text"])
+            if command is None:
+                await _send_error(
+                    send_json, "INVALID_MESSAGE", "Realtime command is invalid.", False
+                )
+                continue
+            if command.type == "translation.enable":
+                target = command.target_language
+                supported_target = _opposite_language(meeting.language_mode)
+                if (
+                    translation_provider is None
+                    or translation_session is None
+                    or target is None
+                ):
+                    await _send_translation_error(
+                        send_json,
+                        "PROVIDER_CAPABILITY_UNAVAILABLE",
+                        "Realtime translation is not configured.",
+                        False,
+                    )
+                    continue
+                if (
+                    target != supported_target
+                    or (meeting.language_mode, target)
+                    not in translation_provider.capabilities().supported_language_pairs
+                ):
+                    await _send_translation_error(
+                        send_json,
+                        "PROVIDER_CAPABILITY_UNAVAILABLE",
+                        "This realtime translation language pair is not supported.",
+                        False,
+                    )
+                    continue
+                try:
+                    trusted = await transcript_service.translation_inputs(
+                        command.logical_segment_ids
+                    )
+                except ValueError as exc:
+                    await _send_translation_error(
+                        send_json,
+                        "TRANSLATION_SEGMENT_NOT_FOUND",
+                        str(exc),
+                        False,
+                        command.logical_segment_ids,
+                    )
+                    continue
+                await translation_session.enable(
+                    target,
+                    (
+                        RealtimeTranslationItem(logical_id, segment)
+                        for logical_id, segment in trusted
+                    ),
+                )
+                await send_json(
+                    {
+                        "type": "translation.status",
+                        "enabled": True,
+                        "source_language": meeting.language_mode,
+                        "target_language": target,
+                    }
+                )
+                continue
+            if command.type == "translation.disable":
+                if translation_session is not None:
+                    await translation_session.disable()
+                await send_json({"type": "translation.status", "enabled": False})
+                continue
+            try:
+                if command.type == "recording.pause":
+                    paused = True
+                    await _emit_events(
+                        send_json,
+                        transcript_service,
+                        await stream.pause(),
+                        translation_session=translation_session,
+                    )
+                elif command.type == "recording.resume":
+                    paused = False
+                    await _emit_events(
+                        send_json,
+                        transcript_service,
+                        await stream.resume(),
+                        translation_session=translation_session,
+                    )
+                else:  # recording.stop
+                    await _emit_events(
+                        send_json,
+                        transcript_service,
+                        await stream.close(),
+                        translation_session=translation_session,
+                    )
+                    stream = None
+                    if translation_session is not None:
+                        await translation_session.flush()
+                        await translation_session.close()
+                    await transcript_service.recording_ended()
+                    await send_json({"type": "meeting.status", "status": "processing"})
+                    await websocket.close(code=status.WS_1000_NORMAL_CLOSURE)
+                    return
+            except STTProviderError as exc:
+                terminal_failure = not exc.retryable
+                retryable_interruption = exc.retryable
+                if terminal_failure:
+                    await transcript_service.recording_failed()
+                await _handle_provider_error(websocket, send_json, exc)
+                return
+            except ValueError as exc:
+                await _send_error(send_json, "STT_RESULT_INVALID", str(exc), False)
+            except Exception:
+                retryable_interruption = True
+                await _handle_provider_error(
+                    websocket,
+                    send_json,
+                    STTProviderError(
+                        "The STT provider could not process this realtime command."
+                    ),
+                )
+                return
     except WebSocketDisconnect:
         pass
     except ApiError as exc:
@@ -320,25 +336,71 @@ async def realtime_transcription(websocket: WebSocket, meeting_id: UUID) -> None
             False,
         )
     finally:
-        if translation_session is not None:
-            await translation_session.close()
-        if stream is not None:
+        with CancelScope(shield=True):
             try:
-                events = await stream.close()
-                if transcript_service is not None:
-                    await _emit_events(
-                        send_json,
-                        transcript_service,
-                        events,
-                        send_client=False,
-                    )
-            except (STTProviderError, RuntimeError, ValueError):
-                pass
-        if transcript_service is not None and not terminal_failure and not retryable_interruption:
-            try:
-                await transcript_service.recording_ended()
-            except RuntimeError:
-                pass
+                if translation_session is not None:
+                    await translation_session.close()
+                if stream is not None:
+                    try:
+                        events = await stream.close()
+                        if transcript_service is not None:
+                            await _emit_events(
+                                send_json,
+                                transcript_service,
+                                events,
+                                send_client=False,
+                            )
+                    except (STTProviderError, RuntimeError, ValueError):
+                        pass
+                if (
+                    transcript_service is not None
+                    and not terminal_failure
+                    and not retryable_interruption
+                ):
+                    try:
+                        await transcript_service.recording_ended()
+                    except RuntimeError:
+                        pass
+            finally:
+                await session_stack.aclose()
+
+
+async def _receive_with_events(
+    websocket: WebSocket,
+    stream: STTStream,
+    send_json: SendJson,
+    transcript_service: RealtimeTranscriptService,
+    translation_session: RealtimeTranslationSession | None,
+) -> dict[str, Any]:
+    """Multiplex audio/control and provider output with one serialized DB writer.
+
+    No reader remains alive during pause/close, so it cannot steal the final flush.
+    Legacy injected streams can continue returning events from send_audio().
+    """
+    receive_events = getattr(stream, "receive_events", None)
+    if receive_events is None:
+        return await websocket.receive()
+    message_task = asyncio.create_task(websocket.receive())
+    event_task = None
+    try:
+        while True:
+            event_task = asyncio.create_task(receive_events())
+            done, _ = await asyncio.wait(
+                (message_task, event_task), return_when=asyncio.FIRST_COMPLETED
+            )
+            if event_task in done:
+                await _emit_events(
+                    send_json, transcript_service, event_task.result(),
+                    translation_session=translation_session,
+                )
+            if message_task in done:
+                return message_task.result()
+    finally:
+        tasks = [task for task in (message_task, event_task) if task is not None]
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def _websocket_user(websocket: WebSocket, settings: Settings) -> User:
@@ -435,8 +497,20 @@ async def _emit_events(
                 segment.is_identified and transcript_service.diarization_enabled
             ),
             "confidence": segment.confidence,
+            "event_id": event.event_id,
+            "stream_segment_id": transcript_service.stream_session_id + ":" + (
+                event.stream_segment_id or (
+                    f"turn:{event.turn_order}" if event.turn_order is not None
+                    else f"{segment.start_ms}:{segment.speaker_label or ''}"
+                )
+            ),
+            "stream_start_ms": segment.start_ms,
+            "stream_end_ms": segment.end_ms,
         }
         logical_segment_id: UUID | None = None
+        if event.type == "partial":
+            payload["start_ms"] = segment.start_ms + transcript_service.time_offset_ms
+            payload["end_ms"] = segment.end_ms + transcript_service.time_offset_ms
         if event.type == "final":
             stored = await transcript_service.persist_final(segment, event.turn_order)
             logical_segment_id = stored.logical_segment_id
@@ -445,6 +519,12 @@ async def _emit_events(
             payload["start_ms"], payload["end_ms"] = stored.start_ms, stored.end_ms
             segment = replace(segment, start_ms=stored.start_ms, end_ms=stored.end_ms)
         if send_client:
+            payload["backend_queue_ms"] = round((perf_counter() - event.captured_at) * 1000, 2)
+            logger.debug(
+                "STT event=%s type=%s segment=%s backend_queue_ms=%s",
+                event.event_id, event.type, payload["stream_segment_id"],
+                payload["backend_queue_ms"],
+            )
             await send_json({key: value for key, value in payload.items() if value is not None})
             if logical_segment_id is not None and translation_session is not None:
                 translation_session.add_final(

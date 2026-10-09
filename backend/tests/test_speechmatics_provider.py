@@ -91,7 +91,9 @@ def test_provider_uses_adaptive_meeting_turn_configuration(tmp_path) -> None:
         config = captured["config"]
         assert config.end_of_utterance_mode.value == "adaptive"
         assert config.end_of_utterance_silence_trigger == 1.0
-        assert config.max_delay == 2.0
+        assert config.max_delay == 1.5
+        assert config.include_partials is True
+        assert stream._finalization_delay_seconds == 0.75
         assert config.vad_config.enabled is True
         assert config.end_of_turn_config.use_forced_eou is True
         assert config.speech_segment_config.emit_sentences is False
@@ -134,12 +136,16 @@ def test_stream_converts_partial_and_debounces_duplicate_finals() -> None:
         client.emit("AddSegment", payload)
         client.emit("AddSegment", payload)
         client.emit("EndOfTurn", {})
-        assert await stream.resume() == ()
+        previews = await stream.resume()
+        assert previews and all(event.type == "partial" for event in previews)
         await asyncio.sleep(0.02)
         final = await stream.resume()
         assert len(final) == 1
         assert final[0].turn_order == 0
         assert final[0].segment.voice_profile_id == profile_id
+        client.emit("AddSegment", payload)
+        client.emit("EndOfTurn", {})
+        assert await stream.pause() == ()
         assert await stream.close() == ()
         assert client.disconnected
 
@@ -182,7 +188,7 @@ def test_stream_coalesces_same_speaker_fragments_but_preserves_turn_changes() ->
             client.emit("AddSegment", {"segments": [segment]})
             client.emit("EndOfTurn", {})
         await asyncio.sleep(0.02)
-        events = await stream.pause()
+        events = [event for event in await stream.pause() if event.type == "final"]
         assert [event.segment.text for event in events] == ["Tôi là Minh.", "Xin chào"]
         assert events[0].segment.speaker_name == "Minh"
         assert events[0].turn_order == 0
@@ -208,7 +214,9 @@ def test_stream_flushes_last_pending_turn_on_close() -> None:
                 ]
             },
         )
-        assert await stream.pause() == ()
+        preview = await stream.pause()
+        assert len(preview) == 1 and preview[0].type == "partial"
+        assert preview[0].segment.text == "Lượt cuối"
         events = await stream.close()
         assert [event.segment.text for event in events] == ["Lượt cuối"]
         assert events[0].turn_order == 0
@@ -226,4 +234,53 @@ def test_stream_surfaces_provider_error_as_retryable() -> None:
             await stream.send_audio(b"audio")
         assert caught.value.retryable is True
 
+    asyncio.run(scenario())
+
+
+def test_receive_events_delivers_incremental_words_and_timer_final_without_audio() -> None:
+    async def scenario() -> None:
+        client = FakeVoiceClient()
+        stream = SpeechmaticsStream(
+            client, StreamingOptions("vi", True), finalization_delay_seconds=0.02
+        )
+        await stream.connect()
+        for end, text in ((0.3, "Xin"), (0.6, "Xin chào"), (1.5, "Xin chào mọi người")):
+            waiter = asyncio.create_task(stream.receive_events())
+            await asyncio.sleep(0)
+            client.emit("AddPartialSegment", {"segments": [{
+                "speaker_id": "S1", "text": text,
+                "metadata": {"start_time": 0, "end_time": end},
+            }]})
+            events = await asyncio.wait_for(waiter, 0.5)
+            assert events[0].segment.text == text
+            assert events[0].stream_segment_id == "0:S1"
+            assert events[0].event_id
+        client.emit("AddSegment", {"segments": [{
+            "speaker_id": "S1", "text": "Xin chào mọi người.",
+            "metadata": {"start_time": 0, "end_time": 1.5},
+        }]})
+        preview = await stream.receive_events()
+        assert preview[0].type == "partial"
+        final = await asyncio.wait_for(stream.receive_events(), 0.5)
+        assert len(final) == 1 and final[0].type == "final"
+        assert final[0].captured_at <= preview[0].captured_at
+        assert client.sent == []
+        assert await stream.close() == ()
+    asyncio.run(scenario())
+
+
+def test_cancelled_event_reader_preserves_output_for_close() -> None:
+    async def scenario() -> None:
+        client = FakeVoiceClient()
+        stream = SpeechmaticsStream(client, StreamingOptions("vi", False))
+        await stream.connect()
+        waiter = asyncio.create_task(stream.receive_events())
+        await asyncio.sleep(0)
+        waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
+        client.emit("AddSegment", {"segments": [{
+            "text": "Đoạn cuối", "metadata": {"start_time": 0, "end_time": 1},
+        }]})
+        events = await stream.close()
+        assert [event.segment.text for event in events if event.type == "final"] == ["Đoạn cuối"]
     asyncio.run(scenario())

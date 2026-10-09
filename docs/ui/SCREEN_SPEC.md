@@ -1,5 +1,10 @@
 # Bóc Băng AI — Screen Specification
 
+> Đây là yêu cầu giao diện tham chiếu BA, không phải danh sách chức năng đã
+> kiểm thử. Trạng thái implementation cập nhật ngày 2026-10-08 nằm trong
+> [frontend README](../../frontend/README.md) và
+> [Current Status](../../project_context/CURRENT_STATUS.md).
+
 This document maps the BA UI into implementable frontend screens. Reference images are extracted directly from the BA document.
 
 ## 01. Sidebar / authenticated navigation

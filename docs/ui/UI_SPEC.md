@@ -1,5 +1,10 @@
 # Bóc Băng AI — UI Specification
 
+> Đây là yêu cầu giao diện tham chiếu BA, không phải danh sách chức năng đã
+> kiểm thử. Trạng thái implementation cập nhật ngày 2026-10-08 nằm trong
+> [frontend README](../../frontend/README.md) và
+> [Current Status](../../project_context/CURRENT_STATUS.md).
+
 ## 1. Purpose and authority
 
 This specification is extracted from `BocBang_AI_BA.docx` (Draft 1.0, updated 28/09/2026) and is intended for frontend implementation.
