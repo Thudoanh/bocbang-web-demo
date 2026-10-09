@@ -50,13 +50,10 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return <div className="shell">
     <aside className="sidebar">
-      <div className="sidebar-header">
-        <a className="brand" href="/meetings" aria-label="Bóc Băng">
-          <span className="brand-mark"><Icon name="brand" /></span>
-          <strong>Bóc Băng</strong>
-        </a>
-        <ThemeToggle className="sidebar-theme-toggle" />
-      </div>
+      <a className="brand" href="/meetings" aria-label="Bóc Băng">
+        <span className="brand-mark"><Icon name="brand" /></span>
+        <strong>Bóc Băng</strong>
+      </a>
 
       <a className="btn btn-dark side-create" href="/meetings/create">
         <Icon name="plus" /><span className="side-create-label">Cuộc họp mới</span>
@@ -130,6 +127,8 @@ export function AppShell({ children }: { children: ReactNode }) {
     <main>
       <div className="content">{children}</div>
     </main>
+
+    <ThemeToggle className="shell-theme-toggle" />
 
     {profileModal && <ProfileModal close={() => setProfileModal(false)} user={user} updateProfile={updateProfile} />}
     {passwordModal && <PasswordModal close={() => setPasswordModal(false)} />}
