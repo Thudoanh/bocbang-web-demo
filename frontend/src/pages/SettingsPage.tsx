@@ -102,17 +102,39 @@ export function SettingsPage() {
         <div className="setting-row">
           <div className="setting-icon"><Icon name="speaker" /></div>
           <div className="setting-content">
-            <strong>Mẫu giọng cá nhân của tôi</strong>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <strong>Mẫu giọng cá nhân của tôi</strong>
+              {voiceProfile.data && (
+                <span
+                  className="status"
+                  style={{
+                    borderRadius: "999px",
+                    background: voiceProfile.data.sample_count >= 3 ? "var(--success-soft)" : "var(--accent-soft)",
+                    color: voiceProfile.data.sample_count >= 3 ? "var(--success)" : "var(--accent-text)",
+                  }}
+                >
+                  {voiceProfile.data.sample_count}/3 mẫu
+                </span>
+              )}
+            </div>
             <small>
               {voiceProfile.data
-                ? `Đã đăng ký (${(voiceProfile.data.sample_duration_ms / 1000).toFixed(1)}s âm thanh, qua ${voiceProfile.data.provider}). Hệ thống sẽ tự nhận diện bạn trong các cuộc họp.`
-                : "Đăng ký mẫu giọng 10-25s để AI tự động nhận diện giọng nói và gán tên bạn trong mọi cuộc họp tham gia."}
+                ? `Đã đăng ký ${voiceProfile.data.sample_count}/3 mẫu giọng (${(voiceProfile.data.sample_duration_ms / 1000).toFixed(1)}s âm thanh, qua ${voiceProfile.data.provider}). ${
+                    voiceProfile.data.sample_count < 3
+                      ? "Bạn có thể nạp thêm mẫu giọng (tối đa 3 mẫu) ở các môi trường khác nhau để AI nhận diện chuẩn xác nhất."
+                      : "Hồ sơ đã đủ 3/3 mẫu tối đa. Hệ thống sẽ tự nhận diện bạn trong các cuộc họp tham gia."
+                  }`
+                : "Đăng ký từ 1 đến 3 mẫu giọng (10-25s/mẫu) để AI tự động nhận diện giọng nói và gán tên bạn trong mọi cuộc họp tham gia."}
             </small>
           </div>
           <div className="setting-action">
             {voiceProfile.data ? (
               <div style={{ display: "flex", gap: "8px" }}>
-                <Button onClick={() => setEnrollModal(true)}>Cập nhật mẫu giọng</Button>
+                {voiceProfile.data.sample_count < 3 && (
+                  <Button onClick={() => setEnrollModal(true)}>
+                    + Thêm mẫu ({voiceProfile.data.sample_count}/3)
+                  </Button>
+                )}
                 <Button tone="danger" disabled={deletingVoice} onClick={() => void deleteVoice()}>
                   {deletingVoice ? "Đang xóa…" : "Xóa"}
                 </Button>
@@ -159,11 +181,12 @@ export function SettingsPage() {
       <VoiceEnrollmentModal
         isOpen={enrollModal}
         defaultName={user?.full_name ?? ""}
+        currentSampleCount={voiceProfile.data?.sample_count}
         onClose={() => setEnrollModal(false)}
         onEnrolled={async (profile) => {
           await voiceProfile.reload();
           setEnrollModal(false);
-          setMessage(`Đã cập nhật mẫu giọng nói cá nhân (${(profile.sample_duration_ms / 1000).toFixed(1)}s).`);
+          setMessage(`Đã cập nhật mẫu giọng nói cá nhân (${profile.sample_count}/3 mẫu, ${(profile.sample_duration_ms / 1000).toFixed(1)}s).`);
         }}
       />
     )}

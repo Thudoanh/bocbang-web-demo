@@ -10,6 +10,7 @@ interface VoiceEnrollmentModalProps {
   meetingId?: string;
   profileId?: string;
   defaultName?: string;
+  currentSampleCount?: number;
 }
 
 export function VoiceEnrollmentModal({
@@ -19,6 +20,7 @@ export function VoiceEnrollmentModal({
   meetingId,
   profileId,
   defaultName = "",
+  currentSampleCount,
 }: VoiceEnrollmentModalProps) {
   const [mode, setMode] = useState<"record" | "upload">("record");
   const [name, setName] = useState(defaultName);
@@ -198,11 +200,32 @@ export function VoiceEnrollmentModal({
           }}
         >
           <div>
-            <h2 style={{ fontSize: "18px", fontWeight: "600", margin: 0, color: "#111827" }}>
-              {meetingId ? "Đăng ký Mẫu Giọng Người Phát Biểu" : "Mẫu Giọng Nói Cá Nhân Của Tôi"}
-            </h2>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+              <h2 style={{ fontSize: "18px", fontWeight: "600", margin: 0, color: "#111827" }}>
+                {meetingId
+                  ? (profileId ? `Thêm Mẫu Giọng (${(currentSampleCount ?? 0) + 1}/3) · ${defaultName}` : "Đăng ký Người Phát Biểu Mới")
+                  : `Mẫu Giọng Nói Cá Nhân${currentSampleCount !== undefined && currentSampleCount > 0 ? ` (Mẫu ${(currentSampleCount ?? 0) + 1}/3)` : ""}`}
+              </h2>
+              {currentSampleCount !== undefined && currentSampleCount > 0 && (
+                <span
+                  style={{
+                    fontSize: "11px",
+                    fontWeight: 600,
+                    padding: "2px 8px",
+                    borderRadius: "999px",
+                    background: currentSampleCount >= 3 ? "#fef3c7" : "#ecfdf5",
+                    color: currentSampleCount >= 3 ? "#92400e" : "#065f46",
+                    border: currentSampleCount >= 3 ? "1px solid #fde68a" : "1px solid #a7f3d0",
+                  }}
+                >
+                  {currentSampleCount >= 3 ? "Đã đủ 3/3 mẫu" : `Đã có ${currentSampleCount}/3 mẫu`}
+                </span>
+              )}
+            </div>
             <p style={{ margin: "4px 0 0", fontSize: "13px", color: "#6b7280" }}>
-              Hệ thống sẽ dùng mẫu giọng này để tự động nhận diện và gán tên trong cuộc họp.
+              {currentSampleCount !== undefined && currentSampleCount >= 3
+                ? "Hồ sơ đã đạt tối đa 3 mẫu giọng. Bạn cần xóa hồ sơ cũ nếu muốn thu âm lại từ đầu."
+                : "Mỗi người có thể đăng ký tối đa 3 mẫu giọng (10 - 25s mỗi mẫu). Thu âm nhiều mẫu ở các ngữ cảnh khác nhau sẽ giúp AI nhận diện chuẩn xác nhất."}
             </p>
           </div>
           <button
@@ -472,9 +495,13 @@ export function VoiceEnrollmentModal({
           <Button
             tone="dark"
             onClick={handleSave}
-            disabled={!audioBlob || isSubmitting || isRecording}
+            disabled={!audioBlob || isSubmitting || isRecording || (currentSampleCount !== undefined && currentSampleCount >= 3)}
           >
-            {isSubmitting ? "Đang xử lý..." : "Lưu mẫu giọng"}
+            {currentSampleCount !== undefined && currentSampleCount >= 3
+              ? "Đã đủ 3/3 mẫu"
+              : isSubmitting
+              ? "Đang xử lý..."
+              : "Lưu mẫu giọng"}
           </Button>
         </div>
       </div>

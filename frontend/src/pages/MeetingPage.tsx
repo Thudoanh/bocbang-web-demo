@@ -359,11 +359,12 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
         meetingId={meetingId}
         profileId={voiceEnrollTarget?.id}
         defaultName={voiceEnrollTarget?.name}
+        currentSampleCount={voiceEnrollTarget?.sample_count}
         onClose={() => { setVoiceEnrollOpen(false); setVoiceEnrollTarget(undefined); }}
         onEnrolled={async (profile) => {
           await voiceProfiles.reload();
           await speakers.reload();
-          setNotice(`Đã lưu mẫu giọng thành công cho "${profile.name}".`);
+          setNotice(`Đã lưu mẫu giọng thành công cho "${profile.name}" (${profile.sample_count}/3 mẫu).`);
         }}
       />
     )}
@@ -444,13 +445,34 @@ function PreMeetingVoiceProfiles({
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: "10px", marginTop: "12px" }}>
           {profiles.map((profile) => (
             <div key={profile.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 12px", background: "var(--surface-soft)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border)" }}>
-              <div style={{ minWidth: 0, flex: 1 }}>
-                <strong style={{ display: "block", fontSize: "14px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{profile.name}</strong>
-                <small style={{ color: "var(--muted)", fontSize: "12px" }}>{(profile.sample_duration_ms / 1000).toFixed(1)}s · {profile.provider}</small>
+              <div style={{ minWidth: 0, flex: 1, marginRight: "8px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                  <strong style={{ fontSize: "14px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{profile.name}</strong>
+                  <span
+                    style={{
+                      fontSize: "10.5px",
+                      fontWeight: 600,
+                      padding: "1px 6px",
+                      borderRadius: "999px",
+                      background: profile.sample_count >= 3 ? "var(--success-soft)" : "var(--surface)",
+                      color: profile.sample_count >= 3 ? "var(--success)" : "var(--muted)",
+                      border: "1px solid var(--border)",
+                    }}
+                  >
+                    {profile.sample_count}/3 mẫu
+                  </span>
+                </div>
+                <small style={{ color: "var(--muted)", fontSize: "12px", display: "block", marginTop: "2px" }}>
+                  {(profile.sample_duration_ms / 1000).toFixed(1)}s · {profile.provider}
+                </small>
               </div>
               {editable && !recordingActive && (
-                <div style={{ display: "flex", gap: "4px" }}>
-                  <Button onClick={() => onAddSample(profile)} style={{ minHeight: "30px", padding: "4px 8px", fontSize: "12px" }}>Sửa</Button>
+                <div style={{ display: "flex", gap: "4px", flexShrink: 0 }}>
+                  {profile.sample_count < 3 && (
+                    <Button onClick={() => onAddSample(profile)} style={{ minHeight: "30px", padding: "4px 8px", fontSize: "12px" }}>
+                      + Mẫu
+                    </Button>
+                  )}
                   <Button tone="danger" onClick={() => void onDeleteProfile(profile.id)} style={{ minHeight: "30px", padding: "4px 8px", fontSize: "12px" }}>Xóa</Button>
                 </div>
               )}
