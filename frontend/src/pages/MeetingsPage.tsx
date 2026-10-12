@@ -27,7 +27,6 @@ function MeetingsOverview() {
   });
   const [mediaMeeting, setMediaMeeting] = useState<Meeting>();
   const [pendingDelete, setPendingDelete] = useState<Meeting>();
-  const statusInventory = useAsync((signal) => meetingsApi.list({ limit: 250 }, signal), []);
 
   useEffect(() => {
     const timer = window.setTimeout(
@@ -47,9 +46,6 @@ function MeetingsOverview() {
     [appliedFilters.search, appliedFilters.status, appliedFilters.source],
   );
   const filtering = Boolean(query || status || source);
-  const visibleStatuses = statuses.filter(
-    (item) => !item.value || statusInventory.data?.some((meeting) => meeting.status === item.value),
-  );
 
   async function deleteMeeting() {
     if (!pendingDelete) return;
@@ -74,7 +70,7 @@ function MeetingsOverview() {
     />
     <div className="history-tools meeting-tools">
       <label><Icon name="search" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Tìm cuộc họp..." /></label>
-      <select aria-label="Lọc trạng thái" value={status} onChange={(event) => setStatus(event.target.value as typeof status)}>{visibleStatuses.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select>
+      <select aria-label="Lọc trạng thái" value={status} onChange={(event) => setStatus(event.target.value as typeof status)}>{statuses.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select>
       <select aria-label="Lọc nguồn âm thanh" value={source} onChange={(event) => setSource(event.target.value as typeof source)}><option value="">Tất cả nguồn</option><option value="realtime">Ghi âm</option><option value="upload">Tải tệp</option></select>
     </div>
     {meetings.loading && <Loading />}
