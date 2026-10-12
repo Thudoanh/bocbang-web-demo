@@ -11,6 +11,12 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 API_V1_PREFIX = "/api/v1"
 
 
+def _default_media_storage_path() -> Path:
+    if Path("/data/media").is_dir():
+        return Path("/data/media")
+    return REPOSITORY_ROOT / ".local-media"
+
+
 class Settings(BaseSettings):
     """Runtime configuration with safe local defaults and no embedded secrets."""
 
@@ -62,7 +68,7 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 524_288_000
     max_media_duration_seconds: int = 7_200
     storage_backend: str = "local"
-    media_storage_path: Path = REPOSITORY_ROOT / ".local-media"
+    media_storage_path: Path = Field(default_factory=_default_media_storage_path)
     s3_endpoint_url: str | None = Field(
         default=None, validation_alias=AliasChoices("S3_ENDPOINT_URL", "S3_ENDPOINT")
     )

@@ -2,7 +2,8 @@ FROM python:3.12-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    MEDIA_STORAGE_PATH=/data/media
 
 # FFmpeg includes ffprobe. DejaVu supplies the Unicode font used by PDF exports.
 RUN apt-get update \

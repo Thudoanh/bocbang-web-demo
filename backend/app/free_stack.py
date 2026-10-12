@@ -79,7 +79,9 @@ def _stop(processes: list[tuple[str, subprocess.Popen[bytes]]]) -> None:
 def main() -> int:
     """Migrate the database, start every process, and fail as one unit."""
 
+    print("free-stack applying database migrations...", flush=True)
     subprocess.run(("alembic", "upgrade", "head"), check=True)
+    print("free-stack database migrations applied successfully", flush=True)
 
     processes: list[tuple[str, subprocess.Popen[bytes]]] = []
     shutting_down = False
