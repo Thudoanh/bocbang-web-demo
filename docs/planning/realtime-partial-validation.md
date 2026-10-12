@@ -1,5 +1,45 @@
 # Realtime partial validation
 
+## Stale recognizing-row regression — 2026-10-12
+
+Final timestamps can be corrected backwards. The adapter resolves overlapping
+snapshots from confirmed equivalent text, or from explicit SDK utterance/turn
+boundaries, instead of requiring exact time containment. A later partial with
+additional words remains pending; a boundary without any provider final cannot
+make text durable. The frontend closes an identified row by its final ID and
+ignores obsolete previews even after a transcript fetch removes the live final.
+At a normal stop or terminal failure, remaining drafts retain their text with
+the label `Chưa được xác nhận — chưa lưu`; they are never relabeled as saved.
+
+Regression tests cover shorter final timing, corrected/dropped interim words,
+late end boundaries with newer speech, partial-only turns, final replacement,
+and recording-end draft status. WebSocket/SQLite tests include a final timestamp
+shorter than its preview. Browser acceptance still requires checking normal stop,
+error/disconnect, and a fresh recording after rebuilding API/frontend.
+
+## Fragmentation regression — 2026-10-12
+
+Speechmatics previews now accumulate contiguous same-speaker fragments across
+callbacks and keep a stable connection-scoped turn ID even if timestamps change.
+Interim corrections replace overlapping snapshots; confirmed fragments are retained
+in the cumulative preview. Finalization is deferred while any tail remains interim,
+so incoming partial speech cancels the old final timer. The configured finalization
+delay is unchanged: it runs after that tail is confirmed. Speaker/language changes,
+longer audio gaps, and adjacent fragments exceeding a 30-second row limit create
+separate rows. Stop flushes confirmed text only.
+
+Regression coverage includes fragmented words, timestamp corrections, final/partial
+interleaving, cumulative snapshots confirmed by multiple finals, delayed finals from
+a previous speaker, stale previews, reconnect scopes, and a Speechmatics-adapter
+WebSocket test that verifies three fragments persist as one SQLite transcript row.
+These checks simulate provider output and do not establish microphone accuracy.
+
+Browser acceptance: speak a complete Vietnamese sentence, then repeat with short
+pauses between words. Confirm the same row grows while speaking and remains one
+stored segment after stopping/reloading. Test two speakers, a long pause, and
+pause/resume separately to confirm intended boundaries are preserved. Compare
+finalization latency and recognition quality with the original recording.
+
 The browser sends PCM16 mono 16 kHz audio in 100 ms chunks. Speechmatics output is
 now received independently while the endpoint waits for audio/control messages.
 Event emission and database writes remain serialized. A pending reader is cancelled

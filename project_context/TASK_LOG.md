@@ -12,6 +12,40 @@ Mục mới nhất được thêm ở đầu file. Dùng format ngắn dưới �
 - Follow-up / blocker: ...
 ```
 
+## 2026-10-12 — Sửa ô transcript bị kẹt ở trạng thái nhận diện
+
+- Status: done (new Docker rebuild/microphone verification pending)
+- Scope: Giải quyết partial còn sót khi final sửa timestamp/text; giữ partial
+  mới hơn, dùng SDK utterance/end-of-turn để xác định snapshot đã kết thúc.
+  Final theo turn ID thay preview; bản nháp còn lại lúc dừng/lỗi giữ chữ với
+  nhãn chưa xác nhận/chưa lưu, không được biến thành transcript đã lưu.
+- Changed: Speechmatics adapter/tests, WebSocket integration test, frontend
+  live transcript reducer/tests và MeetingPage recording lifecycle; docs/context.
+- Verified: 67 focused backend tests, 14 frontend tests, TypeScript/Vite build,
+  scoped Ruff và diff check pass. Các provider được mô phỏng; WebSocket/SQLite
+  xác nhận final timing ngắn hơn preview vẫn lưu đúng một segment.
+- Follow-up / blocker: Bản sửa phân mảnh trước đã rebuild API/frontend và kiểm
+  tra health/capabilities thành công. Người dùng báo chạy ổn nhưng còn preview
+  nhận diện. Bản sửa mới chưa rebuild Docker theo ưu tiên người dùng tự chạy;
+  cần thử microphone và stop/reload sau rebuild. Không commit/push hoặc sửa key.
+
+## 2026-10-12 — Sửa phân mảnh transcript realtime Speechmatics
+
+- Status: done (microphone/provider acceptance pending)
+- Scope: Giữ một ô tích lũy cho các fragment cùng lượt nói; hoãn chốt final
+  khi còn partial chưa xác nhận; giữ ranh giới speaker/language/audio gap.
+- Changed: `backend/app/providers/speechmatics.py`, Speechmatics/realtime tests,
+  `frontend/src/realtime/liveTranscript.ts`, reducer tests, provider/API/validation
+  docs và project context. Không sửa `.env`, migrations hoặc transcript cũ.
+- Verified: 61 focused backend tests và 10 frontend tests pass; TypeScript/Vite
+  build pass; Ruff adapter/provider tests và F/I realtime tests pass; diff check.
+  WebSocket integration xác nhận ba fragment được lưu thành một SQLite segment.
+  Test dependencies cài vào `.venv-stt`/`node_modules` Git ignored. Async tests
+  chạy ngoài sandbox Windows; không gọi provider thật.
+- Follow-up / blocker: Docker Engine chưa chạy nên chưa restart runtime hoặc
+  kiểm thử browser/microphone. Rebuild API/frontend rồi thử tiếng Việt liên tục,
+  ngập ngừng, đổi speaker, pause/resume/stop, reconnect và reload transcript.
+
 ## 2026-10-08 — Cập nhật Speechmatics trong .env dự án
 
 - Status: done

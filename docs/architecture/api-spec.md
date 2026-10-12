@@ -296,6 +296,18 @@ Server events: `session.ready`, `transcript.partial`, `transcript.final`,
 `speaker_id` identifying the persisted meeting speaker. Error events use
 `{type:"error", code, message, retryable}`.
 
+Transcript events also carry `stream_segment_id`, `stream_start_ms`, and
+`stream_end_ms`. Speechmatics uses a connection-scoped `<session>:turn:<id>` that
+stays stable across partial updates, timestamp corrections, and the corresponding
+final. A partial contains the current cumulative row text, not a word delta; replace
+the preview with that ID. A final closes that identified turn even if its final
+timestamps are shorter than the preview's. Do not revive that turn with a stale
+partial after fetching its saved transcript. Remaining drafts at recording end
+are unconfirmed/not saved, rather than permanently recognizing. Different turn
+IDs and reconnect scopes stay separate,
+even when their timestamps overlap. Final timestamps may be offset to the meeting
+timeline; raw stream timestamps remain relative to the current upstream session.
+
 Client sends raw PCM16 little-endian binary audio chunks at 16 kHz mono and
 JSON commands
 `{"type":"recording.pause"}`, `{"type":"recording.resume"}`, or

@@ -1,9 +1,19 @@
 # Current Status
 
-_Cập nhật lần cuối: 2026-10-08 — đối chiếu source trong đợt đồng bộ tài liệu._
+_Cập nhật lần cuối: 2026-10-12 — sửa ô realtime bị kẹt ở trạng thái nhận diện._
 
 ## Done
 
+- Đã sửa partial bị giữ mãi khi final rút ngắn timestamp: đối chiếu chữ đã
+  xác nhận và SDK utterance/turn boundary; không chốt nhầm partial mới hơn.
+  Frontend thay preview theo final turn ID, chống partial cũ xuất hiện lại
+  sau fetch. Khi dừng/lỗi terminal, draft còn lại ghi rõ chưa xác nhận/chưa lưu.
+- Speechmatics realtime gom các fragment liên tiếp cùng người nói/ngôn ngữ
+  vào preview tích lũy có turn ID ổn định. Timestamp/text corrections thay
+  snapshot; partial chưa xác nhận hoãn final timer. Giữ ranh giới người nói/
+  khoảng ngừng, xử lý late final và chống partial cũ/reconnect xóa nhầm ô.
+- Đã thêm regression tests và kiểm tra adapter → WebSocket → SQLite: ba mảnh
+  từ được lưu thành một segment. Không sửa dữ liệu transcript đã có.
 - React + TypeScript + Vite frontend đang dùng API thật: auth/OTP/recovery/
   Google OAuth, meeting ACL, History filter và full-name update.
 - FastAPI modular monolith với async SQLAlchemy; Alembic head `20261008_0012`.
@@ -39,6 +49,20 @@ _Cập nhật lần cuối: 2026-10-08 — đối chiếu source trong đợt đ
 
 ## Verification
 
+- Lượt sửa ô nhận diện: 67 focused backend tests và 14 frontend tests pass;
+  TypeScript/Vite build, Ruff adapter/Speechmatics tests, F/I realtime tests,
+  `git diff --check` pass. WebSocket/SQLite test kiểm tra final timestamp ngắn
+  hơn preview. Các provider được mô phỏng; bản sửa này chưa rebuild Docker.
+- Bản sửa phân mảnh trước đã build API/frontend và chạy migration thành công;
+  API/frontend/PostgreSQL/Redis healthy, `/ready` ready, frontend HTTP 200,
+  capabilities báo Speechmatics streaming/diarization. Người dùng báo chạy ổn
+  nhưng còn ô nhận diện; lượt sửa mới cần người dùng rebuild và thử lại.
+- Lượt sửa 2026-10-12: 61 backend tests trong Speechmatics/provider/realtime/
+  speaker suites và 10 frontend reducer tests pass; TypeScript/Vite build pass.
+  Ruff pass cho adapter/Speechmatics tests, F/I pass cho realtime tests;
+  `git diff --check` pass. Dependencies test nằm trong `.venv-stt`/`node_modules`
+  (Git ignored). Async tests chạy ngoài Windows sandbox để tránh asyncio bị treo.
+  Các provider được mô phỏng; chưa gọi Speechmatics thật, chưa restart Docker.
 - Task trước ghi nhận 93 backend tests, frontend build, Docker migration/health
   và Speechmatics batch/realtime smoke test bằng file thật. Xem `TASK_LOG.md`
   để biết phạm vi và thời điểm; không coi đó là test mới trong đợt sửa tài liệu.
@@ -57,6 +81,10 @@ _Cập nhật lần cuối: 2026-10-08 — đối chiếu source trong đợt đ
 
 ## In progress
 
+- Người dùng tự rebuild API/frontend cho bản sửa ô nhận diện, rồi kiểm tra
+  câu ngắn, timestamp corrections, stop và terminal disconnect trên microphone.
+- Cần microphone E2E tiếng Việt cho bản sửa phân mảnh mới: câu liên tục, ngập
+  ngừng ngắn, hai người nói, pause/resume/stop và kiểm tra sau reload.
 - Chưa có kết quả browser/microphone E2E đầy đủ cho upload, playback, AI, export,
   sharing, reconnect và name identification trong toàn bộ UX.
 

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections import deque
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 from time import perf_counter
 from typing import Any
@@ -24,6 +26,7 @@ from app.providers.contracts import (
 )
 
 logger = logging.getLogger(__name__)
+_TIMESTAMP_TOLERANCE_MS = 150
 
 
 class SpeechmaticsProvider:
@@ -231,6 +234,34 @@ class SpeechmaticsProvider:
             raise _provider_error(exc, operation="realtime connection") from exc
 
 
+@dataclass(eq=False)
+class _StreamingTurn:
+    """One display row, independent of mutable provider fragment timestamps."""
+
+    id: int
+    language: str
+    speaker_label: str | None
+    finals: list[TranscriptionSegment] = field(default_factory=list)
+    partials: list[TranscriptionSegment] = field(default_factory=list)
+    captured_at: float | None = None
+    last_partial_at: float = 0
+    last_final_at: float = 0
+    flush_handle: asyncio.TimerHandle | None = None
+
+    @property
+    def start_ms(self) -> int:
+        return min(segment.start_ms for segment in self.finals + self.partials)
+
+    @property
+    def end_ms(self) -> int:
+        return max(segment.end_ms for segment in self.finals + self.partials)
+
+    @property
+    def awaiting_final(self) -> bool:
+        # Never publish unconfirmed words or close a row while its tail is interim.
+        return bool(self.partials)
+
+
 class SpeechmaticsStream:
     provider_name = "speechmatics"
     fallback_active = False
@@ -251,13 +282,13 @@ class SpeechmaticsStream:
         self._events: deque[StreamingEvent] = deque()
         self._events_ready = asyncio.Event()
         self._failure: STTProviderError | None = None
-        self._pending_finals: dict[
-            tuple[int, int, str | None], tuple[str, TranscriptionSegment]
-        ] = {}
+        self._turns: list[_StreamingTurn] = []
+        self._active_turn: _StreamingTurn | None = None
+        self._next_turn_id = 0
         self._finalization_delay_seconds = finalization_delay_seconds
         self._max_segment_gap_ms = round(max_segment_gap_seconds * 1000)
-        self._pending_flush_handle: asyncio.TimerHandle | None = None
-        self._pending_started_at: float | None = None
+        self._max_turn_duration_ms = 30_000
+        self._finalized_end_ms: dict[tuple[str, str | None], int] = {}
         self._final_keys: set[tuple[int, int, str | None, str]] = set()
         self._completed_fragments: set[tuple[int, int, str | None, str]] = set()
         self._turn_order = 0
@@ -276,7 +307,7 @@ class SpeechmaticsStream:
         )
         self._client.on(
             AgentServerMessageType.END_OF_TURN,
-            lambda _payload: self._schedule_final_flush(),
+            self._capture_end_of_turn,
         )
         self._client.on(AgentServerMessageType.ERROR, self._capture_error)
         try:
@@ -287,7 +318,7 @@ class SpeechmaticsStream:
     def _capture(self, payload: Any, *, final: bool) -> None:
         if not isinstance(payload, dict):
             return
-        captured: list[tuple[str, TranscriptionSegment]] = []
+        captured: list[tuple[str, TranscriptionSegment, bool]] = []
         for item in payload.get("segments", []):
             if not isinstance(item, dict):
                 continue
@@ -313,112 +344,214 @@ class SpeechmaticsStream:
                         voice_profile_id=known.profile_id if known else None,
                         is_identified=known is not None,
                     ),
+                    item.get("is_eou") is True,
                 )
             )
 
-        if final:
-            # Speechmatics can emit both ADD_SEGMENT and END_OF_TURN after very
-            # short phrases. Debounce stable fragments across callbacks so a
-            # normal pause between words does not create a durable row. A real
-            # speaker change still closes the preceding row immediately.
-            for language, segment in sorted(
-                captured,
-                key=lambda item: (item[1].start_ms, item[1].end_ms),
-            ):
-                if (
-                    segment.start_ms, segment.end_ms, segment.speaker_label, segment.text
-                ) in self._completed_fragments:
-                    continue
-                if self._pending_finals:
-                    _, previous = max(
-                        self._pending_finals.values(),
-                        key=lambda item: (item[1].end_ms, item[1].start_ms),
+        changed: list[_StreamingTurn] = []
+        for language, segment, is_eou in sorted(captured, key=lambda item: item[1].start_ms):
+            fragment_key = (
+                segment.start_ms, segment.end_ms, segment.speaker_label, segment.text
+            )
+            if fragment_key in self._completed_fragments:
+                continue
+            turn = self._find_turn(language, segment)
+            if turn is None:
+                continue
+            if final:
+                turn.last_final_at = perf_counter()
+                if turn.captured_at is None:
+                    turn.captured_at = turn.last_final_at
+                turn.finals = self._replace_overlapping(turn.finals, segment)
+                turn.partials = [
+                    partial for partial in turn.partials
+                    if not (
+                        self._covered_by_finals(turn, partial)
+                        or (is_eou and self._within_final_boundary(
+                            partial, segment.start_ms, segment.end_ms,
+                        ))
                     )
-                    gap_ms = segment.start_ms - previous.end_ms
-                    if (
-                        segment.speaker_label != previous.speaker_label
-                        or gap_ms > self._max_segment_gap_ms
-                    ):
-                        self._flush_pending_finals()
-                if self._pending_started_at is None:
-                    self._pending_started_at = perf_counter()
-                self._pending_finals[
-                    (segment.start_ms, segment.end_ms, segment.speaker_label)
-                ] = (language, segment)
-            if captured:
-                self._schedule_final_flush()
-                # Stable fragments remain visible during the durable-turn debounce.
-                self._preview(list(self._pending_finals.values()))
-            return
+                ]
+            elif self._covered_by_finals(turn, segment):
+                continue
+            else:
+                turn.last_partial_at = perf_counter()
+                turn.partials = self._replace_overlapping(turn.partials, segment)
+            self._schedule_final_flush(turn)
+            if turn not in changed:
+                changed.append(turn)
+        for turn in changed:
+            if turn in self._turns:
+                self._preview(turn)
 
-        self._preview(captured)
-
-    def _preview(self, captured: list[tuple[str, TranscriptionSegment]]) -> None:
-        for language, segment in _coalesce_stream_segments(captured):
-            event = StreamingTranscriptionEvent(
-                "partial", language, segment,
-                stream_segment_id=self._segment_id(segment),
+    def _find_turn(self, language: str, segment: TranscriptionSegment) -> _StreamingTurn | None:
+        identity = (language, segment.speaker_label)
+        # Late finals can still resolve an older speaker's unfinished preview.
+        for turn in reversed(self._turns):
+            if (turn.language, turn.speaker_label) != identity:
+                continue
+            overlap = segment.start_ms < turn.end_ms and segment.end_ms > turn.start_ms
+            adjacent = (
+                turn is self._active_turn
+                and 0 <= segment.start_ms - turn.end_ms <= self._max_segment_gap_ms
+                and segment.end_ms - turn.start_ms <= self._max_turn_duration_ms
             )
-            self._events.append(event)
-            logger.debug(
-                "STT provider event=%s type=partial segment=%s audio_end_ms=%s",
-                event.event_id, event.stream_segment_id, segment.end_ms,
-            )
-        if captured:
-            self._events_ready.set()
+            if overlap or adjacent:
+                return turn
+        if segment.end_ms <= self._finalized_end_ms.get(identity, -1):
+            return None
+        if self._active_turn is not None:
+            # Genuine speaker/gap boundaries close stable text immediately, but
+            # unresolved previews remain available for their delayed final event.
+            self._flush_turn(self._active_turn)
+        turn = _StreamingTurn(self._next_turn_id, language, segment.speaker_label)
+        self._next_turn_id += 1
+        self._turns.append(turn)
+        self._active_turn = turn
+        return turn
 
     @staticmethod
-    def _segment_id(segment: TranscriptionSegment) -> str:
-        return f"{segment.start_ms}:{segment.speaker_label or ''}"
+    def _covered_by_finals(turn: _StreamingTurn, segment: TranscriptionSegment) -> bool:
+        if not turn.finals:
+            return False
+        stable_start = min(item.start_ms for item in turn.finals)
+        stable_end = max(item.end_ms for item in turn.finals)
+        if segment.start_ms >= stable_start - _TIMESTAMP_TOLERANCE_MS:
+            if segment.end_ms <= stable_end:
+                return True
+        # An unchanged phrase can have different final timing. Confirmed text
+        # resolves that snapshot, but must not swallow additional interim words.
+        overlapping = sorted(
+            (item for item in turn.finals if (
+                item.start_ms < segment.end_ms and item.end_ms > segment.start_ms
+            )),
+            key=lambda item: item.start_ms,
+        )
+        return bool(overlapping) and (
+            re.findall(r"\w+", segment.text.casefold())
+            == re.findall(r"\w+", " ".join(item.text for item in overlapping).casefold())
+        )
 
-    def _flush_pending_finals(self) -> None:
-        if self._pending_flush_handle is not None:
-            self._pending_flush_handle.cancel()
-            self._pending_flush_handle = None
-        pending = sorted(
-            self._pending_finals.values(),
-            key=lambda item: (item[1].start_ms, item[1].end_ms),
+    @staticmethod
+    def _within_final_boundary(segment: TranscriptionSegment, start: int, end: int) -> bool:
+        return (
+            segment.start_ms < end
+            and segment.end_ms > start
         )
-        captured_at = self._pending_started_at or perf_counter()
-        self._pending_started_at = None
-        self._pending_finals.clear()
-        self._completed_fragments.update(
-            (segment.start_ms, segment.end_ms, segment.speaker_label, segment.text)
-            for _, segment in pending
+
+    def _capture_end_of_turn(self, payload: Any) -> None:
+        metadata = payload.get("metadata") if isinstance(payload, dict) else None
+        if isinstance(metadata, dict):
+            try:
+                start = _milliseconds(metadata.get("start_time"))
+                end = _milliseconds(metadata.get("end_time"))
+            except (TypeError, ValueError):
+                start = end = 0
+            if end > start:
+                for turn in self._turns:
+                    if turn.last_partial_at > turn.last_final_at:
+                        continue
+                    if any(
+                        item.start_ms < end and item.end_ms > start for item in turn.finals
+                    ):
+                        turn.partials = [
+                            item for item in turn.partials
+                            if not self._within_final_boundary(item, start, end)
+                        ]
+        # Empty/old boundaries cannot promote an unconfirmed newer tail.
+        self._schedule_final_flush()
+
+    @staticmethod
+    def _replace_overlapping(
+        fragments: list[TranscriptionSegment], segment: TranscriptionSegment,
+    ) -> list[TranscriptionSegment]:
+        # Overlapping partials are revised snapshots, not extra words to append.
+        return sorted(
+            [previous for previous in fragments if not (
+                segment.start_ms < previous.end_ms and segment.end_ms > previous.start_ms
+            )] + [segment],
+            key=lambda item: item.start_ms,
         )
-        for language, segment in _coalesce_stream_segments(pending):
+
+    def _combined(
+        self, turn: _StreamingTurn, *, preview: bool,
+    ) -> TranscriptionSegment:
+        fragments = list(turn.finals)
+        if preview:
+            for partial in turn.partials:
+                fragments = self._replace_overlapping(fragments, partial)
+        # Boundaries are checked on ingestion. A long cumulative SDK snapshot
+        # can span more than the adjacent-fragment limit; never drop its tail.
+        return _coalesce_stream_segments(
+            [(turn.language, segment) for segment in sorted(
+                fragments, key=lambda item: item.start_ms,
+            )],
+            max_gap_ms=turn.end_ms - turn.start_ms,
+        )[0][1]
+
+    def _preview(self, turn: _StreamingTurn) -> None:
+        event = StreamingTranscriptionEvent(
+            "partial", turn.language, self._combined(turn, preview=True),
+            stream_segment_id=f"turn:{turn.id}",
+        )
+        self._events.append(event)
+        logger.debug(
+            "STT provider event=%s type=partial segment=%s audio_end_ms=%s",
+            event.event_id, event.stream_segment_id, event.segment.end_ms,
+        )
+        self._events_ready.set()
+
+    def _flush_turn(self, turn: _StreamingTurn, *, force: bool = False) -> None:
+        if turn.flush_handle is not None:
+            turn.flush_handle.cancel()
+            turn.flush_handle = None
+        if turn not in self._turns or (turn.awaiting_final and not force):
+            return
+        if turn.finals:
+            segment = self._combined(turn, preview=False)
             key = (
                 segment.start_ms,
                 segment.end_ms,
                 segment.speaker_label,
                 segment.text,
             )
-            if key in self._final_keys:
-                continue
-            self._final_keys.add(key)
-            self._events.append(
-                StreamingTranscriptionEvent(
-                    "final",
-                    language,
-                    segment,
-                    turn_order=self._turn_order,
-                    stream_segment_id=self._segment_id(segment),
-                    captured_at=captured_at,
+            if key not in self._final_keys:
+                self._final_keys.add(key)
+                self._events.append(
+                    StreamingTranscriptionEvent(
+                        "final", turn.language, segment,
+                        turn_order=self._turn_order,
+                        stream_segment_id=f"turn:{turn.id}",
+                        captured_at=turn.captured_at or perf_counter(),
+                    )
                 )
+                self._turn_order += 1
+                self._events_ready.set()
+            self._completed_fragments.update(
+                (item.start_ms, item.end_ms, item.speaker_label, item.text)
+                for item in turn.finals
             )
-            self._turn_order += 1
-        if pending:
-            self._events_ready.set()
+            identity = (turn.language, turn.speaker_label)
+            self._finalized_end_ms[identity] = max(
+                segment.end_ms, self._finalized_end_ms.get(identity, -1),
+            )
+        self._turns.remove(turn)
+        if self._active_turn is turn:
+            self._active_turn = None
 
-    def _schedule_final_flush(self) -> None:
-        if not self._pending_finals:
-            return
-        if self._pending_flush_handle is not None:
-            self._pending_flush_handle.cancel()
-        self._pending_flush_handle = asyncio.get_running_loop().call_later(
-            self._finalization_delay_seconds,
-            self._flush_pending_finals,
-        )
+    def _flush_pending_finals(self) -> None:
+        for turn in list(self._turns):
+            self._flush_turn(turn, force=True)
+
+    def _schedule_final_flush(self, turn: _StreamingTurn | None = None) -> None:
+        for pending in ([turn] if turn is not None else list(self._turns)):
+            if pending.flush_handle is not None:
+                pending.flush_handle.cancel()
+                pending.flush_handle = None
+            if pending.finals and not pending.awaiting_final:
+                pending.flush_handle = asyncio.get_running_loop().call_later(
+                    self._finalization_delay_seconds, self._flush_turn, pending,
+                )
 
     def _capture_error(self, payload: Any) -> None:
         reason = payload.get("reason") if isinstance(payload, dict) else None
@@ -472,6 +605,10 @@ class SpeechmaticsStream:
             raise _provider_error(exc, operation="realtime close") from exc
         finally:
             self._closed = True
+            for turn in self._turns:
+                if turn.flush_handle is not None:
+                    turn.flush_handle.cancel()
+                    turn.flush_handle = None
         self._raise_failure()
         return self._drain()
 
@@ -574,6 +711,7 @@ def _join_parts(parts: list[tuple[str, str]]) -> str:
 
 def _coalesce_stream_segments(
     captured: list[tuple[str, TranscriptionSegment]],
+    *, max_gap_ms: int = 1500,
 ) -> list[tuple[str, TranscriptionSegment]]:
     grouped: list[tuple[str, TranscriptionSegment]] = []
     for language, segment in captured:
@@ -585,7 +723,7 @@ def _coalesce_stream_segments(
         if (
             language != previous_language
             or segment.speaker_label != previous.speaker_label
-            or gap_ms > 1500
+            or gap_ms > max_gap_ms
         ):
             grouped.append((language, segment))
             continue

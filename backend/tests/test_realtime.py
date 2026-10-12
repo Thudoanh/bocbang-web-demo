@@ -25,6 +25,7 @@ from app.providers.contracts import (
     TranslationCapabilities,
     TranslationProviderError,
 )
+from app.providers.speechmatics import SpeechmaticsProvider
 
 
 class CapturingEmailSender:
@@ -285,6 +286,82 @@ def test_realtime_persists_finals_but_never_partials_and_handles_pause_resume(
     asyncio.run(verify())
     assert provider.options is not None and provider.options.diarization is True
     assert provider.stream.paused and provider.stream.resumed and provider.stream.closed
+
+
+@pytest.mark.parametrize("final_end", [1.2, 1.1])
+def test_speechmatics_fragments_update_one_row_and_persist_one_segment(
+    tmp_path: Path, final_end: float,
+) -> None:
+    class FragmentedVoiceClient:
+        def __init__(self, **kwargs):
+            self.handlers = {}
+            self.fragments = iter([
+                ("AddPartialSegment", 0, .3, "Xin"),
+                ("AddSegment", 0, .3, "Xin"),
+                ("AddPartialSegment", .35, .65, "chào"),
+                ("AddSegment", .35, .65, "chào"),
+                ("AddPartialSegment", .7, 1.2, "mọi người"),
+                ("AddSegment", .7, final_end, "mọi người."),
+            ])
+
+        def on(self, event, callback):
+            self.handlers[event.value] = callback
+
+        async def connect(self):
+            pass
+
+        async def send_audio(self, chunk):
+            event, start, end, text = next(self.fragments)
+            self.handlers[event]({"segments": [{
+                "speaker_id": "S1", "text": text,
+                "is_eou": text == "mọi người.",
+                "metadata": {"start_time": start, "end_time": end},
+            }]})
+
+        async def disconnect(self):
+            pass
+
+    app, sender, _ = _app(tmp_path)
+    app.state.stt_provider = SpeechmaticsProvider(
+        Settings(_env_file=None, speechmatics_api_key="test-key",
+                 speechmatics_finalization_delay_seconds=3),
+        voice_client_factory=FragmentedVoiceClient,
+    )
+    with TestClient(app) as client:
+        session = _verified_session(client, sender)
+        token = session["access_token"]
+        meeting_id = _create_realtime_meeting(client, token)
+        with client.websocket_connect(
+            f"/api/v1/realtime/{meeting_id}?access_token={token}"
+        ) as websocket:
+            ready = websocket.receive_json()
+            assert ready["type"] == "session.ready" and ready["provider"] == "speechmatics"
+            previews = []
+            for _ in range(6):
+                websocket.send_bytes(b"audio-chunk")
+                event = websocket.receive_json()
+                assert event["type"] == "transcript.partial"
+                previews.append(event)
+            assert previews[2]["text"] == "Xin chào"
+            assert previews[4]["text"] == "Xin chào mọi người"
+            assert len({event["stream_segment_id"] for event in previews}) == 1
+            websocket.send_json({"type": "recording.stop"})
+            final = websocket.receive_json()
+            assert final["type"] == "transcript.final"
+            assert final["text"] == "Xin chào mọi người."
+            assert final["stream_end_ms"] == round(final_end * 1000)
+            assert final["stream_segment_id"] == previews[0]["stream_segment_id"]
+            assert websocket.receive_json()["type"] == "meeting.status"
+        response = client.get(
+            f"/api/v1/meetings/{meeting_id}/transcript",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+        segments = response.json()["segments"]
+        assert len(segments) == 1
+        assert segments[0]["text"] == "Xin chào mọi người."
+        assert segments[0]["end_ms"] == round(final_end * 1000)
+        assert segments[0]["logical_segment_id"] == final["logical_segment_id"]
 
 
 def test_realtime_translation_only_translates_final_segments(tmp_path: Path) -> None:

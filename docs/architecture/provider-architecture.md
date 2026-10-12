@@ -78,6 +78,27 @@ Browser gửi PCM16 mono 16 kHz bằng AudioWorklet. Speechmatics/AssemblyAI str
 được mở server-side; AssemblyAI pin language của meeting và diarization option.
 Partial chỉ socket, final persisted; service scope speaker label theo connection.
 
+Speechmatics buffers consecutive fragments by language/speaker and the configured
+audio gap. Each open row has a stable `turn:<id>` independent of provider timestamp
+corrections. Its preview combines confirmed fragments with the latest interim
+snapshots; overlapping snapshots replace text instead of appending duplicate words.
+An unresolved interim tail cancels the row's finalization timer, including when a
+delayed `END_OF_TURN` arrives. Confirming the tail restarts the configured debounce.
+Speaker/language changes and longer audio gaps separate rows; adjacent fragments
+also start a new row when they would extend it beyond 30 seconds. A single provider
+snapshot is not cut into words to enforce that limit. Stop/disconnect flushes only
+confirmed fragments, never speculative partial text. Late finals can still resolve
+an older speaker's open preview; stale previews cannot reopen finalized rows.
+
+Final timing may be shorter than interim timing. An overlapping snapshot with the
+same words (ignoring case/punctuation) is resolved by the provider's confirmed text.
+Explicit `is_eou` and timestamp-scoped `END_OF_TURN` boundaries resolve superseded
+snapshots even if their text/timing was corrected; an end boundary cannot discard
+additional partial words received after the latest final. No boundary converts
+partial-only text into a durable final. The UI treats an identified turn final as
+authoritative regardless of timing changes and marks unresolved drafts as
+unconfirmed/not saved when recording ends or fails.
+
 `StreamingEvent` là union `StreamingTranscriptionEvent` và
 `StreamingSpeakerRevision(turn_order, speaker_label)`. Correction áp dụng theo
 thứ tự đến, tạo revision history, không tạo transcript text mới; manual speaker
