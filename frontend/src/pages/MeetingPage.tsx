@@ -255,8 +255,10 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
                   key={segment.logical_segment_id}
                 >
                   <div className="segment-meta">
-                    <strong style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
-                      {segSpeaker?.name ?? "Chưa xác định"}
+                    <div className="segment-speaker-wrapper">
+                      <strong title={segSpeaker?.name ?? "Chưa xác định"}>
+                        {segSpeaker?.name ?? "Chưa xác định"}
+                      </strong>
                       {segSpeaker?.is_identified && (
                         <span
                           className="speaker-identified-badge"
@@ -269,7 +271,7 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
                           <Icon name="check" /> Đã nhận diện
                         </span>
                       )}
-                    </strong>
+                    </div>
                     <button className="segment-time" type="button" onClick={() => player.current?.seek(segment.start_ms)}>
                       {formatTime(segment.start_ms)} – {formatTime(segment.end_ms)}
                     </button>
