@@ -7,6 +7,7 @@ import { Icon, type IconName, Button } from "./ui";
 
 const primaryNav: Array<[string, IconName, string]> = [
   ["/meetings", "meeting", "Cuộc họp"],
+  ["/voice-profiles", "speaker", "Mẫu giọng"],
 ];
 
 export function AppShell({ children }: { children: ReactNode }) {
@@ -65,7 +66,13 @@ export function AppShell({ children }: { children: ReactNode }) {
       <nav className="primary-nav" aria-label="Điều hướng chính">
         {primaryNav.map(([href, icon, label]) => (
           <a
-            className={path === href || (href === "/meetings" && path === "/history") ? "selected" : ""}
+            className={
+              path === href ||
+              (href === "/meetings" && (path === "/history" || (path.startsWith("/meetings") && path !== "/meetings/create"))) ||
+              (href === "/voice-profiles" && path.startsWith("/voice-profiles"))
+                ? "selected"
+                : ""
+            }
             href={href}
             key={href}
             aria-label={label}
@@ -150,6 +157,10 @@ export function AppShell({ children }: { children: ReactNode }) {
       <a className={meetingsSelected ? "selected" : ""} href="/meetings" aria-current={meetingsSelected ? "page" : undefined}>
         <span className="mobile-nav-icon"><Icon name="meeting" /></span>
         <span>Cuộc họp</span>
+      </a>
+      <a className={path.startsWith("/voice-profiles") ? "selected" : ""} href="/voice-profiles" aria-current={path.startsWith("/voice-profiles") ? "page" : undefined}>
+        <span className="mobile-nav-icon"><Icon name="speaker" /></span>
+        <span>Mẫu giọng</span>
       </a>
       <a className={`mobile-new-action ${path === "/meetings/create" ? "selected" : ""}`} href="/meetings/create" aria-current={path === "/meetings/create" ? "page" : undefined}>
         <span className="mobile-nav-icon"><Icon name="plus" /></span>

@@ -10,7 +10,7 @@ import wave
 from pathlib import Path
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import ApiError
@@ -24,6 +24,7 @@ from app.providers.contracts import (
     SpeakerEnrollmentProvider,
     STTProviderError,
 )
+from app.providers.storage import MediaStorage
 from app.services.meetings import MeetingService
 
 MIN_SAMPLE_MS = 10_000
@@ -37,10 +38,12 @@ class VoiceProfileService:
         self,
         session: AsyncSession,
         enrollment_provider: SpeakerEnrollmentProvider | None = None,
+        storage: MediaStorage | None = None,
     ) -> None:
         self._session = session
         self._meetings = MeetingService(session)
         self._enrollment = enrollment_provider
+        self._storage = storage
 
     async def get_user_profile(self, user: User) -> VoiceProfile | None:
         return await self._session.scalar(
@@ -56,7 +59,7 @@ class VoiceProfileService:
         profile = await self.get_user_profile(user)
         if profile is not None and profile.sample_count >= MAX_IDENTIFIERS_PER_PROFILE:
             raise _sample_limit_error()
-        enrollment = await self._enroll(audio_bytes, filename)
+        enrollment, wav_bytes = await self._enroll(audio_bytes, filename)
         if profile is None:
             profile = VoiceProfile(
                 user_id=user.id,
@@ -68,9 +71,11 @@ class VoiceProfileService:
                 sample_count=0,
             )
             self._session.add(profile)
+            await self._session.flush()
         profile.name = user.full_name
         self._append_identifiers(profile, enrollment.speaker_identifiers)
         profile.sample_duration_ms += enrollment.duration_ms
+        await self._save_profile_audio(profile, wav_bytes, append=profile.sample_count > 1)
         await self._session.commit()
         await self._session.refresh(profile)
         return profile
@@ -79,6 +84,7 @@ class VoiceProfileService:
         profile = await self.get_user_profile(user)
         if profile is None:
             raise ApiError("VOICE_PROFILE_NOT_FOUND", "Không tìm thấy mẫu giọng cá nhân.", 404)
+        await self._delete_profile_audio(profile)
         await self._session.delete(profile)
         await self._session.commit()
 
@@ -94,7 +100,7 @@ class VoiceProfileService:
         clean_name = name.strip()
         if not clean_name:
             raise ApiError("INVALID_NAME", "Tên người nói không được để trống.", 400)
-        enrollment = await self._enroll(audio_bytes, filename)
+        enrollment, wav_bytes = await self._enroll(audio_bytes, filename)
         identifiers = list(enrollment.speaker_identifiers[:MAX_IDENTIFIERS_PER_PROFILE])
         profile = VoiceProfile(
             user_id=None,
@@ -106,6 +112,8 @@ class VoiceProfileService:
             sample_count=len(identifiers),
         )
         self._session.add(profile)
+        await self._session.flush()
+        await self._save_profile_audio(profile, wav_bytes)
         await self._session.commit()
         await self._session.refresh(profile)
         return profile
@@ -122,9 +130,10 @@ class VoiceProfileService:
         profile = await self._meeting_guest(meeting_id, profile_id)
         if profile.sample_count >= MAX_IDENTIFIERS_PER_PROFILE:
             raise _sample_limit_error()
-        enrollment = await self._enroll(audio_bytes, filename)
+        enrollment, wav_bytes = await self._enroll(audio_bytes, filename)
         self._append_identifiers(profile, enrollment.speaker_identifiers)
         profile.sample_duration_ms += enrollment.duration_ms
+        await self._save_profile_audio(profile, wav_bytes, append=True)
         await self._session.commit()
         await self._session.refresh(profile)
         return profile
@@ -176,8 +185,122 @@ class VoiceProfileService:
     ) -> None:
         await self._meetings.require_access(meeting_id, user, MeetingPermission.EDIT)
         profile = await self._meeting_guest(meeting_id, profile_id)
+        await self._delete_profile_audio(profile)
         await self._session.delete(profile)
         await self._session.commit()
+
+    async def list_user_profiles(self, user: User) -> list[VoiceProfile]:
+        """List all voice profiles belonging to or created by the user."""
+        stmt = (
+            select(VoiceProfile)
+            .where(
+                or_(
+                    VoiceProfile.user_id == user.id,
+                    VoiceProfile.meeting_id.in_(
+                        select(Meeting.id).where(Meeting.owner_id == user.id)
+                    ),
+                )
+            )
+            .order_by(VoiceProfile.created_at.desc(), VoiceProfile.id)
+        )
+        return list(await self._session.scalars(stmt))
+
+    async def create_user_speaker_profile(
+        self, user: User, name: str, audio_bytes: bytes, filename: str | None = None
+    ) -> VoiceProfile:
+        clean_name = name.strip()
+        if not clean_name:
+            raise ApiError("INVALID_NAME", "Tên người nói không được để trống.", 400)
+        enrollment, wav_bytes = await self._enroll(audio_bytes, filename)
+        identifiers = list(enrollment.speaker_identifiers[:MAX_IDENTIFIERS_PER_PROFILE])
+        profile = VoiceProfile(
+            user_id=user.id,
+            meeting_id=None,
+            name=clean_name,
+            sample_duration_ms=enrollment.duration_ms,
+            speaker_identifiers=identifiers,
+            provider="speechmatics",
+            sample_count=len(identifiers),
+        )
+        self._session.add(profile)
+        await self._session.flush()
+        await self._save_profile_audio(profile, wav_bytes)
+        await self._session.commit()
+        await self._session.refresh(profile)
+        return profile
+
+    async def add_profile_sample(
+        self, profile_id: UUID, user: User, audio_bytes: bytes, filename: str | None = None
+    ) -> VoiceProfile:
+        profile = await self._session.get(VoiceProfile, profile_id)
+        if profile is None:
+            raise ApiError("VOICE_PROFILE_NOT_FOUND", "Không tìm thấy mẫu giọng.", 404)
+        if profile.user_id != user.id:
+            if profile.meeting_id:
+                await self._meetings.require_access(profile.meeting_id, user, MeetingPermission.EDIT)
+            else:
+                raise ApiError("FORBIDDEN", "Bạn không có quyền chỉnh sửa mẫu giọng này.", 403)
+        if profile.sample_count >= MAX_IDENTIFIERS_PER_PROFILE:
+            raise _sample_limit_error()
+        enrollment, wav_bytes = await self._enroll(audio_bytes, filename)
+        self._append_identifiers(profile, enrollment.speaker_identifiers)
+        profile.sample_duration_ms += enrollment.duration_ms
+        await self._save_profile_audio(profile, wav_bytes, append=True)
+        await self._session.commit()
+        await self._session.refresh(profile)
+        return profile
+
+    async def delete_profile(self, profile_id: UUID, user: User) -> None:
+        profile = await self._session.get(VoiceProfile, profile_id)
+        if profile is None:
+            raise ApiError("VOICE_PROFILE_NOT_FOUND", "Không tìm thấy mẫu giọng.", 404)
+        if profile.user_id != user.id:
+            if profile.meeting_id:
+                await self._meetings.require_access(profile.meeting_id, user, MeetingPermission.EDIT)
+            else:
+                raise ApiError("FORBIDDEN", "Bạn không có quyền xóa mẫu giọng này.", 403)
+        await self._delete_profile_audio(profile)
+        await self._session.delete(profile)
+        await self._session.commit()
+
+    async def get_profile_audio(self, profile_id: UUID, user: User) -> tuple[bytes, str]:
+        profile = await self._session.get(VoiceProfile, profile_id)
+        if profile is None:
+            raise ApiError("VOICE_PROFILE_NOT_FOUND", "Không tìm thấy mẫu giọng.", 404)
+        if profile.user_id != user.id:
+            if profile.meeting_id:
+                await self._meetings.require_access(profile.meeting_id, user, MeetingPermission.READ)
+            else:
+                raise ApiError("FORBIDDEN", "Bạn không có quyền truy cập mẫu giọng này.", 403)
+        if not profile.audio_storage_path or self._storage is None:
+            raise ApiError("VOICE_AUDIO_NOT_FOUND", "Chưa có file âm thanh cho mẫu giọng này.", 404)
+        try:
+            audio_bytes = await self._storage.get_bytes(profile.audio_storage_path)
+        except Exception as exc:
+            raise ApiError("VOICE_AUDIO_NOT_FOUND", "Không tìm thấy file âm thanh trong kho lưu trữ.", 404) from exc
+        return audio_bytes, f"{profile.name}.wav"
+
+    async def _save_profile_audio(
+        self, profile: VoiceProfile, wav_bytes: bytes, append: bool = False
+    ) -> None:
+        if self._storage is None:
+            return
+        key = f"voice_profiles/{profile.id}.wav"
+        if append and profile.audio_storage_path:
+            try:
+                existing_bytes = await self._storage.get_bytes(profile.audio_storage_path)
+                wav_bytes = _combine_wavs(existing_bytes, wav_bytes)
+            except Exception:
+                pass
+        await self._storage.put_bytes(wav_bytes, key)
+        profile.audio_storage_path = key
+
+    async def _delete_profile_audio(self, profile: VoiceProfile) -> None:
+        if self._storage is not None and profile.audio_storage_path:
+            try:
+                await self._storage.delete(profile.audio_storage_path)
+            except Exception:
+                pass
 
     async def _profiles_for_meeting(self, meeting_id: UUID) -> list[VoiceProfile] | None:
         meeting = await self._session.get(Meeting, meeting_id)
@@ -224,7 +347,7 @@ class VoiceProfileService:
 
     async def _enroll(
         self, audio_bytes: bytes, filename: str | None
-    ) -> SpeakerEnrollment:
+    ) -> tuple[SpeakerEnrollment, bytes]:
         if self._enrollment is None:
             raise ApiError(
                 "PROVIDER_CAPABILITY_UNAVAILABLE",
@@ -246,11 +369,12 @@ class VoiceProfileService:
                     "Mẫu giọng không được dài quá 25 giây.",
                     422,
                 )
+            wav_bytes = await asyncio.to_thread(normalized.read_bytes)
             try:
                 enrollment = await self._enrollment.enroll_speaker(normalized, "vi")
             except STTProviderError as exc:
                 raise ApiError(exc.code, str(exc), 503 if exc.retryable else 422) from exc
-            return SpeakerEnrollment(enrollment.speaker_identifiers, duration_ms)
+            return SpeakerEnrollment(enrollment.speaker_identifiers, duration_ms), wav_bytes
         finally:
             await asyncio.to_thread(normalized.unlink, missing_ok=True)
 
@@ -332,3 +456,23 @@ def _sample_limit_error() -> ApiError:
         "Hồ sơ đã có đủ 3 mẫu; hãy xóa và đăng ký lại nếu muốn thay đổi.",
         409,
     )
+
+
+def _combine_wavs(wav1_bytes: bytes, wav2_bytes: bytes) -> bytes:
+    import io, wave
+
+    try:
+        with wave.open(io.BytesIO(wav1_bytes), "rb") as w1:
+            params1 = w1.getparams()
+            frames1 = w1.readframes(w1.getnframes())
+        with wave.open(io.BytesIO(wav2_bytes), "rb") as w2:
+            frames2 = w2.readframes(w2.getnframes())
+        out_buf = io.BytesIO()
+        with wave.open(out_buf, "wb") as w_out:
+            w_out.setparams(params1)
+            w_out.writeframes(frames1)
+            w_out.writeframes(frames2)
+        return out_buf.getvalue()
+    except Exception:
+        return wav2_bytes
+

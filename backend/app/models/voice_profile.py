@@ -21,7 +21,6 @@ class VoiceProfile(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "voice_profiles"
     __table_args__ = (
         Index("ix_voice_profiles_user_id", "user_id"),
-        Index("uq_voice_profiles_user_id", "user_id", unique=True),
         Index("ix_voice_profiles_meeting_id", "meeting_id"),
     )
 
@@ -43,3 +42,8 @@ class VoiceProfile(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     user: Mapped[User | None] = relationship(back_populates="voice_profiles")
     meeting: Mapped[Meeting | None] = relationship(back_populates="voice_profiles")
     speakers: Mapped[list[Speaker]] = relationship(back_populates="voice_profile")
+
+    @property
+    def has_audio(self) -> bool:
+        return self.audio_storage_path is not None
+

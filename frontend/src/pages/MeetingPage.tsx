@@ -413,6 +413,42 @@ function PreMeetingVoiceProfiles({
   onDeleteProfile: (profileId: string) => Promise<void>;
 }) {
   const isCreated = meetingStatus === "created";
+  const [playingId, setPlayingId] = useState<string | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  const playVoiceAudio = async (profileId: string) => {
+    if (playingId === profileId && audioRef.current) {
+      audioRef.current.pause();
+      setPlayingId(null);
+      return;
+    }
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+      setPlayingId(null);
+    }
+    try {
+      const blob = await voiceProfilesApi.getAudioBlob(profileId);
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      audio.onplay = () => setPlayingId(profileId);
+      audio.onended = () => {
+        setPlayingId(null);
+        audioRef.current = null;
+        URL.revokeObjectURL(url);
+      };
+      audio.onerror = () => {
+        setPlayingId(null);
+        audioRef.current = null;
+        URL.revokeObjectURL(url);
+      };
+      await audio.play();
+    } catch {
+      setPlayingId(null);
+    }
+  };
+
   return (
     <section className="panel voice-setup-panel" style={{ borderLeft: isCreated ? "4px solid var(--success)" : "1px solid var(--border)" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "12px", marginBottom: "14px" }}>
@@ -466,16 +502,24 @@ function PreMeetingVoiceProfiles({
                   {(profile.sample_duration_ms / 1000).toFixed(1)}s · {profile.provider}
                 </small>
               </div>
-              {editable && !recordingActive && (
-                <div style={{ display: "flex", gap: "4px", flexShrink: 0 }}>
-                  {profile.sample_count < 3 && (
-                    <Button onClick={() => onAddSample(profile)} style={{ minHeight: "30px", padding: "4px 8px", fontSize: "12px" }}>
-                      + Mẫu
-                    </Button>
-                  )}
-                  <Button tone="danger" onClick={() => void onDeleteProfile(profile.id)} style={{ minHeight: "30px", padding: "4px 8px", fontSize: "12px" }}>Xóa</Button>
-                </div>
-              )}
+              <div style={{ display: "flex", gap: "4px", flexShrink: 0 }}>
+                <Button
+                  onClick={() => void playVoiceAudio(profile.id)}
+                  style={{ minHeight: "30px", padding: "4px 8px", fontSize: "11px" }}
+                >
+                  {playingId === profile.id ? "⏸ Dừng" : "▶ Nghe"}
+                </Button>
+                {editable && !recordingActive && (
+                  <>
+                    {profile.sample_count < 3 && (
+                      <Button onClick={() => onAddSample(profile)} style={{ minHeight: "30px", padding: "4px 8px", fontSize: "12px" }}>
+                        + Mẫu
+                      </Button>
+                    )}
+                    <Button tone="danger" onClick={() => void onDeleteProfile(profile.id)} style={{ minHeight: "30px", padding: "4px 8px", fontSize: "12px" }}>Xóa</Button>
+                  </>
+                )}
+              </div>
             </div>
           ))}
         </div>

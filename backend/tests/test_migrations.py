@@ -32,7 +32,7 @@ def test_initial_migration_upgrades_and_downgrades_clean_database(tmp_path: Path
         voice_columns = {item["name"] for item in inspector.get_columns("voice_profiles")}
         assert {"speaker_identifiers", "provider", "sample_count"} <= voice_columns
         assert "embedding" not in voice_columns
-        assert "uq_voice_profiles_user_id" in {
+        assert "ix_voice_profiles_user_id" in {
             item["name"] for item in inspector.get_indexes("voice_profiles")
         }
         assert "output_language" in {

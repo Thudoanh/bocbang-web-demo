@@ -11,6 +11,7 @@ interface VoiceEnrollmentModalProps {
   profileId?: string;
   defaultName?: string;
   currentSampleCount?: number;
+  isSpeakerMode?: boolean;
 }
 
 export function VoiceEnrollmentModal({
@@ -21,6 +22,7 @@ export function VoiceEnrollmentModal({
   profileId,
   defaultName = "",
   currentSampleCount,
+  isSpeakerMode = false,
 }: VoiceEnrollmentModalProps) {
   const [mode, setMode] = useState<"record" | "upload">("record");
   const [name, setName] = useState(defaultName);
@@ -122,7 +124,7 @@ export function VoiceEnrollmentModal({
       setError("Vui lòng ghi âm hoặc tải lên một mẫu giọng nói.");
       return;
     }
-    if (meetingId && !profileId && !name.trim()) {
+    if (!profileId && (meetingId || isSpeakerMode) && !name.trim()) {
       setError("Vui lòng nhập họ và tên của người phát biểu.");
       return;
     }
@@ -152,8 +154,12 @@ export function VoiceEnrollmentModal({
       let profile: VoiceProfile;
       if (meetingId && profileId) {
         profile = await voiceProfilesApi.addMeetingGuestSample(meetingId, profileId, audioBlob);
+      } else if (profileId) {
+        profile = await voiceProfilesApi.addSample(profileId, audioBlob);
       } else if (meetingId) {
         profile = await voiceProfilesApi.enrollMeetingGuest(meetingId, name.trim(), audioBlob);
+      } else if (isSpeakerMode) {
+        profile = await voiceProfilesApi.create(name.trim(), audioBlob);
       } else {
         profile = await voiceProfilesApi.enrollMyProfile(audioBlob);
       }
@@ -202,8 +208,10 @@ export function VoiceEnrollmentModal({
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
               <h2 style={{ fontSize: "18px", fontWeight: "600", margin: 0, color: "#111827" }}>
-                {meetingId
-                  ? (profileId ? `Thêm Mẫu Giọng (${(currentSampleCount ?? 0) + 1}/3) · ${defaultName}` : "Đăng ký Người Phát Biểu Mới")
+                {profileId
+                  ? `Thêm Mẫu Giọng (${(currentSampleCount ?? 0) + 1}/3) · ${defaultName}`
+                  : (meetingId || isSpeakerMode)
+                  ? "Đăng ký Người Phát Biểu Mới"
                   : `Mẫu Giọng Nói Cá Nhân${currentSampleCount !== undefined && currentSampleCount > 0 ? ` (Mẫu ${(currentSampleCount ?? 0) + 1}/3)` : ""}`}
               </h2>
               {currentSampleCount !== undefined && currentSampleCount > 0 && (
@@ -244,7 +252,7 @@ export function VoiceEnrollmentModal({
         </div>
 
         <div style={{ padding: "24px" }}>
-          {meetingId && !profileId && (
+          {!profileId && (meetingId || isSpeakerMode) && (
             <div style={{ marginBottom: "20px" }}>
               <label
                 style={{

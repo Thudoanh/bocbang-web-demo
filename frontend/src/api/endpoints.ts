@@ -78,6 +78,21 @@ export const sharesApi = {
 };
 
 export const voiceProfilesApi = {
+  list: () => apiClient.get<VoiceProfile[]>("/voice-profiles"),
+  create: (name: string, audioFile: Blob | File) => {
+    const data = new FormData();
+    data.append("name", name);
+    data.append("file", audioFile, audioFile instanceof File ? audioFile.name : "sample.webm");
+    return apiClient.post<VoiceProfile>("/voice-profiles", data);
+  },
+  addSample: (profileId: string, audioFile: Blob | File) => {
+    const data = new FormData();
+    data.append("file", audioFile, audioFile instanceof File ? audioFile.name : "sample.webm");
+    return apiClient.post<VoiceProfile>(`/voice-profiles/${profileId}/samples`, data);
+  },
+  delete: (profileId: string) => apiClient.delete<void>(`/voice-profiles/${profileId}`),
+  getAudioBlob: (profileId: string) => apiClient.getBlob(`/voice-profiles/${profileId}/audio`),
+  audioUrl: (profileId: string) => `${config.apiBaseUrl}/voice-profiles/${profileId}/audio`,
   getMyProfile: () => apiClient.get<VoiceProfile>("/voice-profiles/me"),
   enrollMyProfile: (audioFile: Blob | File) => {
     const data = new FormData();

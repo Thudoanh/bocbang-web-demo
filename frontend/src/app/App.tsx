@@ -10,6 +10,7 @@ import { SpeakersPage } from "../pages/SpeakersPage";
 import { SummaryPage } from "../pages/SummaryPage";
 import { TranslationPage } from "../pages/TranslationPage";
 import { UploadPage } from "../pages/UploadPage";
+import { VoiceProfilesPage } from "../pages/VoiceProfilesPage";
 
 function route(pathname: string) {
   if (pathname === "/login") return { page: "auth" as const, mode: "login" as const };
@@ -23,6 +24,7 @@ function route(pathname: string) {
   const upload = pathname.match(/^\/meetings\/([^/]+)\/upload$/); if (upload) return { page: "upload" as const, id: upload[1] };
   if (pathname === "/meetings/create") return { page: "create" as const };
   const meeting = pathname.match(/^\/meetings\/([^/]+)$/); if (meeting) return { page: "meeting" as const, id: meeting[1] };
+  if (pathname.startsWith("/voice-profiles")) return { page: "voice-profiles" as const };
   return { page: pathname === "/settings" ? "settings" as const : "meetings" as const };
 }
 
@@ -37,5 +39,5 @@ export function App() {
     </div>
   );
   if (!user) return <AuthPage initialMode={current.page === "auth" ? current.mode : "login"} />;
-  return <AppShell>{current.page === "meeting" ? <MeetingPage meetingId={current.id} /> : current.page === "upload" ? <UploadPage meetingId={current.id} /> : current.page === "speakers" ? <SpeakersPage meetingId={current.id} /> : current.page === "translation" ? <TranslationPage meetingId={current.id} /> : current.page === "summary" ? <SummaryPage meetingId={current.id} /> : current.page === "export-share" ? <ExportSharePage meetingId={current.id} /> : current.page === "settings" ? <SettingsPage /> : current.page === "create" ? <MeetingsPage createOnly initialSource={new URLSearchParams(window.location.search).get("mode") === "upload" ? "upload" : undefined} /> : <MeetingsPage />}</AppShell>;
+  return <AppShell>{current.page === "voice-profiles" ? <VoiceProfilesPage /> : current.page === "meeting" ? <MeetingPage meetingId={current.id} /> : current.page === "upload" ? <UploadPage meetingId={current.id} /> : current.page === "speakers" ? <SpeakersPage meetingId={current.id} /> : current.page === "translation" ? <TranslationPage meetingId={current.id} /> : current.page === "summary" ? <SummaryPage meetingId={current.id} /> : current.page === "export-share" ? <ExportSharePage meetingId={current.id} /> : current.page === "settings" ? <SettingsPage /> : current.page === "create" ? <MeetingsPage createOnly initialSource={new URLSearchParams(window.location.search).get("mode") === "upload" ? "upload" : undefined} /> : <MeetingsPage />}</AppShell>;
 }

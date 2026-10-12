@@ -18,6 +18,7 @@ class VoiceProfileResponse(BaseModel):
     sample_duration_ms: int
     provider: str
     sample_count: int
+    has_audio: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -28,6 +29,7 @@ class VoiceProfileCandidateResponse(BaseModel):
     sample_duration_ms: int
     provider: str
     sample_count: int
+    has_audio: bool = False
     is_user_profile: bool
 
 
