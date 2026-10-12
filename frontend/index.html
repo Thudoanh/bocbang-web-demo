@@ -3,7 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#111a2e" />
+    <meta name="theme-color" content="#f5f7fb" />
+    <script>
+      (() => {
+        const savedTheme = localStorage.getItem("bocbang-theme");
+        const theme = savedTheme === "light" || savedTheme === "dark"
+          ? savedTheme
+          : matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.style.colorScheme = theme;
+        document.querySelector('meta[name="theme-color"]').content = theme === "dark" ? "#08111f" : "#f5f7fb";
+      })();
+    </script>
     <title>Bóc Băng AI</title>
   </head>
   <body>

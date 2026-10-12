@@ -4,7 +4,7 @@ import { useAsync } from "../hooks/useAsync";
 import { useJobMonitor } from "../state/useJobMonitor";
 import { can } from "../utils/permissions";
 import type { SummaryLanguage, SummaryTemplate } from "../types/domain";
-import { Button, Empty, Failure, Loading, PageHeading, Status } from "../components/ui";
+import { Button, Empty, Failure, Loading, PageHeading, Status, statusLabel } from "../components/ui";
 
 const labels: Record<SummaryTemplate, string> = {
   general: "Tóm tắt chung",
@@ -15,13 +15,14 @@ const languageLabels: Record<SummaryLanguage, string> = { vi: "Tiếng Việt", 
 
 export function SummaryPage({ meetingId }: { meetingId: string }) {
   const meeting = useAsync(() => meetingsApi.get(meetingId), [meetingId]);
+  const transcript = useAsync(() => meetingsApi.transcript(meetingId), [meetingId]);
   const summaries = useAsync(() => meetingsApi.summaries(meetingId), [meetingId]);
-  const speakers = useAsync(() => meetingsApi.speakers(meetingId), [meetingId]);
   const capabilities = useAsync(capabilitiesApi.get, []);
   const jobs = useJobMonitor();
   const [template, setTemplate] = useState<SummaryTemplate>("general");
   const [outputLanguage, setOutputLanguage] = useState<SummaryLanguage>("vi");
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
 
   useEffect(() => {
     const transcriptLanguage = meeting.data?.language_mode;
@@ -31,12 +32,13 @@ export function SummaryPage({ meetingId }: { meetingId: string }) {
     if (jobs.job?.status === "completed") void summaries.reload();
   }, [jobs.job?.status, summaries.reload]);
 
-  if (meeting.loading) return <Loading />;
+  if (meeting.loading || transcript.loading) return <Loading />;
   if (meeting.error || !meeting.data) {
     return <Failure error={meeting.error ?? new Error("Không tìm thấy cuộc họp.")} retry={meeting.reload} />;
   }
 
   const editable = can(meeting.data.permission, "edit");
+  const hasTranscript = Boolean(transcript.data?.segments.length);
   const summary = summaries.data?.find(
     (item) => item.template === template && item.output_language === outputLanguage,
   );
@@ -47,6 +49,7 @@ export function SummaryPage({ meetingId }: { meetingId: string }) {
   async function generate() {
     try {
       setError("");
+      setNotice("");
       jobs.track(await meetingsApi.summary(meetingId, template, outputLanguage));
     } catch (cause) {
       setError((cause as Error).message);
@@ -57,6 +60,8 @@ export function SummaryPage({ meetingId }: { meetingId: string }) {
     if (!summary) return;
     try {
       await navigator.clipboard.writeText(toText(summary.current_version.content));
+      setNotice("Đã sao chép tóm tắt.");
+      setError("");
     } catch {
       setError("Không thể sao chép nội dung trong trình duyệt này.");
     }
@@ -64,35 +69,36 @@ export function SummaryPage({ meetingId }: { meetingId: string }) {
 
   return <>
     <PageHeading
-      eyebrow="TÓM TẮT AI & BIÊN BẢN"
-      title={meeting.data.title}
-      description="Kết quả AI được lưu tách biệt với transcript gốc."
-      actions={<a className="btn btn-light" href={`/meetings/${meetingId}`}>← Transcript</a>}
+      eyebrow="TÓM TẮT"
+      title="Tóm tắt"
+      context={meeting.data.title}
     />
     <section className="summary-controls">
-      <label className="field">Mẫu tóm tắt
+      <label className="field">Mẫu
         <select value={template} onChange={(event) => setTemplate(event.target.value as SummaryTemplate)}>
           {(capabilities.data?.summary_templates.length
             ? capabilities.data.summary_templates
-            : Object.keys(labels) as SummaryTemplate[]
+            : (Object.keys(labels) as SummaryTemplate[])
           ).map((item) => <option key={item} value={item}>{labels[item]}</option>)}
         </select>
       </label>
-      <label className="field">Ngôn ngữ tóm tắt
+      <label className="field">Ngôn ngữ
         <select value={outputLanguage} onChange={(event) => setOutputLanguage(event.target.value as SummaryLanguage)}>
           {availableLanguages.map((language) => <option key={language} value={language}>{languageLabels[language]}</option>)}
         </select>
       </label>
       {editable && <Button
         tone="dark"
-        disabled={!capabilities.data?.summary_templates.includes(template) || jobs.job?.status === "processing"}
+        disabled={!hasTranscript || !capabilities.data?.summary_templates.includes(template) || ["queued", "processing", "retrying"].includes(jobs.job?.status ?? "")}
         onClick={() => void generate()}
       >{summary ? "Tạo lại" : "Tạo tóm tắt"}</Button>}
       {summary && <Button onClick={() => void copy()}>Sao chép</Button>}
     </section>
+    {editable && !hasTranscript && <div className="notice">Cần có transcript trước khi tạo tóm tắt.</div>}
+    {notice && <div className="notice">{notice}</div>}
     {error && <div className="form-error">{error}</div>}
     {jobs.job && <div className={`job-state ${jobs.job.status}`}>
-      Tóm tắt AI: {jobs.job.status}
+      Tóm tắt AI: {statusLabel(jobs.job.status)}
       {jobs.job.progress !== undefined ? ` · ${jobs.job.progress}%` : ""}
       {jobs.job.error ? ` · ${jobs.job.error.message}` : ""}
     </div>}
@@ -109,18 +115,7 @@ export function SummaryPage({ meetingId }: { meetingId: string }) {
           <div><h2>{humanize(key)}</h2><SummaryValue value={value} /></div>
         </article>)}
       </section>
-      <aside className="summary-context">
-        <section className="panel"><h2>Người nói trong phiên</h2>
-          {speakers.data?.length
-            ? speakers.data.map((speaker) => <div className="summary-speaker" key={speaker.id}><span>{speaker.name}</span><i /></div>)
-            : <p>Chưa có dữ liệu người nói.</p>}
-        </section>
-        <section className="panel"><h2>Thông tin bản mẫu</h2>
-          <p>{labels[summary.template]} · {languageLabels[summary.output_language]} · phiên bản {summary.current_version.version_no}</p>
-          <p>Nội dung được tạo từ transcript hiện hành.</p>
-        </section>
-      </aside>
-    </div> : !summaries.loading && <Empty title="Chưa có biên bản" detail={`Chưa có bản ${languageLabels[outputLanguage]} cho mẫu đã chọn.`} />}
+    </div> : !summaries.loading && <Empty title="Chưa có tóm tắt" detail="Chọn mẫu và bấm Tạo tóm tắt." />}
   </>;
 }
 
