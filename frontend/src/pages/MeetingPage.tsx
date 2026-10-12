@@ -4,15 +4,14 @@ import { MeetingSocket, type RealtimeEvent } from "../realtime/meetingSocket";
 import { MicrophonePcmCapture } from "../realtime/microphonePcm";
 import { finishLiveTranscript, updateLiveTranscript, type LiveTranscript, type LiveTranscriptEntry, type TranscriptEvent } from "../realtime/liveTranscript";
 import { recordRender } from "../realtime/diagnostics";
-import { capabilitiesApi, meetingsApi, voiceProfilesApi, type TranscriptMutation } from "../api/endpoints";
+import { capabilitiesApi, meetingsApi, type TranscriptMutation } from "../api/endpoints";
 import { ApiError } from "../api/client";
 import { useAsync } from "../hooks/useAsync";
 import { can } from "../utils/permissions";
 import { languageLabel } from "../utils/language";
 import { formatTimestampInput, parseTimestampInput } from "../utils/time";
-import type { Comment, Segment, VoiceProfile } from "../types/domain";
+import type { Comment, Segment } from "../types/domain";
 import { Button, Empty, Failure, Icon, Loading, PageHeading, Status } from "../components/ui";
-import { VoiceEnrollmentModal } from "../components/VoiceEnrollmentModal";
 
 type SegmentDraft = { text: string; startTime: string; endTime: string; speakerId: string };
 type AudioPlayerHandle = { seek: (milliseconds: number) => void };
@@ -29,15 +28,11 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
   const capabilities = useAsync(capabilitiesApi.get, []);
   const comments = useAsync(() => meetingsApi.comments(meetingId), [meetingId]);
   const versions = useAsync(() => meetingsApi.versions(meetingId), [meetingId]);
-  const voiceProfiles = useAsync(() => voiceProfilesApi.listMeetingProfiles(meetingId), [meetingId]);
-
   const [editing, setEditing] = useState<Segment>();
   const [draft, setDraft] = useState<SegmentDraft>({ text: "", startTime: "00:00", endTime: "00:00", speakerId: "" });
   const [notice, setNotice] = useState("");
   const [shareOpen, setShareOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
-  const [voiceEnrollOpen, setVoiceEnrollOpen] = useState(false);
-  const [voiceEnrollTarget, setVoiceEnrollTarget] = useState<VoiceProfile>();
   const [recordingActive, setRecordingActive] = useState(false);
   const [liveTranscript, setLiveTranscript] = useState<LiveTranscript>({});
 
@@ -114,16 +109,6 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
     setPendingMerge(selected);
   }
 
-  async function deleteMeetingVoiceProfile(profileId: string) {
-    try {
-      await voiceProfilesApi.deleteMeetingGuest(meetingId, profileId);
-      await voiceProfiles.reload();
-      await speakers.reload();
-      setNotice("Đã xóa mẫu giọng của người nói.");
-    } catch (cause) {
-      setNotice((cause as Error).message);
-    }
-  }
 
   if (meeting.loading) return <Loading />;
   if (meeting.error || !meeting.data) return <Failure error={meeting.error ?? new Error("Không tìm thấy cuộc họp.")} retry={meeting.reload} />;
@@ -161,19 +146,6 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
 
     <div className="meeting-layout">
       <section>
-        {/* Pre-meeting voice profiles panel */}
-        {editable && (meeting.data.status === "created" || (voiceProfiles.data && voiceProfiles.data.length > 0)) && (
-          <PreMeetingVoiceProfiles
-            meetingId={meetingId}
-            profiles={voiceProfiles.data ?? []}
-            editable={editable}
-            meetingStatus={meeting.data.status}
-            recordingActive={recordingActive}
-            onAddClick={() => { setVoiceEnrollTarget(undefined); setVoiceEnrollOpen(true); }}
-            onAddSample={(profile) => { setVoiceEnrollTarget(profile); setVoiceEnrollOpen(true); }}
-            onDeleteProfile={deleteMeetingVoiceProfile}
-          />
-        )}
 
         {/* Realtime Recording Panel */}
         {editable && meeting.data.source_type === "realtime" && meeting.data.status !== "completed" && capabilities.data?.stt.streaming && (
@@ -353,21 +325,6 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
 
     {renameOpen && <RenameMeetingDialog title={meeting.data.title} close={() => setRenameOpen(false)} confirm={async (title) => { const updated = await meetingsApi.update(meetingId, { title }); meeting.setData(updated); setRenameOpen(false); setNotice("Đã đổi tên bản ghi."); }} />}
     {shareOpen && <ShareDialog meetingId={meetingId} close={() => setShareOpen(false)} />}
-    {voiceEnrollOpen && (
-      <VoiceEnrollmentModal
-        isOpen={voiceEnrollOpen}
-        meetingId={meetingId}
-        profileId={voiceEnrollTarget?.id}
-        defaultName={voiceEnrollTarget?.name}
-        currentSampleCount={voiceEnrollTarget?.sample_count}
-        onClose={() => { setVoiceEnrollOpen(false); setVoiceEnrollTarget(undefined); }}
-        onEnrolled={async (profile) => {
-          await voiceProfiles.reload();
-          await speakers.reload();
-          setNotice(`Đã lưu mẫu giọng thành công cho "${profile.name}" (${profile.sample_count}/3 mẫu).`);
-        }}
-      />
-    )}
     {pendingSplit && <SplitDialog segment={pendingSplit} close={() => setPendingSplit(undefined)} confirm={(splitAt, first, second) => { const segment = pendingSplit; setPendingSplit(undefined); void mutate(() => meetingsApi.splitSegment(segment.logical_segment_id, splitAt, first, second), "Đã tách đoạn và tạo phiên bản mới."); }} />}
     {pendingMerge && <ConfirmDialog title={`Gộp ${pendingMerge.length} đoạn?`} detail="Các đoạn đã chọn sẽ được nối theo đúng thứ tự thời gian thành một đoạn." confirmLabel="Gộp đoạn" close={() => setPendingMerge(undefined)} confirm={() => { const selected = pendingMerge; setPendingMerge(undefined); setMergeIds([]); void mutate(() => meetingsApi.mergeSegments(selected.map((segment) => segment.logical_segment_id)), `Đã gộp ${selected.length} đoạn và tạo phiên bản mới.`); }} />}
     {pendingDelete && <ConfirmDialog title="Xóa đoạn transcript?" detail="Đoạn đã xóa sẽ không còn trong phiên bản transcript hiện hành." confirmLabel="Xóa đoạn" close={() => setPendingDelete(undefined)} confirm={() => { const segment = pendingDelete; setPendingDelete(undefined); void mutate(() => meetingsApi.deleteSegment(segment.logical_segment_id), "Đã xóa đoạn và tạo phiên bản mới.", segment.logical_segment_id); }} />}
@@ -393,144 +350,6 @@ function LiveTranscriptRow({ event }: { event: LiveTranscriptEntry }) {
   );
 }
 
-function PreMeetingVoiceProfiles({
-  meetingId: _meetingId,
-  profiles,
-  editable,
-  meetingStatus,
-  recordingActive,
-  onAddClick,
-  onAddSample,
-  onDeleteProfile,
-}: {
-  meetingId: string;
-  profiles: VoiceProfile[];
-  editable: boolean;
-  meetingStatus: string;
-  recordingActive: boolean;
-  onAddClick: () => void;
-  onAddSample: (profile: VoiceProfile) => void;
-  onDeleteProfile: (profileId: string) => Promise<void>;
-}) {
-  const isCreated = meetingStatus === "created";
-  const [playingId, setPlayingId] = useState<string | null>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-
-  const playVoiceAudio = async (profileId: string) => {
-    if (playingId === profileId && audioRef.current) {
-      audioRef.current.pause();
-      setPlayingId(null);
-      return;
-    }
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current = null;
-      setPlayingId(null);
-    }
-    try {
-      const blob = await voiceProfilesApi.getAudioBlob(profileId);
-      const url = URL.createObjectURL(blob);
-      const audio = new Audio(url);
-      audioRef.current = audio;
-      audio.onplay = () => setPlayingId(profileId);
-      audio.onended = () => {
-        setPlayingId(null);
-        audioRef.current = null;
-        URL.revokeObjectURL(url);
-      };
-      audio.onerror = () => {
-        setPlayingId(null);
-        audioRef.current = null;
-        URL.revokeObjectURL(url);
-      };
-      await audio.play();
-    } catch {
-      setPlayingId(null);
-    }
-  };
-
-  return (
-    <section className="panel voice-setup-panel" style={{ borderLeft: isCreated ? "4px solid var(--success)" : "1px solid var(--border)" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "12px", marginBottom: "14px" }}>
-        <div>
-          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-            <span style={{ fontSize: "18px" }}>🎙️</span>
-            <h2 style={{ fontSize: "16px", fontWeight: "700", margin: 0 }}>
-              Danh sách người nói & Mẫu giọng
-            </h2>
-            {profiles.length > 0 && (
-              <span className="status completed" style={{ borderRadius: "999px" }}>
-                {profiles.length} mẫu giọng
-              </span>
-            )}
-          </div>
-          <p style={{ margin: "5px 0 0", color: "var(--muted)", fontSize: "13px" }}>
-            {isCreated
-              ? "Trước khi bắt đầu: Tải lên hoặc thu âm mẫu giọng (10-25s) của người tham gia để hệ thống tự động gán tên khi phát biểu."
-              : "Các mẫu giọng Speechmatics đã đăng ký được dùng để tự động nhận diện và gán tên người nói."}
-          </p>
-        </div>
-        {editable && (
-          <Button tone="dark" disabled={recordingActive} onClick={onAddClick} style={{ minHeight: "38px", fontSize: "13px" }}>
-            + Thêm mẫu giọng người nói
-          </Button>
-        )}
-      </div>
-
-      {profiles.length > 0 ? (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: "10px", marginTop: "12px" }}>
-          {profiles.map((profile) => (
-            <div key={profile.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 12px", background: "var(--surface-soft)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border)" }}>
-              <div style={{ minWidth: 0, flex: 1, marginRight: "8px" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                  <strong style={{ fontSize: "14px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{profile.name}</strong>
-                  <span
-                    style={{
-                      fontSize: "10.5px",
-                      fontWeight: 600,
-                      padding: "1px 6px",
-                      borderRadius: "999px",
-                      background: profile.sample_count >= 3 ? "var(--success-soft)" : "var(--surface)",
-                      color: profile.sample_count >= 3 ? "var(--success)" : "var(--muted)",
-                      border: "1px solid var(--border)",
-                    }}
-                  >
-                    {profile.sample_count}/3 mẫu
-                  </span>
-                </div>
-                <small style={{ color: "var(--muted)", fontSize: "12px", display: "block", marginTop: "2px" }}>
-                  {(profile.sample_duration_ms / 1000).toFixed(1)}s · {profile.provider}
-                </small>
-              </div>
-              <div style={{ display: "flex", gap: "4px", flexShrink: 0 }}>
-                <Button
-                  onClick={() => void playVoiceAudio(profile.id)}
-                  style={{ minHeight: "30px", padding: "4px 8px", fontSize: "11px" }}
-                >
-                  {playingId === profile.id ? "⏸ Dừng" : "▶ Nghe"}
-                </Button>
-                {editable && !recordingActive && (
-                  <>
-                    {profile.sample_count < 3 && (
-                      <Button onClick={() => onAddSample(profile)} style={{ minHeight: "30px", padding: "4px 8px", fontSize: "12px" }}>
-                        + Mẫu
-                      </Button>
-                    )}
-                    <Button tone="danger" onClick={() => void onDeleteProfile(profile.id)} style={{ minHeight: "30px", padding: "4px 8px", fontSize: "12px" }}>Xóa</Button>
-                  </>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <p style={{ margin: "8px 0 0", color: "var(--muted)", fontSize: "13px", fontStyle: "italic" }}>
-          Chưa có mẫu giọng nào được thêm. Bấm "+ Thêm mẫu giọng người nói" để đăng ký trước khi bắt đầu.
-        </p>
-      )}
-    </section>
-  );
-}
 
 function TranscriptState({ error, sourceType, uploadHref }: { error: Error; sourceType: "realtime" | "upload"; uploadHref: string }) {
   const api = error as ApiError;

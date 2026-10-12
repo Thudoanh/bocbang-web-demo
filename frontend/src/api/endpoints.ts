@@ -91,8 +91,8 @@ export const voiceProfilesApi = {
     return apiClient.post<VoiceProfile>(`/voice-profiles/${profileId}/samples`, data);
   },
   delete: (profileId: string) => apiClient.delete<void>(`/voice-profiles/${profileId}`),
-  getAudioBlob: (profileId: string) => apiClient.getBlob(`/voice-profiles/${profileId}/audio`),
-  audioUrl: (profileId: string) => `${config.apiBaseUrl}/voice-profiles/${profileId}/audio`,
+  getAudioBlob: (profileId: string, sampleIndex: number = 1) => apiClient.getBlob(`/voice-profiles/${profileId}/samples/${sampleIndex}/audio`),
+  audioUrl: (profileId: string, sampleIndex: number = 1) => `${config.apiBaseUrl}/voice-profiles/${profileId}/samples/${sampleIndex}/audio`,
   getMyProfile: () => apiClient.get<VoiceProfile>("/voice-profiles/me"),
   enrollMyProfile: (audioFile: Blob | File) => {
     const data = new FormData();

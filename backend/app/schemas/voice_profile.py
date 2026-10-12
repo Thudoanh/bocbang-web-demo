@@ -8,6 +8,11 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class VoiceSampleItem(BaseModel):
+    index: int
+    has_audio: bool = True
+
+
 class VoiceProfileResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -19,6 +24,7 @@ class VoiceProfileResponse(BaseModel):
     provider: str
     sample_count: int
     has_audio: bool = False
+    samples: list[VoiceSampleItem] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 

@@ -75,7 +75,7 @@ class VoiceProfileService:
         profile.name = user.full_name
         self._append_identifiers(profile, enrollment.speaker_identifiers)
         profile.sample_duration_ms += enrollment.duration_ms
-        await self._save_profile_audio(profile, wav_bytes, append=profile.sample_count > 1)
+        await self._save_sample_audio(profile, wav_bytes, sample_index=profile.sample_count)
         await self._session.commit()
         await self._session.refresh(profile)
         return profile
@@ -113,7 +113,7 @@ class VoiceProfileService:
         )
         self._session.add(profile)
         await self._session.flush()
-        await self._save_profile_audio(profile, wav_bytes)
+        await self._save_sample_audio(profile, wav_bytes, sample_index=1)
         await self._session.commit()
         await self._session.refresh(profile)
         return profile
@@ -131,9 +131,10 @@ class VoiceProfileService:
         if profile.sample_count >= MAX_IDENTIFIERS_PER_PROFILE:
             raise _sample_limit_error()
         enrollment, wav_bytes = await self._enroll(audio_bytes, filename)
+        new_sample_index = profile.sample_count + 1
         self._append_identifiers(profile, enrollment.speaker_identifiers)
         profile.sample_duration_ms += enrollment.duration_ms
-        await self._save_profile_audio(profile, wav_bytes, append=True)
+        await self._save_sample_audio(profile, wav_bytes, sample_index=new_sample_index)
         await self._session.commit()
         await self._session.refresh(profile)
         return profile
@@ -224,7 +225,7 @@ class VoiceProfileService:
         )
         self._session.add(profile)
         await self._session.flush()
-        await self._save_profile_audio(profile, wav_bytes)
+        await self._save_sample_audio(profile, wav_bytes, sample_index=1)
         await self._session.commit()
         await self._session.refresh(profile)
         return profile
@@ -243,9 +244,10 @@ class VoiceProfileService:
         if profile.sample_count >= MAX_IDENTIFIERS_PER_PROFILE:
             raise _sample_limit_error()
         enrollment, wav_bytes = await self._enroll(audio_bytes, filename)
+        new_sample_index = profile.sample_count + 1
         self._append_identifiers(profile, enrollment.speaker_identifiers)
         profile.sample_duration_ms += enrollment.duration_ms
-        await self._save_profile_audio(profile, wav_bytes, append=True)
+        await self._save_sample_audio(profile, wav_bytes, sample_index=new_sample_index)
         await self._session.commit()
         await self._session.refresh(profile)
         return profile
@@ -263,7 +265,9 @@ class VoiceProfileService:
         await self._session.delete(profile)
         await self._session.commit()
 
-    async def get_profile_audio(self, profile_id: UUID, user: User) -> tuple[bytes, str]:
+    async def get_profile_audio(
+        self, profile_id: UUID, user: User, sample_index: int = 1
+    ) -> tuple[bytes, str]:
         profile = await self._session.get(VoiceProfile, profile_id)
         if profile is None:
             raise ApiError("VOICE_PROFILE_NOT_FOUND", "Không tìm thấy mẫu giọng.", 404)
@@ -272,31 +276,45 @@ class VoiceProfileService:
                 await self._meetings.require_access(profile.meeting_id, user, MeetingPermission.READ)
             else:
                 raise ApiError("FORBIDDEN", "Bạn không có quyền truy cập mẫu giọng này.", 403)
-        if not profile.audio_storage_path or self._storage is None:
+        if self._storage is None:
             raise ApiError("VOICE_AUDIO_NOT_FOUND", "Chưa có file âm thanh cho mẫu giọng này.", 404)
-        try:
-            audio_bytes = await self._storage.get_bytes(profile.audio_storage_path)
-        except Exception as exc:
-            raise ApiError("VOICE_AUDIO_NOT_FOUND", "Không tìm thấy file âm thanh trong kho lưu trữ.", 404) from exc
-        return audio_bytes, f"{profile.name}.wav"
 
-    async def _save_profile_audio(
-        self, profile: VoiceProfile, wav_bytes: bytes, append: bool = False
+        # Try specific sample file first
+        sample_key = f"voice_profiles/{profile.id}_sample_{sample_index}.wav"
+        try:
+            audio_bytes = await self._storage.get_bytes(sample_key)
+            return audio_bytes, f"{profile.name}_mau_{sample_index}.wav"
+        except Exception:
+            # Fallback for sample 1 or legacy merged file
+            if sample_index == 1 and profile.audio_storage_path:
+                try:
+                    audio_bytes = await self._storage.get_bytes(profile.audio_storage_path)
+                    return audio_bytes, f"{profile.name}_mau_{sample_index}.wav"
+                except Exception as exc:
+                    raise ApiError("VOICE_AUDIO_NOT_FOUND", "Không tìm thấy file âm thanh trong kho lưu trữ.", 404) from exc
+            raise ApiError("VOICE_AUDIO_NOT_FOUND", f"Không tìm thấy file âm thanh cho mẫu {sample_index}.", 404)
+
+    async def _save_sample_audio(
+        self, profile: VoiceProfile, wav_bytes: bytes, sample_index: int = 1
     ) -> None:
         if self._storage is None:
             return
-        key = f"voice_profiles/{profile.id}.wav"
-        if append and profile.audio_storage_path:
-            try:
-                existing_bytes = await self._storage.get_bytes(profile.audio_storage_path)
-                wav_bytes = _combine_wavs(existing_bytes, wav_bytes)
-            except Exception:
-                pass
-        await self._storage.put_bytes(wav_bytes, key)
-        profile.audio_storage_path = key
+        sample_key = f"voice_profiles/{profile.id}_sample_{sample_index}.wav"
+        await self._storage.put_bytes(wav_bytes, sample_key)
+        if sample_index == 1 or not profile.audio_storage_path:
+            legacy_key = f"voice_profiles/{profile.id}.wav"
+            await self._storage.put_bytes(wav_bytes, legacy_key)
+            profile.audio_storage_path = legacy_key
 
     async def _delete_profile_audio(self, profile: VoiceProfile) -> None:
-        if self._storage is not None and profile.audio_storage_path:
+        if self._storage is None:
+            return
+        for idx in range(1, 4):
+            try:
+                await self._storage.delete(f"voice_profiles/{profile.id}_sample_{idx}.wav")
+            except Exception:
+                pass
+        if profile.audio_storage_path:
             try:
                 await self._storage.delete(profile.audio_storage_path)
             except Exception:

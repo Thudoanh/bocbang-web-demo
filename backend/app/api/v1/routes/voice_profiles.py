@@ -93,12 +93,14 @@ async def delete_my_voice_profile(
 
 
 @voice_profiles_router.get("/{profile_id}/audio")
+@voice_profiles_router.get("/{profile_id}/samples/{sample_index}/audio")
 async def get_voice_profile_audio(
     profile_id: UUID,
     user: CurrentUserDependency,
     service: VoiceProfileServiceDependency,
+    sample_index: int = 1,
 ) -> Response:
-    audio_bytes, filename = await service.get_profile_audio(profile_id, user)
+    audio_bytes, filename = await service.get_profile_audio(profile_id, user, sample_index)
     return Response(
         content=audio_bytes,
         media_type="audio/wav",

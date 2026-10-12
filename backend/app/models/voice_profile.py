@@ -47,3 +47,8 @@ class VoiceProfile(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     def has_audio(self) -> bool:
         return self.audio_storage_path is not None
 
+    @property
+    def samples(self) -> list[dict[str, object]]:
+        count = max(0, self.sample_count)
+        return [{"index": i, "has_audio": True} for i in range(1, count + 1)]
+

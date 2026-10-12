@@ -11,6 +11,7 @@ interface VoiceEnrollmentModalProps {
   profileId?: string;
   defaultName?: string;
   currentSampleCount?: number;
+  targetSampleIndex?: number;
   isSpeakerMode?: boolean;
 }
 
@@ -22,9 +23,9 @@ export function VoiceEnrollmentModal({
   profileId,
   defaultName = "",
   currentSampleCount,
+  targetSampleIndex,
   isSpeakerMode = false,
 }: VoiceEnrollmentModalProps) {
-  const [mode, setMode] = useState<"record" | "upload">("record");
   const [name, setName] = useState(defaultName);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
@@ -33,11 +34,15 @@ export function VoiceEnrollmentModal({
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showUpload, setShowUpload] = useState(false);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<number | null>(null);
   const recordingStartedAtRef = useRef<number | null>(null);
+
+  const sampleIndexToEnroll =
+    targetSampleIndex ?? ((currentSampleCount !== undefined ? currentSampleCount + 1 : 1));
 
   useEffect(() => {
     if (defaultName) setName(defaultName);
@@ -87,13 +92,12 @@ export function VoiceEnrollmentModal({
         const startedAt = recordingStartedAtRef.current;
         if (startedAt === null) return;
         const elapsed = (performance.now() - startedAt) / 1000;
-        setRecordingSeconds(Math.min(25, Math.floor(elapsed)));
-        // Leave enough margin for MediaRecorder to flush its final chunk while
-        // keeping the server-validated file below the hard 25-second limit.
+        const rounded = Math.min(25, Math.floor(elapsed));
+        setRecordingSeconds(rounded);
         if (elapsed >= 24.5) stopRecording();
       }, 250);
     } catch {
-      setError("Không thể truy cập microphone. Vui lòng cấp quyền cho trình duyệt.");
+      setError("Không thể truy cập microphone. Vui lòng cấp quyền truy cập micro cho trình duyệt.");
     }
   };
 
@@ -119,21 +123,24 @@ export function VoiceEnrollmentModal({
     setAudioUrl(url);
   };
 
+  const handleResetAudio = () => {
+    if (audioUrl) URL.revokeObjectURL(audioUrl);
+    setAudioBlob(null);
+    setAudioUrl(null);
+    setRecordedDurationSeconds(null);
+    setError(null);
+  };
+
   const handleSave = async () => {
     if (!audioBlob) {
-      setError("Vui lòng ghi âm hoặc tải lên một mẫu giọng nói.");
+      setError("Vui lòng ghi âm mẫu giọng nói trước khi lưu.");
       return;
     }
     if (!profileId && (meetingId || isSpeakerMode) && !name.trim()) {
-      setError("Vui lòng nhập họ và tên của người phát biểu.");
+      setError("Vui lòng nhập tên người nói.");
       return;
     }
 
-    // MediaRecorder WebM blobs produced by Chromium often have no finite
-    // duration metadata even though FFmpeg can decode them normally. For a
-    // microphone capture, use the monotonic recording clock instead. If an
-    // uploaded file has no browser-readable metadata, let the server inspect the
-    // normalized WAV rather than rejecting an otherwise valid file here.
     let duration = recordedDurationSeconds;
     if (duration === null) {
       try {
@@ -142,8 +149,12 @@ export function VoiceEnrollmentModal({
         duration = null;
       }
     }
-    if (duration !== null && (duration < 10 || duration > 25)) {
-      setError("Mẫu giọng phải dài từ 10 đến 25 giây.");
+    if (duration !== null && duration < 10) {
+      setError("Mẫu giọng cần dài ít nhất 10 giây để AI nhận diện chuẩn xác. Vui lòng thu lại.");
+      return;
+    }
+    if (duration !== null && duration > 25) {
+      setError("Mẫu giọng không được dài quá 25 giây.");
       return;
     }
 
@@ -173,12 +184,18 @@ export function VoiceEnrollmentModal({
     }
   };
 
+  const isAddSampleMode = Boolean(profileId);
+  const targetLabel = isAddSampleMode
+    ? `Thu âm Mẫu ${sampleIndexToEnroll} cho ${defaultName || name}`
+    : "Thêm người nói mới";
+
   return (
     <div
       style={{
         position: "fixed",
         inset: 0,
-        backgroundColor: "rgba(0, 0, 0, 0.5)",
+        backgroundColor: "rgba(15, 23, 42, 0.6)",
+        backdropFilter: "blur(4px)",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
@@ -188,253 +205,337 @@ export function VoiceEnrollmentModal({
     >
       <div
         style={{
-          backgroundColor: "#ffffff",
-          borderRadius: "12px",
+          backgroundColor: "var(--surface, #ffffff)",
+          color: "var(--text, #0f172a)",
+          borderRadius: "16px",
           width: "100%",
-          maxWidth: "540px",
-          boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)",
+          maxWidth: "500px",
+          boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.25)",
+          border: "1px solid var(--border, #e2e8f0)",
           overflow: "hidden",
+          animation: "modalFadeIn 0.2s ease-out",
         }}
       >
+        {/* Header */}
         <div
           style={{
-            padding: "20px 24px",
-            borderBottom: "1px solid #e5e7eb",
+            padding: "18px 24px",
+            borderBottom: "1px solid var(--border, #e2e8f0)",
             display: "flex",
             alignItems: "center",
             justifyContent: "space-between",
           }}
         >
           <div>
-            <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-              <h2 style={{ fontSize: "18px", fontWeight: "600", margin: 0, color: "#111827" }}>
-                {profileId
-                  ? `Thêm Mẫu Giọng (${(currentSampleCount ?? 0) + 1}/3) · ${defaultName}`
-                  : (meetingId || isSpeakerMode)
-                  ? "Đăng ký Người Phát Biểu Mới"
-                  : `Mẫu Giọng Nói Cá Nhân${currentSampleCount !== undefined && currentSampleCount > 0 ? ` (Mẫu ${(currentSampleCount ?? 0) + 1}/3)` : ""}`}
-              </h2>
-              {currentSampleCount !== undefined && currentSampleCount > 0 && (
-                <span
-                  style={{
-                    fontSize: "11px",
-                    fontWeight: 600,
-                    padding: "2px 8px",
-                    borderRadius: "999px",
-                    background: currentSampleCount >= 3 ? "#fef3c7" : "#ecfdf5",
-                    color: currentSampleCount >= 3 ? "#92400e" : "#065f46",
-                    border: currentSampleCount >= 3 ? "1px solid #fde68a" : "1px solid #a7f3d0",
-                  }}
-                >
-                  {currentSampleCount >= 3 ? "Đã đủ 3/3 mẫu" : `Đã có ${currentSampleCount}/3 mẫu`}
-                </span>
-              )}
-            </div>
-            <p style={{ margin: "4px 0 0", fontSize: "13px", color: "#6b7280" }}>
-              {currentSampleCount !== undefined && currentSampleCount >= 3
-                ? "Hồ sơ đã đạt tối đa 3 mẫu giọng. Bạn cần xóa hồ sơ cũ nếu muốn thu âm lại từ đầu."
-                : "Mỗi người có thể đăng ký tối đa 3 mẫu giọng (10 - 25s mỗi mẫu). Thu âm nhiều mẫu ở các ngữ cảnh khác nhau sẽ giúp AI nhận diện chuẩn xác nhất."}
+            <h2 style={{ fontSize: "17px", fontWeight: "700", margin: 0, display: "flex", alignItems: "center", gap: "8px" }}>
+              <span>🎙️</span>
+              <span>{targetLabel}</span>
+            </h2>
+            <p style={{ margin: "3px 0 0", fontSize: "13px", color: "var(--muted, #64748b)" }}>
+              {isAddSampleMode
+                ? `Mẫu ${sampleIndexToEnroll}/3 giúp AI nhận diện tốt hơn khi giọng nói thay đổi.`
+                : "Thu âm mẫu 1 (10 - 25 giây) để AI nhận diện trong cuộc họp."}
             </p>
           </div>
           <button
             onClick={onClose}
-            disabled={isSubmitting}
+            disabled={isSubmitting || isRecording}
             style={{
               background: "none",
               border: "none",
               cursor: "pointer",
-              color: "#9ca3af",
-              padding: "4px",
+              color: "var(--muted, #94a3b8)",
+              padding: "6px",
+              borderRadius: "8px",
+              display: "flex",
+              alignItems: "center",
             }}
+            title="Đóng"
           >
             <Icon name="close" />
           </button>
         </div>
 
-        <div style={{ padding: "24px" }}>
-          {!profileId && (meetingId || isSpeakerMode) && (
-            <div style={{ marginBottom: "20px" }}>
+        {/* Content */}
+        <div style={{ padding: "20px 24px" }}>
+          {/* Name input (only for new speaker) */}
+          {!profileId && (
+            <div style={{ marginBottom: "18px" }}>
               <label
                 style={{
                   display: "block",
                   fontSize: "13px",
-                  fontWeight: "500",
-                  color: "#374151",
+                  fontWeight: "600",
                   marginBottom: "6px",
+                  color: "var(--text, #1e293b)",
                 }}
               >
-                Họ và tên người phát biểu <span style={{ color: "#ef4444" }}>*</span>
+                Tên người nói <span style={{ color: "#ef4444" }}>*</span>
               </label>
               <input
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="Ví dụ: Nguyễn Văn A"
+                placeholder="Ví dụ: Nguyễn Văn A, Giám đốc..."
+                autoFocus
+                disabled={isSubmitting || isRecording}
                 style={{
                   width: "100%",
-                  padding: "10px 12px",
-                  border: "1px solid #d1d5db",
-                  borderRadius: "8px",
+                  padding: "10px 14px",
+                  border: "1.5px solid var(--border, #cbd5e1)",
+                  borderRadius: "10px",
                   fontSize: "14px",
+                  background: "var(--surface, #ffffff)",
+                  color: "inherit",
                   boxSizing: "border-box",
+                  outline: "none",
+                  transition: "border-color 0.15s",
                 }}
-                disabled={isSubmitting}
               />
             </div>
           )}
 
-          {/* Mode Switcher */}
+          {/* Reading prompt suggestion card */}
           <div
             style={{
-              display: "flex",
-              backgroundColor: "#f3f4f6",
-              borderRadius: "8px",
-              padding: "4px",
+              background: "var(--surface-soft, #f8fafc)",
+              border: "1px solid var(--border, #e2e8f0)",
+              borderRadius: "12px",
+              padding: "14px 16px",
               marginBottom: "20px",
             }}
           >
-            <button
-              type="button"
-              onClick={() => {
-                setMode("record");
-                setAudioBlob(null);
-                setAudioUrl(null);
-                setRecordedDurationSeconds(null);
-              }}
+            <div
               style={{
-                flex: 1,
-                padding: "8px",
-                borderRadius: "6px",
-                border: "none",
-                fontWeight: "500",
-                fontSize: "13px",
-                cursor: "pointer",
-                backgroundColor: mode === "record" ? "#ffffff" : "transparent",
-                color: mode === "record" ? "#111827" : "#6b7280",
-                boxShadow: mode === "record" ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
+                fontSize: "12px",
+                fontWeight: "600",
+                color: "#6366f1",
+                marginBottom: "5px",
+                display: "flex",
+                alignItems: "center",
+                gap: "6px",
               }}
             >
-              Ghi âm trực tiếp (Microphone)
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setMode("upload");
-                setAudioBlob(null);
-                setAudioUrl(null);
-                setRecordedDurationSeconds(null);
-              }}
+              <span>💬</span> Đọc to đoạn thoại sau vào micro (10 - 20 giây):
+            </div>
+            <div
               style={{
-                flex: 1,
-                padding: "8px",
-                borderRadius: "6px",
-                border: "none",
-                fontWeight: "500",
-                fontSize: "13px",
-                cursor: "pointer",
-                backgroundColor: mode === "upload" ? "#ffffff" : "transparent",
-                color: mode === "upload" ? "#111827" : "#6b7280",
-                boxShadow: mode === "upload" ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
+                fontSize: "14px",
+                lineHeight: "1.6",
+                color: "var(--text, #334155)",
+                fontStyle: "italic",
               }}
             >
-              Tải file âm thanh có sẵn
-            </button>
+              "Tôi là {name.trim() || "[Tên của bạn]"}, đây là mẫu giọng nói của tôi để hệ thống tự
+              động nhận diện và gán tên trong các cuộc họp."
+            </div>
           </div>
 
-          {/* Mode: Record */}
-          {mode === "record" && (
-            <div style={{ textAlign: "center", padding: "12px 0" }}>
-              <div
-                style={{
-                  backgroundColor: "#f9fafb",
-                  border: "1px dashed #d1d5db",
-                  borderRadius: "8px",
-                  padding: "16px",
-                  marginBottom: "20px",
-                  textAlign: "left",
-                }}
-              >
-                <div style={{ fontSize: "12px", fontWeight: "600", color: "#4b5563", marginBottom: "4px" }}>
-                  Đoạn thoại mẫu gợi ý (đọc to, rõ ràng từ 10 - 20 giây):
-                </div>
-                <div style={{ fontSize: "13px", color: "#1f2937", lineHeight: "1.6", fontStyle: "italic" }}>
-                  "Xin chào, tôi là {name || "[Tên của bạn]"}. Tôi tham gia cuộc họp để trao đổi thông tin, thảo luận các vấn đề quan trọng và đưa ra ý kiến đóng góp cho dự án."
-                </div>
-              </div>
-
+          {/* Recording / Audio Area */}
+          {!showUpload ? (
+            <div style={{ textAlign: "center", padding: "8px 0" }}>
+              {/* Not yet recorded and not recording */}
               {!isRecording && !audioUrl && (
                 <div>
-                  <Button
-                    tone="dark"
+                  <button
+                    type="button"
                     onClick={startRecording}
-                    style={{ padding: "12px 24px", fontSize: "14px", fontWeight: "600" }}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: "10px",
+                      padding: "14px 28px",
+                      backgroundColor: "#ef4444",
+                      color: "#ffffff",
+                      border: "none",
+                      borderRadius: "999px",
+                      fontSize: "15px",
+                      fontWeight: "600",
+                      cursor: "pointer",
+                      boxShadow: "0 4px 14px rgba(239, 68, 68, 0.4)",
+                      transition: "transform 0.15s, background-color 0.15s",
+                    }}
                   >
-                    Bắt đầu ghi âm mẫu giọng
-                  </Button>
-                  <p style={{ fontSize: "12px", color: "#9ca3af", marginTop: "8px" }}>
-                    Khuyến nghị thu âm trong không gian yên tĩnh.
+                    <span style={{ fontSize: "18px" }}>🎙️</span>
+                    <span>Bấm để bắt đầu nói</span>
+                  </button>
+                  <p style={{ fontSize: "12px", color: "var(--muted, #94a3b8)", marginTop: "10px" }}>
+                    Thời lượng cần từ 10 đến 25 giây
                   </p>
                 </div>
               )}
 
+              {/* Is recording */}
               {isRecording && (
                 <div>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "10px", marginBottom: "16px" }}>
+                  {/* Pulsing indicator & timer */}
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: "12px",
+                      marginBottom: "12px",
+                    }}
+                  >
                     <span
                       style={{
                         width: "14px",
                         height: "14px",
                         borderRadius: "50%",
                         backgroundColor: "#ef4444",
-                        display: "inline-block",
-                        animation: "pulse 1.5s infinite",
+                        animation: "pulse 1.2s infinite",
                       }}
                     />
-                    <span style={{ fontSize: "18px", fontWeight: "700", color: "#ef4444" }}>
+                    <span
+                      style={{
+                        fontSize: "24px",
+                        fontWeight: "700",
+                        color: "#ef4444",
+                        fontVariantNumeric: "tabular-nums",
+                      }}
+                    >
                       0:{recordingSeconds < 10 ? `0${recordingSeconds}` : recordingSeconds} / 0:25s
                     </span>
                   </div>
-                  <Button
-                    tone="danger"
-                    onClick={stopRecording}
-                    style={{ padding: "10px 20px", fontSize: "14px" }}
+
+                  {/* Visual progress bar */}
+                  <div
+                    style={{
+                      width: "100%",
+                      height: "8px",
+                      backgroundColor: "var(--border, #e2e8f0)",
+                      borderRadius: "999px",
+                      overflow: "hidden",
+                      marginBottom: "12px",
+                    }}
                   >
-                    Dừng ghi âm
-                  </Button>
+                    <div
+                      style={{
+                        height: "100%",
+                        width: `${Math.min(100, (recordingSeconds / 25) * 100)}%`,
+                        backgroundColor: recordingSeconds >= 10 ? "#10b981" : "#f59e0b",
+                        transition: "width 0.25s ease",
+                      }}
+                    />
+                  </div>
+
+                  {/* Helper message */}
+                  <p
+                    style={{
+                      fontSize: "13px",
+                      fontWeight: "500",
+                      color: recordingSeconds >= 10 ? "#059669" : "#d97706",
+                      marginBottom: "16px",
+                    }}
+                  >
+                    {recordingSeconds < 10
+                      ? `Cần nói thêm ít nhất ${10 - recordingSeconds} giây nữa…`
+                      : "✓ Đã đủ độ dài! Bạn có thể bấm Dừng bất kỳ lúc nào."}
+                  </p>
+
+                  <button
+                    type="button"
+                    onClick={stopRecording}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "8px",
+                      padding: "12px 24px",
+                      backgroundColor: "#0f172a",
+                      color: "#ffffff",
+                      border: "none",
+                      borderRadius: "999px",
+                      fontSize: "14px",
+                      fontWeight: "600",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <span>⏹</span>
+                    <span>Dừng thu âm</span>
+                  </button>
                 </div>
               )}
 
+              {/* Recorded successfully, preview audio */}
               {audioUrl && !isRecording && (
-                <div>
-                  <div style={{ marginBottom: "16px" }}>
-                    <audio src={audioUrl} controls style={{ width: "100%", height: "40px" }} />
-                    {recordedDurationSeconds !== null && (
-                      <div style={{ marginTop: "8px", fontSize: "12px", color: "#6b7280" }}>
-                        Đã ghi {recordedDurationSeconds.toFixed(1)} giây
-                      </div>
-                    )}
-                  </div>
-                  <div style={{ display: "flex", justifyContent: "center", gap: "12px" }}>
-                    <Button
-                      tone="light"
-                      onClick={() => {
-                        setAudioBlob(null);
-                        setAudioUrl(null);
-                        setRecordedDurationSeconds(null);
+                <div
+                  style={{
+                    background: "var(--surface-soft, #f8fafc)",
+                    border: "1px solid var(--border, #e2e8f0)",
+                    borderRadius: "12px",
+                    padding: "16px",
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      marginBottom: "10px",
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontSize: "13px",
+                        fontWeight: "600",
+                        color:
+                          recordedDurationSeconds !== null && recordedDurationSeconds < 10
+                            ? "#dc2626"
+                            : "#059669",
                       }}
-                      disabled={isSubmitting}
                     >
-                      Ghi âm lại
-                    </Button>
+                      {recordedDurationSeconds !== null && recordedDurationSeconds < 10
+                        ? `⚠️ Mẫu chỉ có ${recordedDurationSeconds.toFixed(1)}s (chưa đủ 10s)`
+                        : `✓ Đã thu ${(recordedDurationSeconds ?? 0).toFixed(1)}s (Hợp lệ)`}
+                    </span>
+
+                    <button
+                      type="button"
+                      onClick={handleResetAudio}
+                      disabled={isSubmitting}
+                      style={{
+                        background: "none",
+                        border: "none",
+                        color: "#6366f1",
+                        fontSize: "13px",
+                        fontWeight: "600",
+                        cursor: "pointer",
+                        textDecoration: "underline",
+                      }}
+                    >
+                      ↺ Thu âm lại
+                    </button>
                   </div>
+
+                  <audio src={audioUrl} controls style={{ width: "100%", height: "40px" }} />
+                </div>
+              )}
+
+              {/* Secondary link to switch to file upload */}
+              {!isRecording && !audioUrl && (
+                <div style={{ marginTop: "16px" }}>
+                  <button
+                    type="button"
+                    onClick={() => setShowUpload(true)}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      color: "var(--muted, #64748b)",
+                      fontSize: "12px",
+                      cursor: "pointer",
+                      textDecoration: "underline",
+                    }}
+                  >
+                    📁 Hoặc tải lên file âm thanh (.wav, .mp3, .m4a)
+                  </button>
                 </div>
               )}
             </div>
-          )}
-
-          {/* Mode: Upload */}
-          {mode === "upload" && (
-            <div style={{ padding: "12px 0", textAlign: "center" }}>
+          ) : (
+            /* Upload file mode */
+            <div style={{ textAlign: "center", padding: "8px 0" }}>
               <input
                 type="file"
                 accept="audio/*"
@@ -447,69 +548,104 @@ export function VoiceEnrollmentModal({
                 htmlFor="voice-file-input"
                 style={{
                   display: "block",
-                  padding: "32px 16px",
-                  border: "2px dashed #d1d5db",
-                  borderRadius: "8px",
-                  backgroundColor: "#f9fafb",
+                  padding: "24px 16px",
+                  border: "2px dashed var(--border, #cbd5e1)",
+                  borderRadius: "12px",
+                  backgroundColor: "var(--surface-soft, #f8fafc)",
                   cursor: "pointer",
                 }}
               >
-                <div style={{ fontSize: "14px", fontWeight: "500", color: "#374151" }}>
-                  Bấm để chọn file âm thanh mẫu (WAV, MP3, M4A...)
+                <div style={{ fontSize: "28px", marginBottom: "8px" }}>📁</div>
+                <div style={{ fontSize: "14px", fontWeight: "600" }}>
+                  Bấm để chọn file âm thanh mẫu
                 </div>
-                <div style={{ fontSize: "12px", color: "#9ca3af", marginTop: "4px" }}>
-                  Độ dài bắt buộc từ 10 đến 25 giây
+                <div style={{ fontSize: "12px", color: "var(--muted, #94a3b8)", marginTop: "4px" }}>
+                  Độ dài từ 10 đến 25 giây (.WAV, .MP3, .M4A)
                 </div>
               </label>
 
               {audioUrl && (
-                <div style={{ marginTop: "16px" }}>
+                <div style={{ marginTop: "12px" }}>
                   <audio src={audioUrl} controls style={{ width: "100%", height: "40px" }} />
                 </div>
               )}
+
+              <div style={{ marginTop: "12px" }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleResetAudio();
+                    setShowUpload(false);
+                  }}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    color: "#6366f1",
+                    fontSize: "12px",
+                    cursor: "pointer",
+                    textDecoration: "underline",
+                  }}
+                >
+                  🎙️ Quay lại ghi âm trực tiếp
+                </button>
+              </div>
             </div>
           )}
 
+          {/* Error notice */}
           {error && (
             <div
               style={{
                 marginTop: "16px",
-                padding: "10px 12px",
+                padding: "10px 14px",
                 backgroundColor: "#fef2f2",
                 border: "1px solid #fecaca",
-                borderRadius: "6px",
+                borderRadius: "8px",
                 color: "#b91c1c",
                 fontSize: "13px",
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
               }}
             >
-              {error}
+              <span>⚠️</span>
+              <span>{error}</span>
             </div>
           )}
         </div>
 
+        {/* Footer actions */}
         <div
           style={{
-            padding: "16px 24px",
-            backgroundColor: "#f9fafb",
-            borderTop: "1px solid #e5e7eb",
+            padding: "14px 24px",
+            backgroundColor: "var(--surface-soft, #f8fafc)",
+            borderTop: "1px solid var(--border, #e2e8f0)",
             display: "flex",
             justifyContent: "flex-end",
-            gap: "12px",
+            alignItems: "center",
+            gap: "10px",
           }}
         >
-          <Button tone="light" onClick={onClose} disabled={isSubmitting}>
+          <Button tone="light" onClick={onClose} disabled={isSubmitting || isRecording}>
             Hủy bỏ
           </Button>
+
           <Button
             tone="dark"
-            onClick={handleSave}
-            disabled={!audioBlob || isSubmitting || isRecording || (currentSampleCount !== undefined && currentSampleCount >= 3)}
+            onClick={() => void handleSave()}
+            disabled={
+              !audioBlob ||
+              isSubmitting ||
+              isRecording ||
+              (recordedDurationSeconds !== null && recordedDurationSeconds < 10) ||
+              (!profileId && !name.trim())
+            }
+            style={{
+              padding: "9px 20px",
+              fontWeight: 600,
+            }}
           >
-            {currentSampleCount !== undefined && currentSampleCount >= 3
-              ? "Đã đủ 3/3 mẫu"
-              : isSubmitting
-              ? "Đang xử lý..."
-              : "Lưu mẫu giọng"}
+            {isSubmitting ? "Đang lưu…" : "Lưu mẫu giọng"}
           </Button>
         </div>
       </div>
