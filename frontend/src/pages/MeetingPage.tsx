@@ -153,9 +153,6 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
       description={`${languageLabel(meeting.data.language_mode)} · ${meeting.data.source_type === "realtime" ? "Ghi âm" : "Tệp"}`}
       actions={<>
         {editable && <Button onClick={() => setRenameOpen(true)}>Đổi tên</Button>}
-        <a className="btn btn-light" href={`/meetings/${meetingId}/summary`}>Tóm tắt</a>
-        <a className="btn btn-light" href={`/meetings/${meetingId}/translation`}>Dịch</a>
-        <a className="btn btn-light" href={`/meetings/${meetingId}/export-share`}>Xuất</a>
         {meeting.data.source_type === "upload" && <a className="btn btn-light" href={`/meetings/${meetingId}/upload`}>Tải tệp</a>}
         {owner && <Button tone="dark" onClick={() => setShareOpen(true)}>Chia sẻ</Button>}
       </>}
