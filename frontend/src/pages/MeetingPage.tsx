@@ -672,7 +672,7 @@ function RecordingPanel({
           void capture.current?.pause();
           setStatus("Mất kết nối, đang thử kết nối lại…");
         }
-        if (next === "closed") setState((current) => current === "stopped" ? current : "failed");
+        if (next === "closed") setState((current) => (current === "stopped" || current === "stopping") ? "stopped" : "failed");
       });
       socket.current.connect();
     } catch (cause) {
@@ -720,9 +720,17 @@ function RecordingPanel({
       return;
     }
     setState("stopping");
-    setStatus("Đang hoàn tất transcript và bản dịch còn lại…");
+    setStatus("Đang hoàn tất transcript và kết thúc bản ghi…");
     await releaseCapture(true);
     socket.current?.command("recording.stop");
+    try {
+      await meetingsApi.complete(meetingId);
+      setState("stopped");
+      setStatus("Đã kết thúc ghi âm.");
+      onComplete();
+    } catch {
+      // Sẽ nhận qua socket meeting.status hoặc người dùng bấm Kết thúc
+    }
   }
 
   async function finishExisting() {
@@ -730,6 +738,7 @@ function RecordingPanel({
     setStatus("Đang kết thúc bản ghi…");
     try {
       await meetingsApi.complete(meetingId);
+      setState("stopped");
       setStatus("Đã kết thúc ghi âm.");
       onComplete();
     } catch (cause) {

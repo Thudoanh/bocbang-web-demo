@@ -75,6 +75,13 @@ async def update_meeting(
     return await service.update(meeting_id, user, payload)
 
 
+@router.post("/{meeting_id}/complete", response_model=MeetingResponse)
+async def complete_meeting(
+    meeting_id: UUID, user: CurrentUserDependency, service: MeetingServiceDependency
+) -> MeetingResponse:
+    return await service.complete(meeting_id, user)
+
+
 @router.delete("/{meeting_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_meeting(
     meeting_id: UUID,

@@ -92,6 +92,13 @@ class MeetingService:
         await self._session.refresh(meeting)
         return self._meeting_response(meeting, permission)
 
+    async def complete(self, meeting_id: UUID, user: User) -> MeetingResponse:
+        meeting, permission = await self.require_access(meeting_id, user, MeetingPermission.EDIT)
+        meeting.status = MeetingStatus.COMPLETED
+        await self._session.commit()
+        await self._session.refresh(meeting)
+        return self._meeting_response(meeting, permission)
+
     async def delete(self, meeting_id: UUID, user: User) -> None:
         meeting, _ = await self.require_access(meeting_id, user, "owner")
         await self._session.delete(meeting)

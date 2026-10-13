@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import ApiError
@@ -180,7 +180,14 @@ class TranscriptService:
         self, meeting_id: UUID, user: User, payload: SpeakerCreateRequest
     ) -> SpeakerResponse:
         await self._meetings.require_access(meeting_id, user, MeetingPermission.EDIT)
-        speaker = Speaker(meeting_id=meeting_id, name=payload.name.strip(), role=payload.role, organization=payload.organization)
+        speaker = Speaker(
+            meeting_id=meeting_id,
+            name=payload.name.strip(),
+            role=payload.role,
+            organization=payload.organization,
+            voice_profile_id=payload.voice_profile_id,
+            is_identified=bool(payload.voice_profile_id),
+        )
         self._session.add(speaker)
         await self._session.commit()
         await self._session.refresh(speaker)
@@ -195,9 +202,25 @@ class TranscriptService:
         await self._meetings.require_access(speaker.meeting_id, user, MeetingPermission.EDIT)
         for field, value in payload.model_dump(exclude_unset=True).items():
             setattr(speaker, field, value.strip() if field == "name" and value is not None else value)
+        if payload.voice_profile_id is not None:
+            speaker.is_identified = True
         await self._session.commit()
         await self._session.refresh(speaker)
         return SpeakerResponse.model_validate(speaker)
+
+    async def delete_speaker(self, speaker_id: UUID, user: User) -> None:
+        speaker = await self._session.get(Speaker, speaker_id)
+        if speaker is None:
+            raise ApiError("SPEAKER_NOT_FOUND", "Speaker was not found.", 404)
+        await self._meetings.require_access(speaker.meeting_id, user, MeetingPermission.EDIT)
+        await self._session.execute(
+            update(CurrentSegment).where(CurrentSegment.speaker_id == speaker_id).values(speaker_id=None)
+        )
+        await self._session.execute(
+            update(SegmentVersion).where(SegmentVersion.speaker_id == speaker_id).values(speaker_id=None)
+        )
+        await self._session.delete(speaker)
+        await self._session.commit()
 
     async def append_stt_final(
         self, meeting: Meeting, actor_id: UUID, segment: TranscriptionSegment,

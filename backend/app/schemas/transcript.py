@@ -38,12 +38,14 @@ class SpeakerCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     role: str | None = Field(default=None, max_length=255)
     organization: str | None = Field(default=None, max_length=255)
+    voice_profile_id: UUID | None = Field(default=None)
 
 
 class SpeakerUpdateRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     role: str | None = Field(default=None, max_length=255)
     organization: str | None = Field(default=None, max_length=255)
+    voice_profile_id: UUID | None = Field(default=None)
 
     @model_validator(mode="after")
     def require_change(self) -> "SpeakerUpdateRequest":

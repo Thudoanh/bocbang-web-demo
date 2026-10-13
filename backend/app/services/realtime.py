@@ -57,9 +57,8 @@ class RealtimeTranscriptService:
             await self._session.commit()
 
     async def recording_ended(self) -> None:
-        """A realtime socket ending is not a successful processing completion."""
-        if self._meeting.status == MeetingStatus.RECORDING:
-            self._meeting.status = MeetingStatus.PROCESSING
+        if self._meeting.status in {MeetingStatus.RECORDING, MeetingStatus.PROCESSING}:
+            self._meeting.status = MeetingStatus.COMPLETED
             await self._session.commit()
 
     async def recording_failed(self) -> None:

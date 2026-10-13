@@ -231,11 +231,12 @@ class VoiceProfileService:
         return True
 
     async def list_user_profiles(self, user: User) -> list[VoiceProfile]:
-        """List all voice profiles belonging to or created by the user, purging any whose audio files are missing."""
+        """List all global voice profiles and user-specific profiles, purging any whose audio files are missing."""
         stmt = (
             select(VoiceProfile)
             .where(
                 or_(
+                    VoiceProfile.meeting_id.is_(None),
                     VoiceProfile.user_id == user.id,
                     VoiceProfile.meeting_id.in_(
                         select(Meeting.id).where(Meeting.owner_id == user.id)
@@ -287,11 +288,8 @@ class VoiceProfileService:
         profile = await self._session.get(VoiceProfile, profile_id)
         if profile is None:
             raise ApiError("VOICE_PROFILE_NOT_FOUND", "Không tìm thấy mẫu giọng.", 404)
-        if profile.user_id != user.id:
-            if profile.meeting_id:
-                await self._meetings.require_access(profile.meeting_id, user, MeetingPermission.EDIT)
-            else:
-                raise ApiError("FORBIDDEN", "Bạn không có quyền chỉnh sửa mẫu giọng này.", 403)
+        if profile.meeting_id:
+            await self._meetings.require_access(profile.meeting_id, user, MeetingPermission.EDIT)
         if profile.sample_count >= MAX_IDENTIFIERS_PER_PROFILE:
             raise _sample_limit_error()
         enrollment, wav_bytes = await self._enroll(audio_bytes, filename)
@@ -307,11 +305,8 @@ class VoiceProfileService:
         profile = await self._session.get(VoiceProfile, profile_id)
         if profile is None:
             raise ApiError("VOICE_PROFILE_NOT_FOUND", "Không tìm thấy mẫu giọng.", 404)
-        if profile.user_id != user.id:
-            if profile.meeting_id:
-                await self._meetings.require_access(profile.meeting_id, user, MeetingPermission.EDIT)
-            else:
-                raise ApiError("FORBIDDEN", "Bạn không có quyền xóa mẫu giọng này.", 403)
+        if profile.meeting_id:
+            await self._meetings.require_access(profile.meeting_id, user, MeetingPermission.EDIT)
         await self._delete_profile_audio(profile)
         await self._session.delete(profile)
         await self._session.commit()
@@ -322,11 +317,8 @@ class VoiceProfileService:
         profile = await self._session.get(VoiceProfile, profile_id)
         if profile is None:
             raise ApiError("VOICE_PROFILE_NOT_FOUND", "Không tìm thấy mẫu giọng.", 404)
-        if profile.user_id != user.id:
-            if profile.meeting_id:
-                await self._meetings.require_access(profile.meeting_id, user, MeetingPermission.EDIT)
-            else:
-                raise ApiError("FORBIDDEN", "Bạn không có quyền chỉnh sửa mẫu giọng này.", 403)
+        if profile.meeting_id:
+            await self._meetings.require_access(profile.meeting_id, user, MeetingPermission.EDIT)
         if sample_index < 1 or sample_index > profile.sample_count:
             raise ApiError("SAMPLE_NOT_FOUND", "Không tìm thấy lần thu này.", 404)
 
@@ -439,29 +431,24 @@ class VoiceProfileService:
                 .order_by(VoiceProfile.created_at, VoiceProfile.id)
             )
         )
-        member_user_ids = [meeting.owner_id]
-        member_user_ids.extend(
-            list(
-                await self._session.scalars(
-                    select(MeetingMember.user_id).where(
-                        MeetingMember.meeting_id == meeting_id
-                    )
-                )
-            )
-        )
-        users = list(
+        # Tất cả các mẫu giọng đã lưu (toàn cục - meeting_id is None) được tự động dùng chung cho mọi cuộc họp
+        global_profiles = list(
             await self._session.scalars(
                 select(VoiceProfile)
-                .where(
-                    VoiceProfile.user_id.in_(member_user_ids),
-                    VoiceProfile.meeting_id.is_(None),
-                )
+                .where(VoiceProfile.meeting_id.is_(None))
                 .order_by(VoiceProfile.created_at, VoiceProfile.id)
             )
         )
+        seen_ids = set()
+        all_profiles: list[VoiceProfile] = []
+        for p in (guests + global_profiles):
+            if p.id not in seen_ids:
+                seen_ids.add(p.id)
+                all_profiles.append(p)
+
         valid_profiles: list[VoiceProfile] = []
         changed = False
-        for p in (guests + users):
+        for p in all_profiles:
             is_valid = await self._verify_and_cleanup_profile(p)
             if is_valid:
                 valid_profiles.append(p)

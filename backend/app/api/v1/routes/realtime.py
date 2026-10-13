@@ -301,7 +301,7 @@ async def realtime_transcription(websocket: WebSocket, meeting_id: UUID) -> None
                         await translation_session.flush()
                         await translation_session.close()
                     await transcript_service.recording_ended()
-                    await send_json({"type": "meeting.status", "status": "processing"})
+                    await send_json({"type": "meeting.status", "status": "completed"})
                     await websocket.close(code=status.WS_1000_NORMAL_CLOSURE)
                     return
             except STTProviderError as exc:
