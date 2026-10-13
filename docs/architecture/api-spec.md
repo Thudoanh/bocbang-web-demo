@@ -1,47 +1,6 @@
 # API Specification v2
 
-## Decisions đã chốt
-
--   **Phân quyền:** không có global Admin trong web demo. Mỗi meeting có
-    `owner` và cộng tác viên theo ACL `read | comment | edit`. Đây là
-    phân quyền theo tài nguyên, cần thiết vì hệ thống có chia sẻ/cộng
-    tác.
--   **Đăng ký:** email + password và bắt buộc xác minh email bằng OTP
-    trước khi kích hoạt đầy đủ.
--   **Google Login:** Google OAuth thật.
--   **Upload demo:** tối đa **500 MB/file** và **2 giờ/file**, cấu hình
-    bằng environment. Hỗ trợ đầu vào phổ biến:
-    `mp3, wav, m4a, aac, flac, ogg, opus, webm, mp4, mov, mkv, avi, mpeg/mpg`.
-    Backend dùng **FFmpeg** để probe/normalize audio trước STT, vì
-    provider không nhất thiết nhận mọi container/codec.
--   **STT:** kiến trúc provider mở. Demo phải có ít nhất một adapter
-    thật; provider được chọn qua config. Capability model quyết định
-    `batch`, `streaming`, `diarization`, `languages`, `timestamps`,
-    `confidence`.
--   **Ngôn ngữ STT:** demo bảo đảm Việt + Anh; kiến trúc hỗ trợ mở rộng
-    multilingual theo capability provider.
--   **Diarization:** bắt buộc trong demo nếu provider được chọn hỗ trợ;
-    UI hiển thị Speaker 1, Speaker 2...
--   **Translation:** provider mở; demo bảo đảm VI ↔ EN; mở rộng
-    multilingual theo provider.
--   **LLM:** provider mở; không hard-code vendor/model vào business
-    service.
--   **Summary:** `general`, `briefing`, `voting`.
--   **Export:** PDF, DOCX, TXT, SRT, VTT, JSON.
--   **Share:** `read`, `comment`, `edit`.
--   **Retention:** không tự xóa audio theo thời gian trong demo; user có
-    thể xóa audio hoặc meeting.
--   **Delete meeting:** xóa toàn bộ dữ liệu phụ thuộc và object storage
-    liên quan.
--   **Versioning:** giữ lịch sử transcript và summary. Không overwrite
-    version cũ.
--   **Xin ý kiến:** loại khỏi scope.
--   **Deploy demo:** ưu tiên **Render** cho frontend static, FastAPI web
-    service, background worker, PostgreSQL và Redis-compatible Key
-    Value; object storage dùng S3-compatible managed storage bên ngoài.
-    Kiến trúc không phụ thuộc Render.
--   **Frontend:** không tiếp tục maintain bundle `script.js`; agent dựng
-    lại source React/TypeScript maintainable từ UI hiện tại.
+_Đối chiếu routes/schemas hiện tại: 2026-10-08. Các URL dưới đây dùng prefix `/api/v1`._
 
 Base: `/api/v1`
 
@@ -59,6 +18,7 @@ POST /auth/logout
 POST /auth/forgot-password
 POST /auth/reset-password
 GET  /auth/me
+PATCH /auth/me
 ```
 
 Email/password account creation returns an unverified user and sends a hashed-at-
@@ -74,6 +34,9 @@ verified Google email, then redirects to the configured frontend origin using a
 URL fragment. No token is placed in a query parameter.
 
 ## 2. Meetings
+
+`GET /meetings` accepts `q`, `status`, `source_type`, `limit` (100 default,
+250 max), `offset`; it returns a list without total count/cursor.
 
 ``` text
 POST   /meetings
@@ -93,8 +56,8 @@ DELETE /meetings/{id}/members/{user_id}
 
 POST   /meetings/{id}/shares
 GET    /meetings/{id}/shares
-PATCH  /shares/{share_id}
-DELETE /shares/{share_id}
+PATCH  /meetings/shares/{share_id}
+DELETE /meetings/shares/{share_id}
 ```
 
 Permission:
@@ -106,7 +69,7 @@ Permission:
 Member creation accepts exactly one of `email` or `user_id`; the target must be
 an existing account. Member and share-link management is owner-only. Creating a
 share returns its raw high-entropy token once and persists only a SHA-256 hash;
-subsequent list/read responses never reveal it. `DELETE /shares/{share_id}`
+subsequent list/read responses never reveal it. `DELETE /meetings/shares/{share_id}`
 revokes the link (rather than hard-deleting its audit record).
 
 ## 4. Media
@@ -114,6 +77,7 @@ revokes the link (rather than hard-deleting its audit record).
 ``` text
 POST   /meetings/{id}/media
 GET    /meetings/{id}/media
+GET    /meetings/media/playback/{ticket}
 POST   /meetings/{id}/media/{media_id}/playback-url
 GET    /meetings/{id}/media/{media_id}/stream
 GET    /meetings/{id}/media/{media_id}/download
@@ -137,7 +101,14 @@ Stream and download require `read` access. Stream accepts a single HTTP `Range`
 and returns `206` plus `Content-Range`, enabling seeking without exposing a
 storage path or public object URL. With S3-compatible storage, playback and
 download resolve to short-lived private presigned GET URLs only after the same
-ACL check; local development retains the authenticated proxy behavior.
+ACL check; local development uses a signed playback ticket with TTL. `POST .../playback-url`
+returns `{url, expires_in_seconds}`; S3 returns a presigned URL, local returns
+the ticket route above. Both proxy stream routes support a single byte Range.
+The direct `/stream` endpoint proxies bytes in both storage modes.
+
+Known implementation issue: the media `/download` handler references `request`
+without declaring it; this route needs repair and runtime verification. The
+playback route and export download use separate handlers.
 
 ## 5. Provider capability endpoint
 
@@ -145,20 +116,26 @@ ACL check; local development retains the authenticated proxy behavior.
 GET /capabilities
 ```
 
-Example:
+Example with configured providers (unavailable capabilities are false/empty):
 
 ``` json
 {
   "stt": {
-    "provider": "configured-provider",
+    "provider": "speechmatics",
+    "fallback_provider": "assemblyai",
+    "speaker_identification": true,
     "batch": true,
     "streaming": true,
     "diarization": true,
-    "languages": ["vi","en"]
+    "timestamps": true,
+    "confidence": true,
+    "languages": ["en","vi"]
   },
   "translation": {
-    "languages": ["vi","en"]
+    "languages": ["en","vi"],
+    "language_pairs": [["en","vi"],["vi","en"]]
   },
+  "summary_languages": ["vi","en"],
   "summary_templates": ["general","briefing","voting"],
   "exports": ["pdf","docx","txt","srt","vtt","json"]
 }
@@ -185,6 +162,7 @@ may only query jobs belonging to a meeting they can read.
 GET  /meetings/{id}/transcript
 GET  /meetings/{id}/transcript/versions
 GET  /meetings/{id}/transcript/versions/{version_id}
+POST /meetings/{id}/transcript/rollback
 
 PATCH  /segments/{logical_segment_id}
 DELETE /segments/{logical_segment_id}
@@ -202,6 +180,12 @@ same snapshot shape. Segment mutation responses include the newly current
 `version_id` and `version_no`. Split accepts `split_at_ms` and optional split
 texts; merge accepts `first_segment_id` and `second_segment_id`, which must be
 contiguous adjacent segments assigned to the same speaker.
+Current transcript supports `limit` (default 100, max 500), `offset` and opaque
+`cursor`, returning `next_cursor`. Historical reads use `limit/offset`;
+version lists default to 100 with max 250. Rollback accepts
+`{"target_version_id":"uuid"}` and creates a new revision instead of rewriting
+history. Current reads use a projection; immutable reads reconstruct snapshots
+and append-only edit events.
 
 ## 8. Speakers
 
@@ -263,7 +247,9 @@ GET  /summaries/{id}/versions
 GET  /summaries/{id}/versions/{version_id}
 ```
 
-Templates: `general | briefing | voting`
+Templates: `general | briefing | voting`. Request also requires
+`output_language: "vi" | "en"`; responses include it. Summary identity is scoped
+by meeting, transcript version, template and output language.
 
 Regenerate → new summary version.
 
@@ -282,7 +268,8 @@ GET  /exports/{id}/download
 
 Formats: `pdf | docx | txt | srt | vtt | json`
 
-Export requests return `202` with a durable job. `GET /exports/{id}` reports
+Export requests return `202` with `ExportResponse` containing `job_id` (not the
+same response schema as media/AI `JobResponse`). `GET /exports/{id}` reports
 that job's state; downloading is authorized with meeting `read` access and is
 available only after completion.
 
@@ -297,6 +284,10 @@ With the API base prefix, the implemented URL is
 authorizes the WebSocket only; STT API keys remain backend-only. The caller must
 have `edit` permission.
 
+`session.ready` includes `provider`, `speaker_identification_available` and
+`fallback_active`. With Speechmatics, known speaker names can come from enrolled
+voice profiles; AssemblyAI fallback keeps generic labels.
+
 Server events: `session.ready`, `transcript.partial`, `transcript.final`,
 `transcript.speaker_updated`,
 `meeting.status`, and `error`. Transcript events contain normalized
@@ -304,6 +295,18 @@ Server events: `session.ready`, `transcript.partial`, `transcript.final`,
 `confidence`; final events also include `logical_segment_id` and optional
 `speaker_id` identifying the persisted meeting speaker. Error events use
 `{type:"error", code, message, retryable}`.
+
+Transcript events also carry `stream_segment_id`, `stream_start_ms`, and
+`stream_end_ms`. Speechmatics uses a connection-scoped `<session>:turn:<id>` that
+stays stable across partial updates, timestamp corrections, and the corresponding
+final. A partial contains the current cumulative row text, not a word delta; replace
+the preview with that ID. A final closes that identified turn even if its final
+timestamps are shorter than the preview's. Do not revive that turn with a stale
+partial after fetching its saved transcript. Remaining drafts at recording end
+are unconfirmed/not saved, rather than permanently recognizing. Different turn
+IDs and reconnect scopes stay separate,
+even when their timestamps overlap. Final timestamps may be offset to the meeting
+timeline; raw stream timestamps remain relative to the current upstream session.
 
 Client sends raw PCM16 little-endian binary audio chunks at 16 kHz mono and
 JSON commands
@@ -372,7 +375,28 @@ Realtime endpoint checks configured STT capability. Nếu
 `streaming=false`, return explicit unsupported capability; không giả
 realtime.
 
-## 14. Authorization matrix
+## 14. Voice profiles
+
+```text
+GET    /voice-profiles/me
+POST   /voice-profiles/me
+DELETE /voice-profiles/me
+GET    /meetings/{id}/voice-profiles
+POST   /meetings/{id}/voice-profiles
+POST   /meetings/{id}/voice-profiles/{profile_id}/samples
+DELETE /meetings/{id}/voice-profiles/{profile_id}
+```
+
+Personal enrollment uses multipart `file`; repeated POST adds samples to the
+same profile. Guest creation uses multipart `name` and `file`; guest add/delete
+requires meeting `edit`, list requires `read`. Guest routes cannot mutate a
+personal profile. Samples normalized by FFmpeg must be 10–25 seconds;
+enrollment requires Speechmatics configuration. Each profile has at most three
+identifiers. Responses expose metadata/count, never identifiers or audio paths.
+Candidates include guests and personal profiles of owner/members; up to 50
+identifiers are allocated round-robin per session.
+
+## 15. Authorization matrix
 
   Action                           read   comment   edit   owner
   ------------------------------ ------ --------- ------ -------
@@ -384,7 +408,10 @@ realtime.
   Manage members/share               \-        \-     \-       ✓
   Delete meeting/media               \-        \-     \-       ✓
 
-## 15. Errors
+## 16. Errors
+
+REST error schema: `{code, message, request_id, details?}`. Job errors and
+WebSocket errors use their own documented schema, including retryability.
 
 Use stable codes: - `AUTH_REQUIRED` - `EMAIL_NOT_VERIFIED` -
 `PERMISSION_DENIED` - `UPLOAD_TOO_LARGE` - `MEDIA_UNSUPPORTED` -
@@ -392,3 +419,15 @@ Use stable codes: - `AUTH_REQUIRED` - `EMAIL_NOT_VERIFIED` -
 `PROVIDER_CAPABILITY_UNAVAILABLE` -
 `STT_PROVIDER_ERROR` - `TRANSLATION_PROVIDER_ERROR` -
 `LLM_PROVIDER_ERROR` - `VERSION_CONFLICT`
+
+## 17. Runtime endpoints
+
+```text
+GET /health
+GET /ready
+```
+
+Liveness reports `ok`; readiness checks only database configuration/connectivity
+and returns 503 when not ready. It does not check Redis, worker or providers.
+Swagger, ReDoc and OpenAPI are served at `/api/v1/docs`, `/api/v1/redoc` and
+`/api/v1/openapi.json`. `PATCH /auth/me` currently updates `full_name` only.

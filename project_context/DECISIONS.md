@@ -18,7 +18,9 @@
 - Auth dùng signed JWT access/refresh token vì ERD chưa có bảng session hoặc
   revocation. Logout chỉ hủy state phía client; thêm server-side revocation cần
   migration/session design riêng.
-- OTP email/password reset được băm scrypt và chỉ delivery qua adapter đã cấu
-  hình (hiện có SMTP); không dùng mock email khi chạy ứng dụng.
+- OTP email/password reset được băm scrypt khi lưu DB. Delivery thật dùng SMTP;
+  code hiện có console adapter in OTP plaintext ra API stdout cho local dev
+  (development để trống provider, hoặc chọn console/dev/local). Public deployment
+  cần cấu hình SMTP; console output không phải email delivery.
 - Google OAuth dùng authorization-code flow, state cookie HttpOnly đã ký và chỉ
   chấp nhận verified email từ Google.

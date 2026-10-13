@@ -11,6 +11,12 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 API_V1_PREFIX = "/api/v1"
 
 
+def _default_media_storage_path() -> Path:
+    if Path("/data/media").is_dir():
+        return Path("/data/media")
+    return REPOSITORY_ROOT / ".local-media"
+
+
 class Settings(BaseSettings):
     """Runtime configuration with safe local defaults and no embedded secrets."""
 
@@ -62,7 +68,7 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 524_288_000
     max_media_duration_seconds: int = 7_200
     storage_backend: str = "local"
-    media_storage_path: Path = REPOSITORY_ROOT / ".local-media"
+    media_storage_path: Path = Field(default_factory=_default_media_storage_path)
     s3_endpoint_url: str | None = Field(
         default=None, validation_alias=AliasChoices("S3_ENDPOINT_URL", "S3_ENDPOINT")
     )
@@ -78,8 +84,17 @@ class Settings(BaseSettings):
     s3_region: str = "auto"
     storage_presigned_url_ttl_seconds: int = 300
     stt_provider: str | None = None
+    stt_fallback_provider: str | None = None
     stt_api_key: str | None = None
     stt_model: str = "universal-3-pro"
+    speechmatics_api_key: str | None = None
+    speechmatics_rt_url: str = "wss://eu2.rt.speechmatics.com/v2"
+    speechmatics_batch_url: str | None = None
+    speechmatics_speaker_sensitivity: float = 0.75
+    speechmatics_prefer_current_speaker: bool = False
+    speechmatics_end_of_utterance_silence_seconds: float = 1.0
+    speechmatics_max_delay_seconds: float = Field(default=1.5, ge=0.7, le=4.0)
+    speechmatics_finalization_delay_seconds: float = Field(default=0.75, ge=0.0, le=5.0)
     assemblyai_api_base_url: str = "https://api.assemblyai.com/v2"
     assemblyai_streaming_base_url: str = "wss://streaming.assemblyai.com/v3/ws"
     assemblyai_streaming_model: str = "universal-3-6-pro"
@@ -103,9 +118,17 @@ class Settings(BaseSettings):
     @classmethod
     def split_frontend_origins(cls, value: str | list[str] | tuple[str, ...]) -> tuple[str, ...]:
         if isinstance(value, str):
-            origins = tuple(origin.strip().rstrip("/") for origin in value.split(",") if origin.strip())
+            origins = tuple(
+                origin.strip().rstrip("/")
+                for origin in value.split(",")
+                if origin.strip()
+            )
         else:
-            origins = tuple(str(origin).strip().rstrip("/") for origin in value if str(origin).strip())
+            origins = tuple(
+                str(origin).strip().rstrip("/")
+                for origin in value
+                if str(origin).strip()
+            )
         if not origins:
             raise ValueError("At least one FRONTEND_ORIGIN must be configured.")
         return origins
@@ -148,7 +171,25 @@ class Settings(BaseSettings):
     @classmethod
     def validate_positive_worker_setting(cls, value: int) -> int:
         if value <= 0:
-            raise ValueError("Worker retry, delivery, and reconciliation settings must be positive.")
+            raise ValueError(
+                "Worker retry, delivery, and reconciliation settings must be positive."
+            )
+        return value
+
+    @field_validator("speechmatics_speaker_sensitivity")
+    @classmethod
+    def validate_speaker_sensitivity(cls, value: float) -> float:
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("SPEECHMATICS_SPEAKER_SENSITIVITY must be between 0 and 1.")
+        return value
+
+    @field_validator("speechmatics_end_of_utterance_silence_seconds")
+    @classmethod
+    def validate_speechmatics_silence_trigger(cls, value: float) -> float:
+        if not 0.1 <= value <= 5.0:
+            raise ValueError(
+                "SPEECHMATICS_END_OF_UTTERANCE_SILENCE_SECONDS must be between 0.1 and 5."
+            )
         return value
 
     def require_queue_configuration(self) -> None:

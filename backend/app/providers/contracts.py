@@ -1,8 +1,10 @@
 """Normalized contracts that keep vendor SDKs out of domain services."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from time import perf_counter
 from typing import Literal, Protocol
+from uuid import UUID, uuid4
 
 
 @dataclass(frozen=True)
@@ -17,18 +19,37 @@ class STTCapabilities:
 
 
 @dataclass(frozen=True)
+class KnownSpeaker:
+    profile_id: UUID
+    provider_label: str
+    name: str
+    speaker_identifiers: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SpeakerEnrollment:
+    speaker_identifiers: tuple[str, ...]
+    duration_ms: int
+
+
+@dataclass(frozen=True)
 class TranscriptionSegment:
     start_ms: int
     end_ms: int
     text: str
     speaker_label: str | None = None
     confidence: float | None = None
+    speaker_name: str | None = None
+    voice_profile_id: UUID | None = None
+    is_identified: bool = False
 
 
 @dataclass(frozen=True)
 class TranscriptionResult:
     language: str
     segments: tuple[TranscriptionSegment, ...]
+    provider_name: str | None = None
+    fallback_active: bool = False
 
 
 @dataclass(frozen=True)
@@ -38,6 +59,7 @@ class StreamingOptions:
     language: str
     diarization: bool
     audio_format: str | None = None
+    known_speakers: tuple[KnownSpeaker, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -48,6 +70,9 @@ class StreamingTranscriptionEvent:
     language: str
     segment: TranscriptionSegment
     turn_order: int | None = None
+    stream_segment_id: str | None = None
+    event_id: str = field(default_factory=lambda: uuid4().hex)
+    captured_at: float = field(default_factory=perf_counter)
 
 
 @dataclass(frozen=True)
@@ -79,7 +104,15 @@ class STTProviderError(Exception):
 class STTStream(Protocol):
     """A live provider connection. Implementations must not retain API keys in events."""
 
+    provider_name: str
+    speaker_identification_available: bool
+    fallback_active: bool
+
     async def send_audio(self, chunk: bytes) -> tuple[StreamingEvent, ...]: ...
+
+    async def receive_events(self) -> tuple[StreamingEvent, ...]:
+        """Wait for provider output independently of incoming audio; cancellation safe."""
+        ...
 
     async def pause(self) -> tuple[StreamingEvent, ...]: ...
 
@@ -92,10 +125,19 @@ class STTProvider(Protocol):
     def capabilities(self) -> STTCapabilities: ...
 
     async def transcribe_file(
-        self, source: Path, language: str | None = None
+        self,
+        source: Path,
+        language: str | None = None,
+        known_speakers: tuple[KnownSpeaker, ...] = (),
     ) -> TranscriptionResult: ...
 
     async def open_stream(self, options: StreamingOptions) -> STTStream: ...
+
+
+class SpeakerEnrollmentProvider(Protocol):
+    async def enroll_speaker(
+        self, source: Path, language: str = "vi"
+    ) -> SpeakerEnrollment: ...
 
 
 @dataclass(frozen=True)

@@ -1,6 +1,9 @@
 # Bóc Băng AI --- Agent Source of Truth v2
 
-Tài liệu này là entry point cho code agent.
+Tài liệu này là entry point cho code agent. Frontend React/TypeScript, backend,
+worker/reconciler, Docker Compose và S3 adapter đã có implementation.
+Đọc trạng thái hiện tại trước khi dùng các BA/audit lịch sử làm backlog.
+Code là nguồn xác minh hành vi đã triển khai; BA/UI specs mô tả yêu cầu mục tiêu.
 
 ## Decisions đã chốt
 
@@ -42,14 +45,15 @@ Tài liệu này là entry point cho code agent.
     service, background worker, PostgreSQL và Redis-compatible Key
     Value; object storage dùng S3-compatible managed storage bên ngoài.
     Kiến trúc không phụ thuộc Render.
--   **Frontend:** không tiếp tục maintain bundle `script.js`; agent dựng
-    lại source React/TypeScript maintainable từ UI hiện tại.
+-   **Frontend:** source React/TypeScript + Vite đã có trong `frontend/`;
+    không tiếp tục maintain bundle `prototype/script.js`.
 
 ## Thứ tự đọc bắt buộc
 
 1.  [`../project_context/CURRENT_STATUS.md`](../project_context/CURRENT_STATUS.md)
 2.  [`../project_context/DECISIONS.md`](../project_context/DECISIONS.md)
-3.  [`../docs/planning/frontend-rebuild.md`](../docs/planning/frontend-rebuild.md)
+3.  [`../docs/planning/frontend-rebuild.md`](../docs/planning/frontend-rebuild.md) và
+    [`../docs/deployment/environment.md`](../docs/deployment/environment.md)
 4.  [`../docs/architecture/architecture.md`](../docs/architecture/architecture.md)
 5.  [`../docs/architecture/provider-architecture.md`](../docs/architecture/provider-architecture.md)
 6.  [`../docs/architecture/erd.md`](../docs/architecture/erd.md)

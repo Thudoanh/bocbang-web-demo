@@ -1,5 +1,7 @@
 import asyncio
 import json
+from concurrent.futures import CancelledError as FutureCancelledError
+from contextlib import suppress
 from pathlib import Path
 from uuid import uuid4
 
@@ -23,6 +25,7 @@ from app.providers.contracts import (
     TranslationCapabilities,
     TranslationProviderError,
 )
+from app.providers.speechmatics import SpeechmaticsProvider
 
 
 class CapturingEmailSender:
@@ -72,6 +75,39 @@ class FakeStream:
         return ()
 
 
+class PushStream(FakeStream):
+    """Output arrives after ready/pause even if the browser sends no audio."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.output = asyncio.Queue()
+        self.output.put_nowait((StreamingTranscriptionEvent(
+            "partial", "vi", TranscriptionSegment(0, 500, "Đang nói"),
+            stream_segment_id="turn:0",
+        ),))
+        self.readers = 0
+        self.close_events = ()
+
+    async def receive_events(self):
+        self.readers += 1
+        try:
+            return await self.output.get()
+        finally:
+            self.readers -= 1
+
+    async def pause(self):
+        self.paused = True
+        self.output.put_nowait((StreamingTranscriptionEvent(
+            "final", "vi", TranscriptionSegment(0, 900, "Đã nói xong"),
+            stream_segment_id="turn:0",
+        ),))
+        return ()
+
+    async def close(self):
+        self.closed = True
+        return self.close_events
+
+
 class FakeProvider:
     def __init__(self, *, streaming: bool = True, error: STTProviderError | None = None) -> None:
         self.streaming = streaming
@@ -97,6 +133,89 @@ class FakeProvider:
     async def open_stream(self, options: StreamingOptions) -> FakeStream:
         self.options = options
         return self.stream
+
+
+def test_realtime_pushes_partial_and_paused_final_without_new_audio(tmp_path: Path) -> None:
+    app, sender, _ = _app(tmp_path)
+    provider = FakeProvider()
+    provider.stream = PushStream()
+    app.state.stt_provider = provider
+    with TestClient(app) as client:
+        session = _verified_session(client, sender)
+        meeting_id = _create_realtime_meeting(client, session["access_token"])
+        with client.websocket_connect(
+            f"/api/v1/realtime/{meeting_id}?access_token={session['access_token']}"
+        ) as websocket:
+            assert websocket.receive_json()["type"] == "session.ready"
+            partial = websocket.receive_json()
+            assert partial["type"] == "transcript.partial"
+            assert partial["stream_segment_id"].endswith(":turn:0")
+            assert partial["backend_queue_ms"] >= 0
+            websocket.send_text('{"type":"recording.pause"}')
+            final = websocket.receive_json()
+            assert final["type"] == "transcript.final"
+            assert final["text"] == "Đã nói xong"
+            assert final["stream_segment_id"] == partial["stream_segment_id"]
+            websocket.send_text('{"type":"recording.stop"}')
+            assert websocket.receive_json()["type"] == "meeting.status"
+    assert provider.stream.readers == 0
+    assert provider.stream.closed
+
+
+def test_realtime_disconnect_flushes_pending_final_before_database_session_closes(
+    tmp_path: Path,
+) -> None:
+    app, sender, _ = _app(tmp_path)
+    provider = FakeProvider()
+    provider.stream = PushStream()
+    provider.stream.close_events = (StreamingTranscriptionEvent(
+        "final", "vi", TranscriptionSegment(0, 900, "Lời cuối trước ngắt kết nối"),
+        stream_segment_id="turn:0",
+    ),)
+    app.state.stt_provider = provider
+    with TestClient(app) as client:
+        session = _verified_session(client, sender)
+        meeting_id = _create_realtime_meeting(client, session["access_token"])
+        # TestClient cancels the ASGI task on exit; the cancellation propagates
+        # after the shielded flush. Still verify that the final was persisted.
+        with suppress(FutureCancelledError), client.websocket_connect(
+            f"/api/v1/realtime/{meeting_id}?access_token={session['access_token']}"
+        ) as websocket:
+            assert websocket.receive_json()["type"] == "session.ready"
+            assert websocket.receive_json()["type"] == "transcript.partial"
+        response = client.get(
+            f"/api/v1/meetings/{meeting_id}/transcript",
+            headers={"Authorization": f"Bearer {session['access_token']}"},
+        )
+        assert response.status_code == 200
+        assert [segment["text"] for segment in response.json()["segments"]] == [
+            "Lời cuối trước ngắt kết nối"
+        ]
+    assert provider.stream.readers == 0
+
+
+def test_realtime_push_provider_failure_is_reported_without_audio(tmp_path: Path) -> None:
+    app, sender, _ = _app(tmp_path)
+    provider = FakeProvider()
+    provider.stream = PushStream()
+
+    async def fail():
+        raise STTProviderError("Provider disconnected.", retryable=True)
+
+    provider.stream.receive_events = fail
+    app.state.stt_provider = provider
+    with TestClient(app) as client:
+        session = _verified_session(client, sender)
+        meeting_id = _create_realtime_meeting(client, session["access_token"])
+        with client.websocket_connect(
+            f"/api/v1/realtime/{meeting_id}?access_token={session['access_token']}"
+        ) as websocket:
+            assert websocket.receive_json()["type"] == "session.ready"
+            error = websocket.receive_json()
+            assert error["type"] == "error" and error["retryable"] is True
+            with pytest.raises(WebSocketDisconnect) as closed:
+                websocket.receive_json()
+            assert closed.value.code == 1013
 
 
 class FakeTranslation:
@@ -167,6 +286,82 @@ def test_realtime_persists_finals_but_never_partials_and_handles_pause_resume(
     asyncio.run(verify())
     assert provider.options is not None and provider.options.diarization is True
     assert provider.stream.paused and provider.stream.resumed and provider.stream.closed
+
+
+@pytest.mark.parametrize("final_end", [1.2, 1.1])
+def test_speechmatics_fragments_update_one_row_and_persist_one_segment(
+    tmp_path: Path, final_end: float,
+) -> None:
+    class FragmentedVoiceClient:
+        def __init__(self, **kwargs):
+            self.handlers = {}
+            self.fragments = iter([
+                ("AddPartialSegment", 0, .3, "Xin"),
+                ("AddSegment", 0, .3, "Xin"),
+                ("AddPartialSegment", .35, .65, "chào"),
+                ("AddSegment", .35, .65, "chào"),
+                ("AddPartialSegment", .7, 1.2, "mọi người"),
+                ("AddSegment", .7, final_end, "mọi người."),
+            ])
+
+        def on(self, event, callback):
+            self.handlers[event.value] = callback
+
+        async def connect(self):
+            pass
+
+        async def send_audio(self, chunk):
+            event, start, end, text = next(self.fragments)
+            self.handlers[event]({"segments": [{
+                "speaker_id": "S1", "text": text,
+                "is_eou": text == "mọi người.",
+                "metadata": {"start_time": start, "end_time": end},
+            }]})
+
+        async def disconnect(self):
+            pass
+
+    app, sender, _ = _app(tmp_path)
+    app.state.stt_provider = SpeechmaticsProvider(
+        Settings(_env_file=None, speechmatics_api_key="test-key",
+                 speechmatics_finalization_delay_seconds=3),
+        voice_client_factory=FragmentedVoiceClient,
+    )
+    with TestClient(app) as client:
+        session = _verified_session(client, sender)
+        token = session["access_token"]
+        meeting_id = _create_realtime_meeting(client, token)
+        with client.websocket_connect(
+            f"/api/v1/realtime/{meeting_id}?access_token={token}"
+        ) as websocket:
+            ready = websocket.receive_json()
+            assert ready["type"] == "session.ready" and ready["provider"] == "speechmatics"
+            previews = []
+            for _ in range(6):
+                websocket.send_bytes(b"audio-chunk")
+                event = websocket.receive_json()
+                assert event["type"] == "transcript.partial"
+                previews.append(event)
+            assert previews[2]["text"] == "Xin chào"
+            assert previews[4]["text"] == "Xin chào mọi người"
+            assert len({event["stream_segment_id"] for event in previews}) == 1
+            websocket.send_json({"type": "recording.stop"})
+            final = websocket.receive_json()
+            assert final["type"] == "transcript.final"
+            assert final["text"] == "Xin chào mọi người."
+            assert final["stream_end_ms"] == round(final_end * 1000)
+            assert final["stream_segment_id"] == previews[0]["stream_segment_id"]
+            assert websocket.receive_json()["type"] == "meeting.status"
+        response = client.get(
+            f"/api/v1/meetings/{meeting_id}/transcript",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+        segments = response.json()["segments"]
+        assert len(segments) == 1
+        assert segments[0]["text"] == "Xin chào mọi người."
+        assert segments[0]["end_ms"] == round(final_end * 1000)
+        assert segments[0]["logical_segment_id"] == final["logical_segment_id"]
 
 
 def test_realtime_translation_only_translates_final_segments(tmp_path: Path) -> None:

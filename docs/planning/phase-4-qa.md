@@ -1,7 +1,7 @@
 # Phase 4 — UI polish and acceptance QA
 
-Updated: 2026-10-01. This checklist records static/UI build verification, not
-provider-backed browser E2E results.
+Original static QA: 2026-10-01. Updated against source: 2026-10-08.
+Historical build results below are not a new provider-backed browser E2E run.
 
 ## Completed polish
 
@@ -19,7 +19,7 @@ provider-backed browser E2E results.
 | Auth shell | `02-login.png`, `03-register.png`, `04-forgot-password.png` | Centered pale-shell card, navy brand/action and restrained field layout are implemented. |
 | App shell/sidebar | `01-sidebar.png` | Persistent desktop sidebar, actions, recent meetings, tools and profile block are implemented. Supported contextual routes only are shown. |
 | Meeting create/realtime/upload | `05-create-meeting.png`, `06-realtime.png`, `07-upload.png` | Form/process panel, recording states and upload job status are implemented from real API state. |
-| Transcript/speaker | `08-transcript.png`, `09-speaker.png` | Segment editor, versioning, speaker page and confirmation flow are implemented; playback remains blocked by absent media stream API. |
+| Transcript/speaker | `08-transcript.png`, `09-speaker.png` | Segment editor, versioning, speaker page and confirmation flow are implemented; playback is now implemented with signed URL/ticket, Range, segment seek and highlighting; browser QA remains. |
 | Translation/summary/export | `10-translation.png`, `11-summary.png`, `12-export-share.png` | Dedicated desktop layouts use real translation/summary/export contracts and job state. |
 | History/settings | `13-history.png`, `14-settings.png` | Server-side search/filter, owner-only deletion/media management and editable display name are implemented. |
 
@@ -33,7 +33,16 @@ provider-backed browser E2E results.
 | Transcript edit/speaker management | Code/build verified | REST contracts and permission gates are in frontend/backend. |
 | Translation/summary/export | Code/build verified | Requires configured providers; jobs do not report success before terminal state. |
 | History/delete policy | Code/build verified | Owner-only controls and confirmation dialogs are implemented. |
-| Playback and public shared content | Blocked | Backend lacks media stream endpoint and token-scoped content read endpoints. |
+| Playback and public transcript | Implemented in source; E2E pending | Player and public current-transcript endpoint/page exist. Verify expiry/seek/ACL; shared summary/translation/media are not exposed. |
+
+## Source additions since the original QA
+
+- Speechmatics known-speaker enrollment and realtime session/fallback metadata.
+- Personal and meeting guest voice profiles with up to three samples.
+- Summary output language VI/EN; transient realtime translation.
+- Public transcript and uploaded-media player.
+- Media download route has an undeclared `request` reference; repair before
+  accepting the download flow. Export download is a separate route.
 
 ## Required external QA pass
 

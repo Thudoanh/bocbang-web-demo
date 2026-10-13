@@ -1,116 +1,46 @@
-# Frontend Rebuild Plan
+# Frontend rebuild — trạng thái hiện tại
 
-## Decisions đã chốt
+_Cập nhật theo source: 2026-10-08._
 
--   **Phân quyền:** không có global Admin trong web demo. Mỗi meeting có
-    `owner` và cộng tác viên theo ACL `read | comment | edit`. Đây là
-    phân quyền theo tài nguyên, cần thiết vì hệ thống có chia sẻ/cộng
-    tác.
--   **Đăng ký:** email + password và bắt buộc xác minh email bằng OTP
-    trước khi kích hoạt đầy đủ.
--   **Google Login:** Google OAuth thật.
--   **Upload demo:** tối đa **500 MB/file** và **2 giờ/file**, cấu hình
-    bằng environment. Hỗ trợ đầu vào phổ biến:
-    `mp3, wav, m4a, aac, flac, ogg, opus, webm, mp4, mov, mkv, avi, mpeg/mpg`.
-    Backend dùng **FFmpeg** để probe/normalize audio trước STT, vì
-    provider không nhất thiết nhận mọi container/codec.
--   **STT:** kiến trúc provider mở. Demo phải có ít nhất một adapter
-    thật; provider được chọn qua config. Capability model quyết định
-    `batch`, `streaming`, `diarization`, `languages`, `timestamps`,
-    `confidence`.
--   **Ngôn ngữ STT:** demo bảo đảm Việt + Anh; kiến trúc hỗ trợ mở rộng
-    multilingual theo capability provider.
--   **Diarization:** bắt buộc trong demo nếu provider được chọn hỗ trợ;
-    UI hiển thị Speaker 1, Speaker 2...
--   **Translation:** provider mở; demo bảo đảm VI ↔ EN; mở rộng
-    multilingual theo provider.
--   **LLM:** provider mở; không hard-code vendor/model vào business
-    service.
--   **Summary:** `general`, `briefing`, `voting`.
--   **Export:** PDF, DOCX, TXT, SRT, VTT, JSON.
--   **Share:** `read`, `comment`, `edit`.
--   **Retention:** không tự xóa audio theo thời gian trong demo; user có
-    thể xóa audio hoặc meeting.
--   **Delete meeting:** xóa toàn bộ dữ liệu phụ thuộc và object storage
-    liên quan.
--   **Versioning:** giữ lịch sử transcript và summary. Không overwrite
-    version cũ.
--   **Xin ý kiến:** loại khỏi scope.
--   **Deploy demo:** ưu tiên **Render** cho frontend static, FastAPI web
-    service, background worker, PostgreSQL và Redis-compatible Key
-    Value; object storage dùng S3-compatible managed storage bên ngoài.
-    Kiến trúc không phụ thuộc Render.
--   **Frontend:** không tiếp tục maintain bundle `script.js`; agent dựng
-    lại source React/TypeScript maintainable từ UI hiện tại.
+Frontend rebuild đã thực hiện trong `frontend/`: React + TypeScript + Vite,
+REST/WebSocket thật, job polling và ACL. `prototype/` là bundle HTML/CSS/JS cũ
+có mock data, chỉ dùng reference. Không tiếp tục phát triển feature trong bundle.
 
-## 1. Hiện trạng
+## Đã có trong code
 
-Frontend hiện có `index.html`, `style.css`, `script.js`; `script.js` là
-bundle React/TSX đã build. Agent phải dùng giao diện hiện tại làm
-**visual/interaction reference**, không coi bundle là source
-maintainable.
+- Auth routes riêng login/register/forgot-password, OTP/recovery/Google handoff.
+- Danh sách/tạo meeting riêng realtime/upload; History filter phía server.
+- AudioWorklet PCM16 mono 16 kHz; socket start/pause/resume/stop/reconnect.
+- Partial/final transcript, speaker correction, optional transient VI ↔ EN.
+- Transcript edit/timing/speaker, split/merge/delete, version history/rollback.
+- Audio player cho uploaded media với signed playback URL, seek theo segment,
+  highlight đoạn đang phát và playback speed.
+- Speakers, voice enrollment trước phiên, personal profiles trong Settings;
+  Speechmatics name identification và AssemblyAI fallback warning.
+- Saved translation/summary, output language VI/EN, export sáu formats.
+- Members/share theo owner ACL; public metadata/current transcript read-only.
+- Sửa full name, owner delete media/meeting và confirmation.
 
-## 2. Target
+Cấu trúc source, routes, setup và build nằm ở [frontend README](../../frontend/README.md).
+Reference/visual requirements nằm ở [UI spec](../ui/UI_SPEC.md).
 
-Dựng React + TypeScript project mới:
+## Nguyên tắc duy trì
 
-``` text
-frontend/
-  src/
-    app/
-    api/
-    auth/
-    realtime/
-    pages/
-    components/
-    hooks/
-    state/
-    types/
-    utils/
-  public/
-  .env.example
-```
+API/provider capability là authority, không hard-code dữ liệu nghiệp vụ hay
+fabricate kết quả. Backend giữ secrets; Vite chỉ có public config. Frontend
+pre-check upload extension/size, backend kiểm tra duration/codec/validity.
+Quyền collaborator theo `read/comment/edit`; owner quản lý share/members/delete.
 
-Khuyến nghị Vite + React + TypeScript.
+## Phần còn lại
 
-## 3. Rebuild rules
+- Browser/microphone E2E với provider thật; kiểm tra playback signed URL expiry,
+  reconnect, permission/error states, latency và accuracy.
+- History pagination UI và total/count contract nếu dữ liệu tăng.
+- Public summary/translation/media và token-based comment/edit cần ACL thiết kế
+  riêng; link hiện có permission metadata không tự cấp các chức năng này.
+- Settings preferences/retention/storage metadata cần API/schema trước khi thêm UI.
+- Realtime hiện không giữ audio recording; audio replay dùng retained uploads.
 
--   Giữ layout, navigation, terminology và luồng màn hình tương ứng
-    prototype/BA.
--   Không copy minified/bundled logic từ `script.js` làm source chính.
--   Tách component theo chức năng.
--   Tạo API client tập trung.
--   Tạo WebSocket client riêng cho realtime.
--   Không hard-code meeting/transcript/speaker.
--   API base URL lấy từ `VITE_API_BASE_URL`.
--   Error/loading/empty/reconnecting states phải tồn tại thật.
-
-## 4. Permission-aware UI
-
-Meeting có: - `owner` - collaborator `read` - collaborator `comment` -
-collaborator `edit`
-
-UI: - `read`: xem/playback/export theo policy, không sửa. - `comment`:
-quyền read + comment. - `edit`: quyền read + sửa
-transcript/speaker/summary-related editable data. - owner: full control,
-share management, delete.
-
-## 5. Upload UX
-
-Accepted extensions:
-`mp3 wav m4a aac flac ogg opus webm mp4 mov mkv avi mpeg mpg`
-
-Default demo limits: - 500 MB/file - 2 hours/file
-
-Frontend chỉ pre-check để UX tốt hơn. Backend vẫn là authority.
-
-## 6. DoD
-
--   Auth/OTP/Google OAuth thật.
--   Meeting/history từ DB.
--   Upload/STT thật.
--   Realtime thật khi selected provider có streaming capability.
--   Edit persist.
--   Share permission ảnh hưởng UI.
--   Version history xem được.
--   Production build không chứa secret.
+Không coi build hoặc static reference review là browser acceptance. Xem
+[QA checklist](phase-4-qa.md) và
+[Current Status](../../project_context/CURRENT_STATUS.md).

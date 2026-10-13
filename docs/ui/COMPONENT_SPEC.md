@@ -1,5 +1,10 @@
 # Bóc Băng AI — Shared Component Specification
 
+> Đây là yêu cầu giao diện tham chiếu BA, không phải danh sách chức năng đã
+> kiểm thử. Trạng thái implementation cập nhật ngày 2026-10-08 nằm trong
+> [frontend README](../../frontend/README.md) và
+> [Current Status](../../project_context/CURRENT_STATUS.md).
+
 This file defines reusable UI primitives derived from the BA screenshots. Names are implementation suggestions; adapt them to the existing frontend architecture.
 
 ## 1. `AppShell`

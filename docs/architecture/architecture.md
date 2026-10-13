@@ -1,124 +1,90 @@
-# System Architecture v2
+# Kiến trúc hệ thống
 
-## Decisions đã chốt
+_Đối chiếu codebase: 2026-10-08._
 
--   **Phân quyền:** không có global Admin trong web demo. Mỗi meeting có
-    `owner` và cộng tác viên theo ACL `read | comment | edit`. Đây là
-    phân quyền theo tài nguyên, cần thiết vì hệ thống có chia sẻ/cộng
-    tác.
--   **Đăng ký:** email + password và bắt buộc xác minh email bằng OTP
-    trước khi kích hoạt đầy đủ.
--   **Google Login:** Google OAuth thật.
--   **Upload demo:** tối đa **500 MB/file** và **2 giờ/file**, cấu hình
-    bằng environment. Hỗ trợ đầu vào phổ biến:
-    `mp3, wav, m4a, aac, flac, ogg, opus, webm, mp4, mov, mkv, avi, mpeg/mpg`.
-    Backend dùng **FFmpeg** để probe/normalize audio trước STT, vì
-    provider không nhất thiết nhận mọi container/codec.
--   **STT:** kiến trúc provider mở. Demo phải có ít nhất một adapter
-    thật; provider được chọn qua config. Capability model quyết định
-    `batch`, `streaming`, `diarization`, `languages`, `timestamps`,
-    `confidence`.
--   **Ngôn ngữ STT:** demo bảo đảm Việt + Anh; kiến trúc hỗ trợ mở rộng
-    multilingual theo capability provider.
--   **Diarization:** bắt buộc trong demo nếu provider được chọn hỗ trợ;
-    UI hiển thị Speaker 1, Speaker 2...
--   **Translation:** provider mở; demo bảo đảm VI ↔ EN; mở rộng
-    multilingual theo provider.
--   **LLM:** provider mở; không hard-code vendor/model vào business
-    service.
--   **Summary:** `general`, `briefing`, `voting`.
--   **Export:** PDF, DOCX, TXT, SRT, VTT, JSON.
--   **Share:** `read`, `comment`, `edit`.
--   **Retention:** không tự xóa audio theo thời gian trong demo; user có
-    thể xóa audio hoặc meeting.
--   **Delete meeting:** xóa toàn bộ dữ liệu phụ thuộc và object storage
-    liên quan.
--   **Versioning:** giữ lịch sử transcript và summary. Không overwrite
-    version cũ.
--   **Xin ý kiến:** loại khỏi scope.
--   **Deploy demo:** ưu tiên **Render** cho frontend static, FastAPI web
-    service, background worker, PostgreSQL và Redis-compatible Key
-    Value; object storage dùng S3-compatible managed storage bên ngoài.
-    Kiến trúc không phụ thuộc Render.
--   **Frontend:** không tiếp tục maintain bundle `script.js`; agent dựng
-    lại source React/TypeScript maintainable từ UI hiện tại.
+## Thành phần đang chạy
 
-## 1. Logical architecture
+Ứng dụng là modular monolith FastAPI với worker tách process. React/TypeScript
+gọi REST và WebSocket dưới `/api/v1`. PostgreSQL lưu domain data và trạng thái
+job; Redis chuyển message chỉ chứa `job_id`, không thay database. Reconciler
+phát lại queued/due-retrying job sau sự cố publish/delivery.
 
-``` text
-React/TypeScript Browser
-  | HTTPS REST
-  | WSS
-  v
-+------------------------------------------------------+
-|                    FastAPI                           |
-| Auth | Users | Meetings | ACL | Media | Transcript  |
-| Speakers | Comments | Translation | Summary         |
-| Export | Share | Versioning | Jobs                  |
-+-----------+-------------------+----------------------+
-            |                   |
-            v                   v
-       PostgreSQL          S3-compatible Storage
-            |
-            v
-          Redis
-            |
-            v
-     Background Worker
-       |       |       |
-       v       v       v
-      STT  Translation  LLM
-```
+| Thành phần | Source / nhiệm vụ |
+| --- | --- |
+| Frontend | `frontend/src/`, React + TypeScript + Vite; Docker phục vụ bằng Nginx. |
+| API | `backend/app/api/v1/routes/`, auth, ACL, meeting, upload, transcript, AI request, export/share và voice profiles. |
+| Domain service | `backend/app/services/`; kiểm tra quyền và transaction. |
+| Persistence | `backend/app/models/`, async SQLAlchemy; Alembic head `20261008_0012`. |
+| Worker | `app.workers.worker`, Dramatiq/Redis, media/STT, translation, summary, export. |
+| Reconciler | `app.workers.reconciler`, recovery durable job và retry schedule. |
+| Provider | `app/providers/`, contracts và adapters STT/translation/LLM/storage/email. |
 
-## 2. Architectural style
+## Luồng xử lý
 
-**Modular monolith + worker.**
+Upload: API kiểm tra ACL `edit`, stream tệp tạm, giới hạn size, ffprobe duration/
+validity, lưu original qua storage boundary rồi commit media/job. Worker nhận
+job, tải file tạm, FFmpeg chuẩn hóa WAV mono PCM16 16 kHz, lưu normalized media,
+gọi STT và lưu transcript. Status job:
+`queued → processing → completed`, hoặc `retrying/failed`.
 
-Rationale: - đủ đơn giản cho demo; - transaction/data model dễ quản
-lý; - vẫn tách provider và module để mở rộng; - worker tách long-running
-tasks khỏi HTTP.
+Translation/summary request chụp input transcript version, tạo job và trả 202;
+export trả export response kèm `job_id`. Worker đọc immutable revision theo
+snapshot/edit events, giữ output provenance ngay cả khi transcript được sửa
+sau lúc enqueue. API không xử lý các job inline.
 
-## 3. Media normalization
+Realtime: browser AudioWorklet → PCM16 mono 16 kHz → authenticated WebSocket →
+STT stream. Partial chỉ truyền socket; final được lưu. Mỗi kết nối upstream
+có speaker scope riêng và final timestamp tiếp tục từ retained meeting duration.
+Stop/disconnect để meeting `processing`; không tự đánh dấu completed hay tạo
+upload job. Dịch realtime chạy queue tạm theo connection, không lưu DB.
+Enrollment voiceprint gọi provider trực tiếp qua API; không phải durable job.
 
-``` text
-uploaded file
-  -> ffprobe validation
-  -> FFmpeg extract/normalize audio
-  -> canonical working audio
-  -> selected STT adapter
-```
+## Provider và nhận diện người nói
 
-Canonical format có thể là PCM/WAV hoặc provider-specific optimized
-format; adapter quyết định conversion cuối.
+Cấu hình mẫu chọn Speechmatics làm batch/realtime primary, AssemblyAI fallback
+chỉ khi lỗi retryable lúc mở stream hoặc batch. Không chuyển provider giữa
+stream đã mở. Speechmatics dùng known speakers từ voice profiles của owner,
+members và khách thuộc meeting; người chưa nhận diện giữ nhãn `Người nói N`.
+AssemblyAI fallback không nhận diện tên từ Speechmatics identifiers.
 
-## 4. Permission model
+Gemini/Groq có adapter dịch VI ↔ EN và summary `general/briefing/voting`;
+summary bắt buộc output language VI/EN. Capability endpoint quyết định khả năng
+sử dụng thực tế; credentials chỉ ở backend. Xem [provider contracts](provider-architecture.md).
 
-Không cần global Admin cho demo. Cần resource-level ACL vì có
-share/collaboration.
+## ACL, versioning và public share
 
-``` text
-OWNER > EDIT > COMMENT > READ
-```
+ACL theo meeting: `owner > edit > comment > read`; không có global admin.
+Owner quản lý members/share và xóa meeting/media. Share token lưu hash, được
+kiểm tra expiry/revocation, chỉ cấp metadata và current transcript qua public
+endpoints. Quyền ghi của collaborators vẫn dùng authenticated user ACL.
 
-Authorization service phải được gọi trước mọi meeting-scoped operation.
+Current transcript dùng `current_segments` projection. Lịch sử dùng STT/
+checkpoint snapshots và append-only `transcript_edit_events`; edit và rollback
+tạo revision mới. Provider speaker correction tôn trọng manual edit/split/
+merge/delete. Summary regeneration thêm immutable version; partial realtime
+không nằm trong lịch sử. Xem [ERD](erd.md) và [API](api-spec.md).
 
-## 5. Versioning
+## Storage và xóa dữ liệu
 
-Transcript: - mỗi saved logical revision tạo `transcript_versions`; -
-segment state gắn version hoặc snapshot strategy; - current version
-pointer ở transcript.
+Local storage dùng cho host/Compose; API/worker cần cùng thư mục hoặc volume.
+S3 adapter đã có và dùng bucket private, object keys trong DB. Playback trả
+presigned URL S3 hoặc ticket local có TTL; player phát retained uploaded media,
+seek theo segment. Realtime capture hiện không lưu audio để nghe lại.
 
-Summary: - regenerate tạo summary version mới; - version cũ immutable.
+Xóa media: owner được kiểm tra, xóa original/normalized object, soft-delete
+record và fail các job còn hoạt động gắn media; transcript được giữ.
+Xóa meeting: route kiểm tra owner, purge media/export objects trước rồi xóa DB
+với cascade. Cleanup storage chạy trực tiếp, chưa có cleanup queue/audit riêng;
+DB và object storage không thuộc cùng atomic transaction.
 
-## 6. Delete
+## Runtime và giới hạn
 
-Delete meeting là destructive cascade: 1. authorize owner; 2. mark
-deletion transactionally; 3. delete/revoke share links; 4. enqueue
-storage cleanup; 5. delete DB dependents theo policy; 6. record audit
-event tối thiểu nếu cần vận hành.
+Local stack đã có `compose.yaml`, hai Dockerfile, PostgreSQL, Redis, migration,
+API, worker, reconciler, frontend. Render là target đã chọn trong thiết kế,
+chưa có `render.yaml` hay quy trình tự deploy trong repo.
 
-## 7. Deployment portability
-
-Render là target demo, không xuất hiện trong domain/service code. Mọi
-dependency qua URL/env để có thể chuyển sang Railway/AWS/GCP/Azure sau
-này.
+`/health` là liveness; `/ready` chỉ kiểm tra database, không kiểm tra Redis,
+worker hoặc provider. Public summary/translation/media, token-based writes,
+settings preference/retention metadata và browser E2E đầy đủ còn cần làm.
+Xem [triển khai](../deployment/deployment.md) và
+[Current Status](../../project_context/CURRENT_STATUS.md).

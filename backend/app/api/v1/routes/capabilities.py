@@ -19,8 +19,10 @@ async def capabilities(request: Request) -> dict[str, object]:
     if provider is None:
         stt: dict[str, object] = {
             "provider": settings.stt_provider or "unconfigured",
+            "fallback_provider": settings.stt_fallback_provider,
             "batch": False,
             "streaming": False,
+            "speaker_identification": False,
             "diarization": False,
             "timestamps": False,
             "confidence": False,
@@ -30,8 +32,12 @@ async def capabilities(request: Request) -> dict[str, object]:
         available = provider.capabilities()
         stt = {
             "provider": settings.stt_provider or provider.__class__.__name__,
+            "fallback_provider": settings.stt_fallback_provider,
             "batch": available.batch,
             "streaming": available.streaming,
+            "speaker_identification": bool(
+                settings.speechmatics_api_key and available.diarization
+            ),
             "diarization": available.diarization,
             "timestamps": available.timestamps,
             "confidence": available.confidence,

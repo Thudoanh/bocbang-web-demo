@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import ApiError
@@ -180,7 +180,14 @@ class TranscriptService:
         self, meeting_id: UUID, user: User, payload: SpeakerCreateRequest
     ) -> SpeakerResponse:
         await self._meetings.require_access(meeting_id, user, MeetingPermission.EDIT)
-        speaker = Speaker(meeting_id=meeting_id, name=payload.name.strip(), role=payload.role, organization=payload.organization)
+        speaker = Speaker(
+            meeting_id=meeting_id,
+            name=payload.name.strip(),
+            role=payload.role,
+            organization=payload.organization,
+            voice_profile_id=payload.voice_profile_id,
+            is_identified=bool(payload.voice_profile_id),
+        )
         self._session.add(speaker)
         await self._session.commit()
         await self._session.refresh(speaker)
@@ -195,13 +202,32 @@ class TranscriptService:
         await self._meetings.require_access(speaker.meeting_id, user, MeetingPermission.EDIT)
         for field, value in payload.model_dump(exclude_unset=True).items():
             setattr(speaker, field, value.strip() if field == "name" and value is not None else value)
+        if payload.voice_profile_id is not None:
+            speaker.is_identified = True
         await self._session.commit()
         await self._session.refresh(speaker)
         return SpeakerResponse.model_validate(speaker)
 
+    async def delete_speaker(self, speaker_id: UUID, user: User) -> None:
+        speaker = await self._session.get(Speaker, speaker_id)
+        if speaker is None:
+            raise ApiError("SPEAKER_NOT_FOUND", "Speaker was not found.", 404)
+        await self._meetings.require_access(speaker.meeting_id, user, MeetingPermission.EDIT)
+        await self._session.execute(
+            update(CurrentSegment).where(CurrentSegment.speaker_id == speaker_id).values(speaker_id=None)
+        )
+        await self._session.execute(
+            update(SegmentVersion).where(SegmentVersion.speaker_id == speaker_id).values(speaker_id=None)
+        )
+        await self._session.delete(speaker)
+        await self._session.commit()
+
     async def append_stt_final(
         self, meeting: Meeting, actor_id: UUID, segment: TranscriptionSegment,
         *, start_new_version: bool = False,
+        candidate_name: str | None = None,
+        voice_profile_id: UUID | None = None,
+        match_confidence: float | None = None,
     ) -> SegmentVersion:
         """Shared ingestion boundary for realtime and future upload/batch STT."""
         if not segment.text.strip() or segment.start_ms < 0 or segment.end_ms <= segment.start_ms:
@@ -229,7 +255,13 @@ class TranscriptService:
                 # A revision may precede this turn. Start the new STT snapshot
                 # with the full projection, including its corrected speakers.
                 await self._checkpoint(transcript, version)
-        speaker_id = await self._speaker_for_label(meeting.id, segment.speaker_label)
+        speaker_id = await self._speaker_for_label(
+            meeting.id,
+            segment.speaker_label,
+            candidate_name=segment.speaker_name or candidate_name,
+            voice_profile_id=segment.voice_profile_id or voice_profile_id,
+            match_confidence=match_confidence,
+        )
         sequence = int(await self._session.scalar(select(func.coalesce(func.max(SegmentVersion.sequence), 0) + 1).where(SegmentVersion.transcript_version_id == version.id)))
         stored = SegmentVersion(
             transcript_version_id=version.id, speaker_id=speaker_id, sequence=sequence,
@@ -280,7 +312,12 @@ class TranscriptService:
             self._session.add(
                 SegmentVersion(
                     transcript_version_id=version.id,
-                    speaker_id=await self._speaker_for_label(meeting.id, segment.speaker_label),
+                    speaker_id=await self._speaker_for_label(
+                        meeting.id,
+                        segment.speaker_label,
+                        candidate_name=segment.speaker_name,
+                        voice_profile_id=segment.voice_profile_id,
+                    ),
                     sequence=sequence,
                     start_ms=segment.start_ms,
                     end_ms=segment.end_ms,
@@ -628,19 +665,81 @@ class TranscriptService:
     def _current_segment_response(segment: CurrentSegment) -> SegmentResponse:
         return SegmentResponse(id=segment.logical_segment_id, logical_segment_id=segment.logical_segment_id, start_ms=segment.start_ms, end_ms=segment.end_ms, text=segment.text, speaker_id=segment.speaker_id, confidence=segment.confidence)
 
-    async def _speaker_for_label(self, meeting_id: UUID, label: str | None) -> UUID | None:
+    async def _speaker_for_label(
+        self,
+        meeting_id: UUID,
+        label: str | None,
+        candidate_name: str | None = None,
+        voice_profile_id: UUID | None = None,
+        match_confidence: float | None = None,
+    ) -> UUID | None:
+        if voice_profile_id is not None:
+            identified = await self._session.scalar(
+                select(Speaker).where(
+                    Speaker.meeting_id == meeting_id,
+                    Speaker.voice_profile_id == voice_profile_id,
+                )
+            )
+            if identified is not None:
+                return identified.id
         if not label:
+            if candidate_name:
+                speaker = await self._session.scalar(
+                    select(Speaker).where(
+                        Speaker.meeting_id == meeting_id,
+                        Speaker.voice_profile_id == voice_profile_id,
+                    )
+                )
+                if speaker is None:
+                    speaker = Speaker(
+                        meeting_id=meeting_id,
+                        name=candidate_name,
+                        voice_profile_id=voice_profile_id,
+                        match_confidence=match_confidence,
+                        is_identified=True,
+                    )
+                    self._session.add(speaker)
+                    await self._session.flush()
+                return speaker.id
             return None
-        speaker = await self._session.scalar(select(Speaker).where(Speaker.meeting_id == meeting_id, Speaker.provider_speaker_id == label))
+
+        speaker = await self._session.scalar(
+            select(Speaker).where(
+                Speaker.meeting_id == meeting_id,
+                Speaker.provider_speaker_id == label,
+            )
+        )
         if speaker is None:
-            count = int(await self._session.scalar(
-                select(func.count(Speaker.id)).where(Speaker.meeting_id == meeting_id)
-            ) or 0)
+            if candidate_name:
+                name = candidate_name
+                is_identified = True
+            else:
+                count = int(
+                    await self._session.scalar(
+                        select(func.count(Speaker.id)).where(Speaker.meeting_id == meeting_id)
+                    )
+                    or 0
+                )
+                name = f"Người nói {count + 1}"
+                is_identified = False
+
             speaker = Speaker(
-                meeting_id=meeting_id, provider_speaker_id=label, name=f"Người nói {count + 1}"
+                meeting_id=meeting_id,
+                provider_speaker_id=label,
+                name=name,
+                voice_profile_id=voice_profile_id,
+                match_confidence=match_confidence,
+                is_identified=is_identified,
             )
             self._session.add(speaker)
             await self._session.flush()
+        elif candidate_name and not speaker.is_identified:
+            speaker.name = candidate_name
+            speaker.voice_profile_id = voice_profile_id
+            speaker.match_confidence = match_confidence
+            speaker.is_identified = True
+            await self._session.flush()
+
         return speaker.id
 
     async def _transcript_response_async(

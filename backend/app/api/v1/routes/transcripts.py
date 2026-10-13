@@ -122,6 +122,11 @@ async def update_speaker(speaker_id: UUID, payload: SpeakerUpdateRequest, user: 
     return await service.update_speaker(speaker_id, user, payload)
 
 
+@speakers_router.delete("/{speaker_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_speaker(speaker_id: UUID, user: CurrentUserDependency, service: TranscriptServiceDependency) -> None:
+    await service.delete_speaker(speaker_id, user)
+
+
 @speakers_router.get("/{speaker_id}/sample", response_model=SpeakerSampleResponse)
 async def speaker_sample(speaker_id: UUID, user: CurrentUserDependency, service: TranscriptServiceDependency) -> SpeakerSampleResponse:
     return await service.speaker_sample(speaker_id, user)

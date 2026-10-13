@@ -19,6 +19,7 @@ import httpx
 
 from app.core.config import Settings
 from app.providers.contracts import (
+    KnownSpeaker,
     StreamingEvent,
     StreamingOptions,
     StreamingSpeakerRevision,
@@ -47,7 +48,12 @@ class AssemblyAIProvider:
     def capabilities(self) -> STTCapabilities:
         return STTCapabilities(True, True, True, True, True, frozenset({"vi", "en"}), True)
 
-    async def transcribe_file(self, source: Path, language: str | None = None) -> TranscriptionResult:
+    async def transcribe_file(
+        self,
+        source: Path,
+        language: str | None = None,
+        known_speakers: tuple[KnownSpeaker, ...] = (),
+    ) -> TranscriptionResult:
         if not source.is_file():
             raise STTProviderError("Normalized media is unavailable.", code="STT_MEDIA_UNAVAILABLE", retryable=False)
         owns_client = self._client is None
@@ -116,12 +122,17 @@ class AssemblyAIProvider:
 
 
 class AssemblyAIStream:
+    provider_name = "assemblyai"
+    speaker_identification_available = False
+    fallback_active = False
+
     def __init__(self, websocket: Any, language: str, diarization: bool = False) -> None:
         self._websocket = websocket
         self._language = language
         self._diarization = diarization
         self._final_turns: set[int] = set()
         self._events: deque[StreamingEvent] = deque()
+        self._events_ready = asyncio.Event()
         self._failure: STTProviderError | None = None
         self._terminated = asyncio.Event()
         self._closing = False
@@ -229,6 +240,7 @@ class AssemblyAIStream:
                                 self._events.append(StreamingSpeakerRevision(
                                     order, _speaker_label(revision.get("speaker_label"))
                                 ))
+                                self._events_ready.set()
                     continue
                 event = _stream_event(payload, self._language, self._diarization)
                 if event is not None:
@@ -238,6 +250,7 @@ class AssemblyAIStream:
                         if event.type == "final":
                             self._final_turns.add(event.turn_order)
                     self._events.append(event)
+                    self._events_ready.set()
         except asyncio.CancelledError:
             raise
         except json.JSONDecodeError:
@@ -260,6 +273,12 @@ class AssemblyAIStream:
                 )
         finally:
             self._terminated.set()
+            self._events_ready.set()
+
+    async def receive_events(self) -> tuple[StreamingEvent, ...]:
+        await self._events_ready.wait()
+        self._raise_failure()
+        return self._drain()
 
     async def send_audio(self, chunk: bytes) -> tuple[StreamingEvent, ...]:
         if self._closed or self._closing:
@@ -334,6 +353,7 @@ class AssemblyAIStream:
     def _drain(self) -> tuple[StreamingEvent, ...]:
         events = tuple(self._events)
         self._events.clear()
+        self._events_ready.clear()
         return events
 
 
@@ -387,7 +407,7 @@ def _batch_result(payload: dict[str, Any]) -> TranscriptionResult:
     if not segments:
         raise STTProviderError("AssemblyAI returned no timed transcript segments.", code="STT_RESULT_INVALID", retryable=False)
     language = str(payload.get("language_code") or "und").split("_")[0].lower()
-    return TranscriptionResult(language, tuple(segments))
+    return TranscriptionResult(language, tuple(segments), provider_name="assemblyai")
 
 
 def _speaker_label(value: Any) -> str | None:
@@ -418,6 +438,7 @@ def _stream_event(
             confidence=float(confidence) if isinstance(confidence, (int, float)) else None,
         ),
         turn_order=order if type(order) is int and order >= 0 else None,
+        stream_segment_id=f"turn:{order}" if type(order) is int and order >= 0 else None,
     )
 
 

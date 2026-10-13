@@ -12,6 +12,134 @@ Mục mới nhất được thêm ở đầu file. Dùng format ngắn dưới �
 - Follow-up / blocker: ...
 ```
 
+## 2026-10-12 — Sửa ô transcript bị kẹt ở trạng thái nhận diện
+
+- Status: done (new Docker rebuild/microphone verification pending)
+- Scope: Giải quyết partial còn sót khi final sửa timestamp/text; giữ partial
+  mới hơn, dùng SDK utterance/end-of-turn để xác định snapshot đã kết thúc.
+  Final theo turn ID thay preview; bản nháp còn lại lúc dừng/lỗi giữ chữ với
+  nhãn chưa xác nhận/chưa lưu, không được biến thành transcript đã lưu.
+- Changed: Speechmatics adapter/tests, WebSocket integration test, frontend
+  live transcript reducer/tests và MeetingPage recording lifecycle; docs/context.
+- Verified: 67 focused backend tests, 14 frontend tests, TypeScript/Vite build,
+  scoped Ruff và diff check pass. Các provider được mô phỏng; WebSocket/SQLite
+  xác nhận final timing ngắn hơn preview vẫn lưu đúng một segment.
+- Follow-up / blocker: Bản sửa phân mảnh trước đã rebuild API/frontend và kiểm
+  tra health/capabilities thành công. Người dùng báo chạy ổn nhưng còn preview
+  nhận diện. Bản sửa mới chưa rebuild Docker theo ưu tiên người dùng tự chạy;
+  cần thử microphone và stop/reload sau rebuild. Không commit/push hoặc sửa key.
+
+## 2026-10-12 — Sửa phân mảnh transcript realtime Speechmatics
+
+- Status: done (microphone/provider acceptance pending)
+- Scope: Giữ một ô tích lũy cho các fragment cùng lượt nói; hoãn chốt final
+  khi còn partial chưa xác nhận; giữ ranh giới speaker/language/audio gap.
+- Changed: `backend/app/providers/speechmatics.py`, Speechmatics/realtime tests,
+  `frontend/src/realtime/liveTranscript.ts`, reducer tests, provider/API/validation
+  docs và project context. Không sửa `.env`, migrations hoặc transcript cũ.
+- Verified: 61 focused backend tests và 10 frontend tests pass; TypeScript/Vite
+  build pass; Ruff adapter/provider tests và F/I realtime tests pass; diff check.
+  WebSocket integration xác nhận ba fragment được lưu thành một SQLite segment.
+  Test dependencies cài vào `.venv-stt`/`node_modules` Git ignored. Async tests
+  chạy ngoài sandbox Windows; không gọi provider thật.
+- Follow-up / blocker: Docker Engine chưa chạy nên chưa restart runtime hoặc
+  kiểm thử browser/microphone. Rebuild API/frontend rồi thử tiếng Việt liên tục,
+  ngập ngừng, đổi speaker, pause/resume/stop, reconnect và reload transcript.
+
+## 2026-10-08 — Cập nhật Speechmatics trong .env dự án
+
+- Status: done
+- Scope: Áp dụng cấu hình Speechmatics từ env tham chiếu đã đối chiếu.
+- Changed: `.env` (Git ignored), `project_context/CURRENT_STATUS.md`, `project_context/TASK_LOG.md`.
+- Verified: Chỉ đổi `SPEECHMATICS_API_KEY`, `STT_PROVIDER` và
+  `STT_FALLBACK_PROVIDER`; key khớp tham chiếu, các cấu hình khác giữ nguyên.
+  Không in credentials, không sửa file tham chiếu, không gọi provider thật.
+- Follow-up / blocker: Recreate/restart runtime để áp dụng; Speechmatics key
+  cần provider smoke test sau khi áp dụng.
+
+## 2026-10-08 — Đối chiếu và cập nhật .env local
+
+- Status: done
+- Scope: Đồng bộ cấu hình local với Settings và env example mà không đổi
+  credentials, URLs hoặc model/provider lựa chọn đã có.
+- Changed: `.env` (Git ignored), `project_context/CURRENT_STATUS.md`, `project_context/TASK_LOG.md`.
+- Verified: Thêm 17 biến còn thiếu; đổi bốn S3 aliases sang tên canonical, kiểm
+  tra giá trị có sẵn được giữ nguyên và không trùng key. Python virtualenv
+  validate Settings/queue và khởi tạo provider/email adapters thành công.
+  Không in secret, không gọi API ngoài hay kiểm tra kết nối DB/Redis.
+- Follow-up / blocker: Giữ AssemblyAI primary; muốn Speechmatics cần điền key
+  và đổi provider. Cấu hình được áp dụng ở lần restart/recreate process tiếp theo;
+  chưa restart stack trong task này.
+
+## 2026-10-08 — Rút gọn README hướng dẫn chạy local
+
+- Status: done
+- Scope: Viết lại README bằng tiếng Việt, ưu tiên Docker Compose với ba bước
+  tạo cấu hình, khởi động và đăng ký/sử dụng; hướng dẫn khi chưa có AI key.
+- Changed: `README.md`, `project_context/CURRENT_STATUS.md`, `project_context/TASK_LOG.md`.
+- Verified: Liên kết và code fences; đối chiếu lệnh với Compose, provider/email
+  factory; kiểm tra diff. Không chạy ứng dụng, không sửa runtime hoặc `.env`.
+- Follow-up / blocker: Không có blocker cho task tài liệu; các việc E2E/bug
+  đã ghi nhận trước vẫn giữ nguyên.
+
+## 2026-10-08 — Đồng bộ tài liệu theo codebase hiện tại
+
+- Status: done
+- Scope: Đối chiếu source để cập nhật setup/config, feature scope, architecture,
+  provider, API, ERD, migrations, deployment, planning và project handoff.
+- Changed: root/backend/frontend/prototype README, `agent/README_AGENT.md`,
+  `.env.example`, `docs/architecture/*`, `docs/deployment/*`, `docs/planning/*`,
+  chú thích lịch sử audit/UI specs, `project_context/CURRENT_STATUS.md`,
+  `project_context/DECISIONS.md`. Gemini model trong env mẫu đồng bộ default
+  Settings (`gemini-2.5-flash`); không sửa `.env` hiện có hay runtime code.
+- Verified: Markdown local links/code fences; toàn bộ REST route inventory từ
+  AST của backend đối chiếu API spec; diff whitespace theo CRLF của repo.
+  Không chạy lại application tests, provider requests hoặc browser E2E.
+- Follow-up / blocker: Media download handler dùng `request` chưa khai báo;
+  ghi nhận trong docs/backlog. Browser E2E và public deployment vẫn cần xác minh.
+
+## 2026-10-08 — Speechmatics realtime, batch và known-speaker identification
+
+- Status: done
+- Scope: Dùng Speechmatics làm STT chính cho realtime và file upload, đăng ký tối
+  đa ba voiceprint cho mỗi profile, nhận diện người nói theo tên và giữ AssemblyAI
+  làm fallback không nhận diện tên.
+- Changed: provider contracts/factory, Speechmatics batch/voice adapters, fallback,
+  migration `20261008_0012`, voice-profile service/API, realtime persistence,
+  media worker, Settings/Meeting enrollment UI, capability/session metadata và tests.
+- Verified: 93 backend tests passed; frontend TypeScript/build passed trong Docker;
+  migration container exited 0 tại revision `20261008_0012`; API/frontend healthy;
+  capability báo Speechmatics batch/realtime/speaker identification; smoke test thật
+  nhận Huy và Minh ở cả batch (9/8 turns) lẫn realtime (57/39 emitted segments).
+- Follow-up / blocker: Chạy thêm browser/microphone E2E. Speechmatics Voice SDK có
+  timeout khởi tạo cố định 5 giây; một cold start đã timeout và lần kết nối sau thành
+  công, nên fallback/reconnect UI cần được theo dõi trong môi trường thật.
+
+## 2026-10-08 — Pre-meeting Voice Profile Enrollment & Automatic Speaker Recognition
+
+- Status: done
+- Scope: Tự động nhận diện và gán tên người phát biểu trong cuộc họp dựa trên mẫu giọng
+  được thu âm trước (10-25s) hoặc tải lên file âm thanh mẫu (WAV/MP3/M4A). Hỗ trợ cả
+  mẫu giọng cá nhân của người dùng và mẫu giọng khách theo từng cuộc họp. Tích hợp so khớp
+  voiceprint cosine similarity vào cả streaming realtime STT WebSocket và batch media upload processing.
+- Changed:
+  - Database & Models: `backend/app/models/voice_profile.py`, `transcript.py`, `meeting.py`, `user.py`,
+    `backend/alembic/versions/20261008_0011_voice_profiles.py`.
+  - Acoustic Engine: `backend/app/services/voice_embedding.py` (192-dim Log-Mel filterbanks + MFCCs + deltas + statistical pooling).
+  - Business Services & APIs: `backend/app/services/voice_profiles.py`, `transcripts.py`, `realtime.py`,
+    `media_worker.py`, `backend/app/api/v1/routes/voice_profiles.py`, `realtime.py`, `router.py`.
+  - Frontend: `frontend/src/types/domain.ts`, `frontend/src/api/endpoints.ts`,
+    `frontend/src/components/VoiceEnrollmentModal.tsx`, `frontend/src/pages/MeetingPage.tsx`,
+    `frontend/src/pages/SettingsPage.tsx`, `frontend/src/pages/SpeakersPage.tsx`.
+  - Tests: `backend/tests/test_migrations.py`, `backend/tests/test_voice_profiles.py`.
+- Verified:
+  - Python bytecode compilation (`compileall`) qua 100% không có lỗi.
+  - Test acoustic embedding và vector cosine similarity: 1.0 với cùng giọng nói, 0.51 với giọng khác tần số, so khớp ứng viên chính xác `conf=1.0`.
+  - Alembic migration test assertions bổ sung cho `voice_profiles` và `speakers.voice_profile_id`.
+- Follow-up / blocker:
+  - Chạy Docker Compose rebuild stack để nạp code mới nhất lên container.
+  - Thử nghiệm trên micro thực tế với 2 hoặc nhiều người nói khác nhau trong phiên họp trực tiếp.
+
 ## 2026-10-07 — Realtime speaker diarization and corrections
 
 - Status: done (automated verification; real audio/browser acceptance pending)

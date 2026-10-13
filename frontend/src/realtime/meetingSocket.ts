@@ -1,9 +1,15 @@
 import { config } from "../app/config";
+import { recordArrival } from "./diagnostics";
+
+type TranscriptTrace = {
+  event_id?: string; stream_segment_id?: string; backend_queue_ms?: number;
+  stream_start_ms?: number; stream_end_ms?: number;
+};
 
 export type RealtimeEvent =
-  | { type: "session.ready"; provider: string; language: string }
-  | { type: "transcript.partial"; language: string; start_ms: number; end_ms: number; text: string; speaker_label?: string }
-  | { type: "transcript.final"; language: string; start_ms: number; end_ms: number; text: string; logical_segment_id: string; speaker_id?: string; speaker_label?: string }
+  | { type: "session.ready"; provider: string; language: string; speaker_identification_available: boolean; fallback_active: boolean }
+  | ({ type: "transcript.partial"; language: string; start_ms: number; end_ms: number; text: string; speaker_label?: string; speaker_name?: string; voice_profile_id?: string; is_identified?: boolean } & TranscriptTrace)
+  | ({ type: "transcript.final"; language: string; start_ms: number; end_ms: number; text: string; logical_segment_id: string; speaker_id?: string; speaker_label?: string; speaker_name?: string; voice_profile_id?: string; is_identified?: boolean } & TranscriptTrace)
   | { type: "transcript.speaker_updated"; logical_segment_id: string; speaker_id: string | null; version_id: string; version_no: number }
   | { type: "meeting.status"; status: string }
   | { type: "error"; code: string; message: string; retryable: boolean }
@@ -42,6 +48,7 @@ export class MeetingSocket {
     socket.onmessage = ({ data }) => {
       try {
         const event = JSON.parse(data) as RealtimeEvent;
+        if (event.type === "transcript.partial" || event.type === "transcript.final") recordArrival(event);
         if (event.type === "session.ready") {
           this.retry = 0;
           this.onStatus("connected");

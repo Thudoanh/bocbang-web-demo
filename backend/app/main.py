@@ -14,7 +14,7 @@ from app.core.middleware import RequestContextMiddleware
 from app.db.session import Database
 from app.providers.email import build_email_sender
 from app.providers.llm import build_llm_provider
-from app.providers.stt import build_stt_provider
+from app.providers.stt import build_speaker_enrollment_provider, build_stt_provider
 from app.providers.storage import build_storage_backend
 from app.providers.translation import build_translation_provider
 from app.workers.broker import enqueue_job
@@ -61,6 +61,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.email_sender = build_email_sender(resolved_settings)
     # Provider instances and their credentials are constructed only in the backend.
     app.state.stt_provider = build_stt_provider(resolved_settings)
+    app.state.speaker_enrollment_provider = build_speaker_enrollment_provider(
+        resolved_settings
+    )
     app.state.translation_provider = build_translation_provider(resolved_settings)
     app.state.llm_provider = build_llm_provider(resolved_settings)
     # This validates S3 configuration during app construction and never falls
