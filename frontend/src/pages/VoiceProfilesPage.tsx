@@ -1,11 +1,11 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { voiceProfilesApi } from "../api/endpoints";
 import { useAsync } from "../hooks/useAsync";
 import { Button, Empty, Failure, Icon, Loading, PageHeading } from "../components/ui";
 import { VoiceEnrollmentModal } from "../components/VoiceEnrollmentModal";
 import type { VoiceProfile } from "../types/domain";
 
-// Helper color palette for avatars
+// Avatar colors
 const AVATAR_COLORS = [
   "linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)",
   "linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%)",
@@ -20,8 +20,121 @@ function getAvatarColor(name: string): string {
   for (let i = 0; i < name.length; i++) {
     hash = name.charCodeAt(i) + ((hash << 5) - hash);
   }
-  const index = Math.abs(hash) % AVATAR_COLORS.length;
-  return AVATAR_COLORS[index];
+  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
+}
+
+// Pause other audios when one starts playing
+function pauseOtherAudios(current: HTMLAudioElement) {
+  document.querySelectorAll("audio").forEach((el) => {
+    if (el !== current && !el.paused) {
+      el.pause();
+    }
+  });
+}
+
+// Global cache for sample audio object URLs to prevent re-fetching
+const audioBlobCache = new Map<string, string>();
+
+function SampleAudioBar({
+  profileId,
+  sampleIndex,
+}: {
+  profileId: string;
+  sampleIndex: number;
+}) {
+  const cacheKey = `${profileId}_${sampleIndex}`;
+  const [audioUrl, setAudioUrl] = useState<string | null>(audioBlobCache.get(cacheKey) ?? null);
+  const [loading, setLoading] = useState(!audioBlobCache.has(cacheKey));
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (audioBlobCache.has(cacheKey)) {
+      setAudioUrl(audioBlobCache.get(cacheKey)!);
+      setLoading(false);
+      return;
+    }
+
+    let active = true;
+    setLoading(true);
+    setError(null);
+
+    voiceProfilesApi
+      .getAudioBlob(profileId, sampleIndex)
+      .then((blob) => {
+        if (!active) return;
+        const url = URL.createObjectURL(blob);
+        audioBlobCache.set(cacheKey, url);
+        setAudioUrl(url);
+        setLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (!active) return;
+        const msg = err instanceof Error ? err.message : "Không tìm thấy file âm thanh.";
+        setError(msg);
+        setLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [profileId, sampleIndex, cacheKey]);
+
+  if (loading) {
+    return (
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: "8px",
+          padding: "8px 4px",
+          fontSize: "12px",
+          color: "var(--muted, #64748b)",
+        }}
+      >
+        <span className="spinner" style={{ width: 14, height: 14 }} />
+        <span>Đang tải file âm thanh lần thu {sampleIndex}…</span>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div
+        style={{
+          padding: "6px 10px",
+          fontSize: "12px",
+          color: "#b91c1c",
+          backgroundColor: "#fef2f2",
+          border: "1px solid #fecaca",
+          borderRadius: "8px",
+          marginTop: "4px",
+        }}
+      >
+        ⚠️ {error}
+      </div>
+    );
+  }
+
+  if (!audioUrl) return null;
+
+  return (
+    <audio
+      controls
+      controlsList="nodownload noplaybackrate"
+      preload="metadata"
+      src={audioUrl}
+      onPlay={(e) => pauseOtherAudios(e.currentTarget)}
+      style={{
+        width: "100%",
+        height: "38px",
+        borderRadius: "999px",
+        display: "block",
+        marginTop: "4px",
+      }}
+    >
+      Trình duyệt không hỗ trợ phát âm thanh.
+    </audio>
+  );
 }
 
 export function VoiceProfilesPage() {
@@ -36,88 +149,11 @@ export function VoiceProfilesPage() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [confirmDeleteProfile, setConfirmDeleteProfile] = useState<VoiceProfile | null>(null);
 
-  // Audio playback state - keyed by `${profileId}_${sampleIndex}`
-  const [playingKey, setPlayingKey] = useState<string | null>(null);
-  const [loadingAudioKey, setLoadingAudioKey] = useState<string | null>(null);
-  const [audioError, setAudioError] = useState<string | null>(null);
-  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
-  const audioCacheRef = useRef<Map<string, string>>(new Map());
-
   useEffect(() => {
     if (profilesQuery.data) {
       setProfiles(profilesQuery.data);
     }
   }, [profilesQuery.data]);
-
-  // Clean up cached audio object URLs on unmount
-  useEffect(() => {
-    return () => {
-      if (currentAudioRef.current) {
-        currentAudioRef.current.pause();
-        currentAudioRef.current = null;
-      }
-      audioCacheRef.current.forEach((url) => URL.revokeObjectURL(url));
-      audioCacheRef.current.clear();
-    };
-  }, []);
-
-  const handlePlaySample = async (profile: VoiceProfile, sampleIndex: number) => {
-    setAudioError(null);
-    const key = `${profile.id}_${sampleIndex}`;
-
-    // If currently playing this sample, toggle pause
-    if (playingKey === key && currentAudioRef.current) {
-      currentAudioRef.current.pause();
-      setPlayingKey(null);
-      return;
-    }
-
-    // Stop currently playing audio
-    if (currentAudioRef.current) {
-      currentAudioRef.current.pause();
-      currentAudioRef.current = null;
-      setPlayingKey(null);
-    }
-
-    try {
-      let objectUrl = audioCacheRef.current.get(key);
-      if (!objectUrl) {
-        setLoadingAudioKey(key);
-        const blob = await voiceProfilesApi.getAudioBlob(profile.id, sampleIndex);
-        objectUrl = URL.createObjectURL(blob);
-        audioCacheRef.current.set(key, objectUrl);
-      }
-
-      const audio = new Audio(objectUrl);
-      currentAudioRef.current = audio;
-
-      audio.onplay = () => {
-        setPlayingKey(key);
-        setLoadingAudioKey(null);
-      };
-
-      audio.onended = () => {
-        setPlayingKey(null);
-        currentAudioRef.current = null;
-      };
-
-      audio.onerror = () => {
-        setAudioError(`Không thể phát âm thanh Mẫu ${sampleIndex} của ${profile.name}.`);
-        setPlayingKey(null);
-        setLoadingAudioKey(null);
-        currentAudioRef.current = null;
-      };
-
-      await audio.play();
-    } catch (cause) {
-      setAudioError(
-        (cause as Error).message ||
-          `Không thể tải file âm thanh Mẫu ${sampleIndex} của ${profile.name}.`
-      );
-      setPlayingKey(null);
-      setLoadingAudioKey(null);
-    }
-  };
 
   const handleDelete = async (profile: VoiceProfile) => {
     setDeletingId(profile.id);
@@ -125,21 +161,18 @@ export function VoiceProfilesPage() {
       await voiceProfilesApi.delete(profile.id);
       setProfiles((prev) => prev.filter((p) => p.id !== profile.id));
       setConfirmDeleteProfile(null);
-      if (playingKey && playingKey.startsWith(profile.id) && currentAudioRef.current) {
-        currentAudioRef.current.pause();
-        setPlayingKey(null);
-      }
-      // Clean up cached audio URLs for this profile
+
+      // Clean cached audio URLs for this profile
       for (let idx = 1; idx <= 3; idx++) {
         const k = `${profile.id}_${idx}`;
-        const u = audioCacheRef.current.get(k);
+        const u = audioBlobCache.get(k);
         if (u) {
           URL.revokeObjectURL(u);
-          audioCacheRef.current.delete(k);
+          audioBlobCache.delete(k);
         }
       }
     } catch (cause) {
-      setAudioError((cause as Error).message || "Không thể xóa mẫu giọng.");
+      alert((cause as Error).message || "Không thể xóa người nói.");
     } finally {
       setDeletingId(null);
     }
@@ -230,38 +263,6 @@ export function VoiceProfilesPage() {
           )}
         </div>
 
-        {/* Global audio error message */}
-        {audioError && (
-          <div
-            style={{
-              padding: "10px 14px",
-              marginBottom: "16px",
-              backgroundColor: "#fef2f2",
-              border: "1px solid #fecaca",
-              borderRadius: "10px",
-              color: "#b91c1c",
-              fontSize: "13px",
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-            }}
-          >
-            <span>⚠️ {audioError}</span>
-            <button
-              onClick={() => setAudioError(null)}
-              style={{
-                background: "none",
-                border: "none",
-                cursor: "pointer",
-                color: "#b91c1c",
-                fontWeight: 700,
-              }}
-            >
-              ✕
-            </button>
-          </div>
-        )}
-
         {profilesQuery.loading && <Loading label="Đang tải danh sách mẫu giọng…" />}
         {profilesQuery.error && (
           <Failure error={profilesQuery.error} retry={profilesQuery.reload} />
@@ -270,13 +271,8 @@ export function VoiceProfilesPage() {
         {!profilesQuery.loading && !profilesQuery.error && (
           <>
             {filtered.length > 0 ? (
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))",
-                  gap: "20px",
-                }}
-              >
+              /* STRICT 2-COLUMN GRID (responsive to 1 col on mobile) */
+              <div className="voice-profiles-grid">
                 {filtered.map((profile) => {
                   const initials = profile.name
                     .split(/\s+/)
@@ -289,20 +285,7 @@ export function VoiceProfilesPage() {
                   const isFull = count >= 3;
 
                   return (
-                    <article
-                      key={profile.id}
-                      style={{
-                        padding: "18px 20px",
-                        background: "var(--surface, #ffffff)",
-                        borderRadius: "16px",
-                        border: "1px solid var(--border, #e2e8f0)",
-                        boxShadow: "0 2px 8px rgba(0, 0, 0, 0.04)",
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: "14px",
-                        transition: "box-shadow 0.15s ease",
-                      }}
-                    >
+                    <article key={profile.id} className="voice-profile-card">
                       {/* Top row: Avatar, Name, Progress Badge & Delete icon */}
                       <div
                         style={{
@@ -312,18 +295,25 @@ export function VoiceProfilesPage() {
                           gap: "12px",
                         }}
                       >
-                        <div style={{ display: "flex", alignItems: "center", gap: "12px", minWidth: 0 }}>
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "12px",
+                            minWidth: 0,
+                          }}
+                        >
                           <div
                             style={{
-                              width: "42px",
-                              height: "42px",
+                              width: "44px",
+                              height: "44px",
                               borderRadius: "12px",
                               background: getAvatarColor(profile.name),
                               color: "#ffffff",
                               display: "flex",
                               alignItems: "center",
                               justifyContent: "center",
-                              fontSize: "15px",
+                              fontSize: "16px",
                               fontWeight: 700,
                               flexShrink: 0,
                               boxShadow: "0 2px 6px rgba(0,0,0,0.12)",
@@ -347,20 +337,35 @@ export function VoiceProfilesPage() {
                             >
                               {profile.name}
                             </strong>
-                            <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "2px" }}>
+                            <div
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: "8px",
+                                marginTop: "3px",
+                              }}
+                            >
                               <span
                                 style={{
                                   fontSize: "11px",
                                   fontWeight: 600,
                                   padding: "2px 8px",
                                   borderRadius: "999px",
-                                  background: isFull ? "#ecfdf5" : "#f1f5f9",
-                                  color: isFull ? "#059669" : "#64748b",
-                                  border: isFull ? "1px solid #a7f3d0" : "1px solid #e2e8f0",
+                                  background: isFull ? "#ecfdf5" : "var(--surface-soft, #f1f5f9)",
+                                  color: isFull ? "#059669" : "var(--muted, #64748b)",
+                                  border: isFull ? "1px solid #a7f3d0" : "1px solid var(--border, #e2e8f0)",
                                 }}
                               >
-                                {isFull ? "✓ Đủ 3/3 mẫu" : `Đã thu ${count}/3 mẫu`}
+                                {isFull ? "✓ Đã đủ 3/3 mẫu" : `Đã thu ${count}/3 mẫu`}
                               </span>
+                              <small
+                                style={{
+                                  color: "var(--muted, #64748b)",
+                                  fontSize: "11.5px",
+                                }}
+                              >
+                                {(profile.sample_duration_ms / 1000).toFixed(1)}s âm thanh
+                              </small>
                             </div>
                           </div>
                         </div>
@@ -383,13 +388,15 @@ export function VoiceProfilesPage() {
                           }}
                           title="Xóa người nói này"
                           onMouseEnter={(e) => (e.currentTarget.style.color = "#ef4444")}
-                          onMouseLeave={(e) => (e.currentTarget.style.color = "var(--muted, #94a3b8)")}
+                          onMouseLeave={(e) =>
+                            (e.currentTarget.style.color = "var(--muted, #94a3b8)")
+                          }
                         >
                           <Icon name="trash" />
                         </button>
                       </div>
 
-                      {/* Visual 3-bar progress indicator */}
+                      {/* 3-bar progress indicator */}
                       <div
                         style={{
                           display: "grid",
@@ -415,90 +422,62 @@ export function VoiceProfilesPage() {
                       </div>
 
                       {/* Separator */}
-                      <div style={{ height: "1px", backgroundColor: "var(--border, #f1f5f9)" }} />
+                      <div
+                        style={{
+                          height: "1px",
+                          backgroundColor: "var(--border, #f1f5f9)",
+                        }}
+                      />
 
-                      {/* 3 Separate Voice Sample Slots */}
-                      <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      {/* INDIVIDUAL RECORDING SESSIONS (LẦN THU 1, 2, 3) */}
+                      <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
                         {[1, 2, 3].map((slotIndex) => {
                           const hasSample = slotIndex <= count;
                           const isNextSlot = slotIndex === count + 1;
-                          const sampleKey = `${profile.id}_${slotIndex}`;
-                          const isPlayingThis = playingKey === sampleKey;
-                          const isLoadingThis = loadingAudioKey === sampleKey;
 
                           if (hasSample) {
-                            // Enrolled sample slot with its own Play/Pause button
+                            // Enrolled sample with its own audio player bar (like Image 3)
                             return (
-                              <div
-                                key={slotIndex}
-                                style={{
-                                  display: "flex",
-                                  alignItems: "center",
-                                  justifyContent: "space-between",
-                                  padding: "9px 12px",
-                                  borderRadius: "10px",
-                                  backgroundColor: isPlayingThis
-                                    ? "#f5f3ff"
-                                    : "var(--surface-soft, #f8fafc)",
-                                  border: isPlayingThis
-                                    ? "1px solid #c7d2fe"
-                                    : "1px solid var(--border, #e2e8f0)",
-                                  transition: "all 0.15s ease",
-                                }}
-                              >
-                                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                                  <span style={{ fontSize: "14px" }}>🎙️</span>
-                                  <strong
-                                    style={{
-                                      fontSize: "13px",
-                                      color: isPlayingThis ? "#4f46e5" : "inherit",
-                                    }}
-                                  >
-                                    Mẫu {slotIndex}
-                                  </strong>
-                                  <span
-                                    style={{
-                                      fontSize: "11px",
-                                      color: "#059669",
-                                      backgroundColor: "#ecfdf5",
-                                      padding: "1px 6px",
-                                      borderRadius: "6px",
-                                      fontWeight: 500,
-                                    }}
-                                  >
-                                    Đã thu
-                                  </span>
-                                </div>
-
-                                <Button
-                                  onClick={() => void handlePlaySample(profile, slotIndex)}
-                                  disabled={isLoadingThis}
+                              <div key={slotIndex} className="voice-sample-player-box">
+                                <div
                                   style={{
-                                    minHeight: "30px",
-                                    padding: "3px 12px",
-                                    fontSize: "12px",
-                                    fontWeight: 600,
-                                    borderRadius: "8px",
-                                    display: "inline-flex",
+                                    display: "flex",
                                     alignItems: "center",
-                                    gap: "5px",
-                                    background: isPlayingThis ? "#6366f1" : undefined,
-                                    color: isPlayingThis ? "#ffffff" : undefined,
-                                    borderColor: isPlayingThis ? "#6366f1" : undefined,
+                                    justifyContent: "space-between",
                                   }}
                                 >
-                                  {isLoadingThis ? (
-                                    "Đang tải…"
-                                  ) : isPlayingThis ? (
-                                    <>
-                                      <span>⏸</span> Tạm dừng
-                                    </>
-                                  ) : (
-                                    <>
-                                      <span>▶</span> Nghe
-                                    </>
-                                  )}
-                                </Button>
+                                  <div
+                                    style={{
+                                      display: "flex",
+                                      alignItems: "center",
+                                      gap: "8px",
+                                    }}
+                                  >
+                                    <span style={{ fontSize: "14px" }}>🎙️</span>
+                                    <strong style={{ fontSize: "13px" }}>
+                                      Lần thu {slotIndex}
+                                    </strong>
+                                    <span
+                                      style={{
+                                        fontSize: "11px",
+                                        fontWeight: 600,
+                                        color: "#059669",
+                                        backgroundColor: "#ecfdf5",
+                                        padding: "1px 7px",
+                                        borderRadius: "999px",
+                                        border: "1px solid #a7f3d0",
+                                      }}
+                                    >
+                                      ✓ Đã lưu
+                                    </span>
+                                  </div>
+                                </div>
+
+                                {/* Dedicated Audio Player Bar */}
+                                <SampleAudioBar
+                                  profileId={profile.id}
+                                  sampleIndex={slotIndex}
+                                />
                               </div>
                             );
                           }
@@ -519,8 +498,8 @@ export function VoiceProfilesPage() {
                                   display: "flex",
                                   alignItems: "center",
                                   justifyContent: "space-between",
-                                  padding: "9px 12px",
-                                  borderRadius: "10px",
+                                  padding: "12px 16px",
+                                  borderRadius: "12px",
                                   border: "1.5px dashed var(--border, #cbd5e1)",
                                   backgroundColor: "var(--surface, #ffffff)",
                                   cursor: "pointer",
@@ -530,23 +509,45 @@ export function VoiceProfilesPage() {
                                 }}
                                 onMouseEnter={(e) => {
                                   e.currentTarget.style.borderColor = "#6366f1";
-                                  e.currentTarget.style.backgroundColor = "#faf5ff";
+                                  e.currentTarget.style.backgroundColor = "rgba(99, 102, 241, 0.04)";
                                 }}
                                 onMouseLeave={(e) => {
                                   e.currentTarget.style.borderColor = "var(--border, #cbd5e1)";
                                   e.currentTarget.style.backgroundColor = "var(--surface, #ffffff)";
                                 }}
                               >
-                                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                                  <span style={{ fontSize: "14px" }}>➕</span>
-                                  <strong style={{ fontSize: "13px" }}>Thu âm Mẫu {slotIndex}</strong>
+                                <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                                  <span style={{ fontSize: "16px" }}>➕</span>
+                                  <div>
+                                    <strong style={{ fontSize: "13.5px", display: "block" }}>
+                                      Thu âm Lần {slotIndex}
+                                    </strong>
+                                    <small
+                                      style={{
+                                        color: "var(--muted, #64748b)",
+                                        fontSize: "12px",
+                                      }}
+                                    >
+                                      Bổ sung mẫu giọng để AI nhận diện chuẩn xác hơn
+                                    </small>
+                                  </div>
                                 </div>
-                                <span style={{ fontSize: "12px", fontWeight: 600 }}>+ Thu mẫu</span>
+                                <span
+                                  style={{
+                                    fontSize: "12px",
+                                    fontWeight: 600,
+                                    backgroundColor: "rgba(99, 102, 241, 0.1)",
+                                    padding: "4px 10px",
+                                    borderRadius: "8px",
+                                  }}
+                                >
+                                  + Thu mẫu
+                                </span>
                               </button>
                             );
                           }
 
-                          // Future slot (waiting for previous slot)
+                          // Future slot (waiting)
                           return (
                             <div
                               key={slotIndex}
@@ -554,8 +555,8 @@ export function VoiceProfilesPage() {
                                 display: "flex",
                                 alignItems: "center",
                                 justifyContent: "space-between",
-                                padding: "9px 12px",
-                                borderRadius: "10px",
+                                padding: "10px 14px",
+                                borderRadius: "12px",
                                 border: "1px dashed var(--border, #e2e8f0)",
                                 backgroundColor: "var(--surface-soft, #f8fafc)",
                                 opacity: 0.5,
@@ -564,7 +565,7 @@ export function VoiceProfilesPage() {
                               <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                                 <span style={{ fontSize: "13px" }}>🔒</span>
                                 <span style={{ fontSize: "13px", color: "var(--muted, #94a3b8)" }}>
-                                  Mẫu {slotIndex} (Chưa thu)
+                                  Lần thu {slotIndex} (Cần thu lần {slotIndex - 1} trước)
                                 </span>
                               </div>
                             </div>
@@ -586,7 +587,7 @@ export function VoiceProfilesPage() {
                 }
               />
             ) : (
-              /* Beautiful Empty State */
+              /* Empty state */
               <div
                 style={{
                   padding: "60px 24px",
@@ -664,18 +665,19 @@ export function VoiceProfilesPage() {
         isSpeakerMode={true}
       />
 
-      {/* Modal add sample 2 or sample 3 */}
+      {/* Modal add sample 2 or 3 */}
       {sampleModalTarget && (
         <VoiceEnrollmentModal
           isOpen={true}
           onClose={() => setSampleModalTarget(null)}
           onEnrolled={(updated) => {
-            setProfiles((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
-            // Invalidate audio cache so newly added sample audio is freshly fetched
-            const sampleKey = `${updated.id}_${sampleModalTarget.targetIndex}`;
-            const oldUrl = audioCacheRef.current.get(sampleKey);
+            // Invalidate cache for new sample
+            const cacheKey = `${updated.id}_${sampleModalTarget.targetIndex}`;
+            const oldUrl = audioBlobCache.get(cacheKey);
             if (oldUrl) URL.revokeObjectURL(oldUrl);
-            audioCacheRef.current.delete(sampleKey);
+            audioBlobCache.delete(cacheKey);
+
+            setProfiles((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
             setSampleModalTarget(null);
           }}
           profileId={sampleModalTarget.profile.id}
