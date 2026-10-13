@@ -46,12 +46,18 @@ class VoiceProfileService:
         self._storage = storage
 
     async def get_user_profile(self, user: User) -> VoiceProfile | None:
-        return await self._session.scalar(
+        profile = await self._session.scalar(
             select(VoiceProfile).where(
                 VoiceProfile.user_id == user.id,
                 VoiceProfile.meeting_id.is_(None),
             )
         )
+        if profile is not None:
+            is_valid = await self._verify_and_cleanup_profile(profile)
+            if not is_valid:
+                await self._session.commit()
+                return None
+        return profile
 
     async def enroll_user_profile(
         self, user: User, audio_bytes: bytes, filename: str | None = None
@@ -190,8 +196,42 @@ class VoiceProfileService:
         await self._session.delete(profile)
         await self._session.commit()
 
+    async def _verify_and_cleanup_profile(self, profile: VoiceProfile) -> bool:
+        """Verify profile audio files in storage. If none exist, delete profile from DB and return False.
+        If some exist, adjust sample_count and return True."""
+        if self._storage is None:
+            return True
+
+        existing_samples: list[int] = []
+        for idx in range(1, max(2, profile.sample_count + 1)):
+            key = f"voice_profiles/{profile.id}_sample_{idx}.wav"
+            try:
+                await self._storage.get_bytes(key)
+                existing_samples.append(idx)
+            except Exception:
+                pass
+
+        if not existing_samples and profile.audio_storage_path:
+            try:
+                await self._storage.get_bytes(profile.audio_storage_path)
+                existing_samples.append(1)
+            except Exception:
+                pass
+
+        if not existing_samples:
+            await self._delete_profile_audio(profile)
+            await self._session.delete(profile)
+            return False
+
+        real_count = len(existing_samples)
+        if profile.sample_count != real_count:
+            profile.sample_count = real_count
+            profile.speaker_identifiers = list(profile.speaker_identifiers or [])[:real_count]
+
+        return True
+
     async def list_user_profiles(self, user: User) -> list[VoiceProfile]:
-        """List all voice profiles belonging to or created by the user."""
+        """List all voice profiles belonging to or created by the user, purging any whose audio files are missing."""
         stmt = (
             select(VoiceProfile)
             .where(
@@ -204,7 +244,18 @@ class VoiceProfileService:
             )
             .order_by(VoiceProfile.created_at.desc(), VoiceProfile.id)
         )
-        return list(await self._session.scalars(stmt))
+        profiles = list(await self._session.scalars(stmt))
+        valid_profiles: list[VoiceProfile] = []
+        changed = False
+        for p in profiles:
+            is_valid = await self._verify_and_cleanup_profile(p)
+            if is_valid:
+                valid_profiles.append(p)
+            else:
+                changed = True
+        if changed:
+            await self._session.commit()
+        return valid_profiles
 
     async def create_user_speaker_profile(
         self, user: User, name: str, audio_bytes: bytes, filename: str | None = None
@@ -265,6 +316,57 @@ class VoiceProfileService:
         await self._session.delete(profile)
         await self._session.commit()
 
+    async def delete_profile_sample(
+        self, profile_id: UUID, sample_index: int, user: User
+    ) -> VoiceProfile:
+        profile = await self._session.get(VoiceProfile, profile_id)
+        if profile is None:
+            raise ApiError("VOICE_PROFILE_NOT_FOUND", "Không tìm thấy mẫu giọng.", 404)
+        if profile.user_id != user.id:
+            if profile.meeting_id:
+                await self._meetings.require_access(profile.meeting_id, user, MeetingPermission.EDIT)
+            else:
+                raise ApiError("FORBIDDEN", "Bạn không có quyền chỉnh sửa mẫu giọng này.", 403)
+        if sample_index < 1 or sample_index > profile.sample_count:
+            raise ApiError("SAMPLE_NOT_FOUND", "Không tìm thấy lần thu này.", 404)
+
+        if profile.sample_count <= 1:
+            await self._delete_profile_audio(profile)
+            await self._session.delete(profile)
+            await self._session.commit()
+            return profile
+
+        # Read all existing sample audios before shifting
+        samples_audio: list[bytes | None] = []
+        if self._storage:
+            for idx in range(1, profile.sample_count + 1):
+                try:
+                    b = await self._storage.get_bytes(f"voice_profiles/{profile.id}_sample_{idx}.wav")
+                    samples_audio.append(b)
+                except Exception:
+                    samples_audio.append(None)
+
+        # Delete old audio files
+        await self._delete_profile_audio(profile)
+
+        # Remove deleted sample from audio list and identifiers
+        target_idx_0 = sample_index - 1
+        new_audio_list = [b for i, b in enumerate(samples_audio) if i != target_idx_0]
+        existing_ids = list(profile.speaker_identifiers or [])
+        new_identifiers = [ident for i, ident in enumerate(existing_ids) if i != target_idx_0]
+
+        # Re-save remaining audio files cleanly as 1, 2, ...
+        if self._storage:
+            for new_idx, wav_bytes in enumerate(new_audio_list, start=1):
+                if wav_bytes:
+                    await self._save_sample_audio(profile, wav_bytes, sample_index=new_idx)
+
+        profile.speaker_identifiers = new_identifiers
+        profile.sample_count = len(new_identifiers)
+        await self._session.commit()
+        await self._session.refresh(profile)
+        return profile
+
     async def get_profile_audio(
         self, profile_id: UUID, user: User, sample_index: int = 1
     ) -> tuple[bytes, str]:
@@ -290,8 +392,14 @@ class VoiceProfileService:
                 try:
                     audio_bytes = await self._storage.get_bytes(profile.audio_storage_path)
                     return audio_bytes, f"{profile.name}_mau_{sample_index}.wav"
-                except Exception as exc:
-                    raise ApiError("VOICE_AUDIO_NOT_FOUND", "Không tìm thấy file âm thanh trong kho lưu trữ.", 404) from exc
+                except Exception:
+                    pass
+
+            # If audio is not found, verify and purge broken profile from DB
+            is_valid = await self._verify_and_cleanup_profile(profile)
+            if not is_valid:
+                await self._session.commit()
+                raise ApiError("VOICE_AUDIO_NOT_FOUND", "Không tìm thấy file âm thanh và đã xóa hồ sơ hỏng khỏi hệ thống.", 404)
             raise ApiError("VOICE_AUDIO_NOT_FOUND", f"Không tìm thấy file âm thanh cho mẫu {sample_index}.", 404)
 
     async def _save_sample_audio(
@@ -351,7 +459,17 @@ class VoiceProfileService:
                 .order_by(VoiceProfile.created_at, VoiceProfile.id)
             )
         )
-        return guests + users
+        valid_profiles: list[VoiceProfile] = []
+        changed = False
+        for p in (guests + users):
+            is_valid = await self._verify_and_cleanup_profile(p)
+            if is_valid:
+                valid_profiles.append(p)
+            else:
+                changed = True
+        if changed:
+            await self._session.commit()
+        return valid_profiles
 
     async def _meeting_guest(self, meeting_id: UUID, profile_id: UUID) -> VoiceProfile:
         profile = await self._session.get(VoiceProfile, profile_id)

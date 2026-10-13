@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { voiceProfilesApi } from "../api/endpoints";
 import { useAsync } from "../hooks/useAsync";
 import { Button, Empty, Failure, Icon, Loading, PageHeading } from "../components/ui";
@@ -23,6 +23,22 @@ function getAvatarColor(name: string): string {
   return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
 }
 
+function formatTimestamp(isoString?: string): string {
+  if (!isoString) return "";
+  try {
+    const d = new Date(isoString);
+    if (isNaN(d.getTime())) return "";
+    const hours = String(d.getHours()).padStart(2, "0");
+    const minutes = String(d.getMinutes()).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    const month = String(d.getMonth() + 1).padStart(2, "0");
+    const year = d.getFullYear();
+    return `${hours}:${minutes} · ${day}/${month}/${year}`;
+  } catch {
+    return "";
+  }
+}
+
 // Pause other audios when one starts playing
 function pauseOtherAudios(current: HTMLAudioElement) {
   document.querySelectorAll("audio").forEach((el) => {
@@ -38,9 +54,13 @@ const audioBlobCache = new Map<string, string>();
 function SampleAudioBar({
   profileId,
   sampleIndex,
+  onDurationLoaded,
+  onAudioMissing,
 }: {
   profileId: string;
   sampleIndex: number;
+  onDurationLoaded?: (durationSec: number) => void;
+  onAudioMissing?: (profileId: string) => void;
 }) {
   const cacheKey = `${profileId}_${sampleIndex}`;
   const [audioUrl, setAudioUrl] = useState<string | null>(audioBlobCache.get(cacheKey) ?? null);
@@ -72,12 +92,15 @@ function SampleAudioBar({
         const msg = err instanceof Error ? err.message : "Không tìm thấy file âm thanh.";
         setError(msg);
         setLoading(false);
+        if (onAudioMissing) {
+          onAudioMissing(profileId);
+        }
       });
 
     return () => {
       active = false;
     };
-  }, [profileId, sampleIndex, cacheKey]);
+  }, [profileId, sampleIndex, cacheKey, onAudioMissing]);
 
   if (loading) {
     return (
@@ -124,6 +147,11 @@ function SampleAudioBar({
       preload="metadata"
       src={audioUrl}
       onPlay={(e) => pauseOtherAudios(e.currentTarget)}
+      onLoadedMetadata={(e) => {
+        if (onDurationLoaded && Number.isFinite(e.currentTarget.duration)) {
+          onDurationLoaded(e.currentTarget.duration);
+        }
+      }}
       style={{
         width: "100%",
         height: "38px",
@@ -134,6 +162,117 @@ function SampleAudioBar({
     >
       Trình duyệt không hỗ trợ phát âm thanh.
     </audio>
+  );
+}
+
+function RecordedSampleItem({
+  profile,
+  slotIndex,
+  onDeleteRequest,
+  onAudioMissing,
+}: {
+  profile: VoiceProfile;
+  slotIndex: number;
+  onDeleteRequest: (profile: VoiceProfile, slotIndex: number) => void;
+  onAudioMissing?: (profileId: string) => void;
+}) {
+  const [duration, setDuration] = useState<number | null>(null);
+
+  return (
+    <div className="voice-sample-player-box">
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          flexWrap: "wrap",
+          gap: "8px",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+          <span style={{ fontSize: "14px" }}>🎙️</span>
+          <strong style={{ fontSize: "13px" }}>Lần thu {slotIndex}</strong>
+          {duration !== null && (
+            <span
+              style={{
+                fontSize: "11px",
+                fontWeight: 600,
+                color: "var(--text, #0f172a)",
+                backgroundColor: "var(--surface, #ffffff)",
+                border: "1px solid var(--border, #cbd5e1)",
+                padding: "1px 7px",
+                borderRadius: "6px",
+              }}
+            >
+              ⏱️ {duration.toFixed(1)}s
+            </span>
+          )}
+          <span
+            style={{
+              fontSize: "11px",
+              color: "var(--muted, #64748b)",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "4px",
+            }}
+          >
+            <span>🕒</span> {formatTimestamp(profile.updated_at || profile.created_at)}
+          </span>
+          <span
+            style={{
+              fontSize: "11px",
+              fontWeight: 600,
+              color: "#059669",
+              backgroundColor: "#ecfdf5",
+              padding: "1px 7px",
+              borderRadius: "999px",
+              border: "1px solid #a7f3d0",
+            }}
+          >
+            ✓ Đã lưu
+          </span>
+        </div>
+
+        {/* Delete sample button */}
+        <button
+          type="button"
+          onClick={() => onDeleteRequest(profile, slotIndex)}
+          style={{
+            background: "none",
+            border: "none",
+            cursor: "pointer",
+            color: "var(--muted, #94a3b8)",
+            padding: "3px 8px",
+            borderRadius: "6px",
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "4px",
+            fontSize: "12px",
+            transition: "all 0.15s ease",
+          }}
+          title={`Xóa lần thu ${slotIndex}`}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.color = "#ef4444";
+            e.currentTarget.style.backgroundColor = "#fef2f2";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.color = "var(--muted, #94a3b8)";
+            e.currentTarget.style.backgroundColor = "transparent";
+          }}
+        >
+          <Icon name="trash" />
+          <span style={{ fontSize: "11px", fontWeight: 500 }}>Xóa lần thu</span>
+        </button>
+      </div>
+
+      {/* Dedicated Audio Player Bar */}
+      <SampleAudioBar
+        profileId={profile.id}
+        sampleIndex={slotIndex}
+        onDurationLoaded={setDuration}
+        onAudioMissing={onAudioMissing}
+      />
+    </div>
   );
 }
 
@@ -148,6 +287,11 @@ export function VoiceProfilesPage() {
   } | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [confirmDeleteProfile, setConfirmDeleteProfile] = useState<VoiceProfile | null>(null);
+  const [confirmDeleteSample, setConfirmDeleteSample] = useState<{
+    profile: VoiceProfile;
+    sampleIndex: number;
+  } | null>(null);
+  const [deletingSample, setDeletingSample] = useState(false);
 
   useEffect(() => {
     if (profilesQuery.data) {
@@ -155,7 +299,7 @@ export function VoiceProfilesPage() {
     }
   }, [profilesQuery.data]);
 
-  const handleDelete = async (profile: VoiceProfile) => {
+  const handleDeleteProfile = async (profile: VoiceProfile) => {
     setDeletingId(profile.id);
     try {
       await voiceProfilesApi.delete(profile.id);
@@ -176,6 +320,44 @@ export function VoiceProfilesPage() {
     } finally {
       setDeletingId(null);
     }
+  };
+
+  const handleConfirmDeleteSample = async () => {
+    if (!confirmDeleteSample) return;
+    const { profile, sampleIndex } = confirmDeleteSample;
+    setDeletingSample(true);
+
+    try {
+      const updated = await voiceProfilesApi.deleteSample(profile.id, sampleIndex);
+
+      // Invalidate cached audio URLs for this profile
+      for (let idx = 1; idx <= 3; idx++) {
+        const k = `${profile.id}_${idx}`;
+        const u = audioBlobCache.get(k);
+        if (u) {
+          URL.revokeObjectURL(u);
+          audioBlobCache.delete(k);
+        }
+      }
+
+      if (profile.sample_count <= 1) {
+        // Only remaining sample was deleted, profile is gone
+        setProfiles((prev) => prev.filter((p) => p.id !== profile.id));
+      } else {
+        setProfiles((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+      }
+      setConfirmDeleteSample(null);
+    } catch (err: unknown) {
+      alert((err as Error).message || "Không thể xóa lần thu này.");
+    } finally {
+      setDeletingSample(false);
+    }
+  };
+
+  const handleAudioMissing = (profileId: string) => {
+    // Automatically purge broken profile from UI and delete from DB
+    setProfiles((prev) => prev.filter((p) => p.id !== profileId));
+    void voiceProfilesApi.delete(profileId).catch(() => {});
   };
 
   const filtered = profiles.filter((p) =>
@@ -204,7 +386,7 @@ export function VoiceProfilesPage() {
             }}
           >
             <Icon name="plus" />
-            + Thêm người nói mới
+            Thêm người nói mới
           </Button>
         }
       />
@@ -364,7 +546,7 @@ export function VoiceProfilesPage() {
                                   fontSize: "11.5px",
                                 }}
                               >
-                                {(profile.sample_duration_ms / 1000).toFixed(1)}s âm thanh
+                                {(profile.sample_duration_ms / 1000).toFixed(1)}s tổng thời lượng
                               </small>
                             </div>
                           </div>
@@ -436,49 +618,17 @@ export function VoiceProfilesPage() {
                           const isNextSlot = slotIndex === count + 1;
 
                           if (hasSample) {
-                            // Enrolled sample with its own audio player bar (like Image 3)
+                            // Enrolled sample with timestamp, duration & individual audio player bar
                             return (
-                              <div key={slotIndex} className="voice-sample-player-box">
-                                <div
-                                  style={{
-                                    display: "flex",
-                                    alignItems: "center",
-                                    justifyContent: "space-between",
-                                  }}
-                                >
-                                  <div
-                                    style={{
-                                      display: "flex",
-                                      alignItems: "center",
-                                      gap: "8px",
-                                    }}
-                                  >
-                                    <span style={{ fontSize: "14px" }}>🎙️</span>
-                                    <strong style={{ fontSize: "13px" }}>
-                                      Lần thu {slotIndex}
-                                    </strong>
-                                    <span
-                                      style={{
-                                        fontSize: "11px",
-                                        fontWeight: 600,
-                                        color: "#059669",
-                                        backgroundColor: "#ecfdf5",
-                                        padding: "1px 7px",
-                                        borderRadius: "999px",
-                                        border: "1px solid #a7f3d0",
-                                      }}
-                                    >
-                                      ✓ Đã lưu
-                                    </span>
-                                  </div>
-                                </div>
-
-                                {/* Dedicated Audio Player Bar */}
-                                <SampleAudioBar
-                                  profileId={profile.id}
-                                  sampleIndex={slotIndex}
-                                />
-                              </div>
+                              <RecordedSampleItem
+                                key={slotIndex}
+                                profile={profile}
+                                slotIndex={slotIndex}
+                                onDeleteRequest={(p, idx) =>
+                                  setConfirmDeleteSample({ profile: p, sampleIndex: idx })
+                                }
+                                onAudioMissing={handleAudioMissing}
+                              />
                             );
                           }
 
@@ -517,7 +667,7 @@ export function VoiceProfilesPage() {
                                 }}
                               >
                                 <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                                  <span style={{ fontSize: "16px" }}>➕</span>
+                                  <span style={{ fontSize: "16px" }}>🎙️</span>
                                   <div>
                                     <strong style={{ fontSize: "13.5px", display: "block" }}>
                                       Thu âm Lần {slotIndex}
@@ -537,7 +687,8 @@ export function VoiceProfilesPage() {
                                     fontSize: "12px",
                                     fontWeight: 600,
                                     backgroundColor: "rgba(99, 102, 241, 0.1)",
-                                    padding: "4px 10px",
+                                    color: "#4f46e5",
+                                    padding: "5px 12px",
                                     borderRadius: "8px",
                                   }}
                                 >
@@ -645,9 +796,13 @@ export function VoiceProfilesPage() {
                     fontSize: "14px",
                     fontWeight: 600,
                     borderRadius: "10px",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "8px",
                   }}
                 >
-                  + Thêm người nói đầu tiên
+                  <Icon name="plus" />
+                  Thêm người nói đầu tiên
                 </Button>
               </div>
             )}
@@ -688,7 +843,7 @@ export function VoiceProfilesPage() {
         />
       )}
 
-      {/* Confirmation modal for delete */}
+      {/* Confirmation modal for delete whole speaker */}
       {confirmDeleteProfile && (
         <div className="dialog-backdrop">
           <div className="dialog" style={{ width: 420, borderRadius: "16px" }}>
@@ -708,7 +863,7 @@ export function VoiceProfilesPage() {
                 lineHeight: 1.5,
               }}
             >
-              Bạn có chắc chắn muốn xóa hồ sơ mẫu giọng của{" "}
+              Bạn có chắc chắn muốn xóa toàn bộ hồ sơ mẫu giọng của{" "}
               <strong style={{ color: "var(--text, #0f172a)" }}>
                 "{confirmDeleteProfile.name}"
               </strong>
@@ -724,10 +879,72 @@ export function VoiceProfilesPage() {
               </Button>
               <Button
                 tone="danger"
-                onClick={() => void handleDelete(confirmDeleteProfile)}
+                onClick={() => void handleDeleteProfile(confirmDeleteProfile)}
                 disabled={deletingId !== null}
               >
                 {deletingId ? "Đang xóa…" : "Xóa người nói"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confirmation modal for deleting single sample */}
+      {confirmDeleteSample && (
+        <div className="dialog-backdrop">
+          <div className="dialog" style={{ width: 420, borderRadius: "16px" }}>
+            <button
+              className="close"
+              aria-label="Đóng"
+              onClick={() => setConfirmDeleteSample(null)}
+            >
+              <Icon name="close" />
+            </button>
+            <h2 style={{ fontSize: "18px", fontWeight: 700 }}>
+              Xác nhận xóa Lần thu {confirmDeleteSample.sampleIndex}
+            </h2>
+            <p
+              style={{
+                marginTop: "10px",
+                fontSize: "14px",
+                color: "var(--muted, #64748b)",
+                lineHeight: 1.5,
+              }}
+            >
+              {confirmDeleteSample.profile.sample_count <= 1 ? (
+                <>
+                  Người nói{" "}
+                  <strong style={{ color: "var(--text, #0f172a)" }}>
+                    "{confirmDeleteSample.profile.name}"
+                  </strong>{" "}
+                  chỉ còn duy nhất 1 lần thu này. Xóa lần thu này sẽ xóa toàn bộ hồ sơ người nói.
+                  Bạn có chắc chắn muốn xóa?
+                </>
+              ) : (
+                <>
+                  Bạn có chắc chắn muốn xóa{" "}
+                  <strong>Lần thu {confirmDeleteSample.sampleIndex}</strong> của người nói{" "}
+                  <strong style={{ color: "var(--text, #0f172a)" }}>
+                    "{confirmDeleteSample.profile.name}"
+                  </strong>
+                  ? Bạn có thể thu âm lại lần thu này bất cứ lúc nào.
+                </>
+              )}
+            </p>
+            <div className="form-actions" style={{ marginTop: "24px" }}>
+              <Button
+                tone="light"
+                onClick={() => setConfirmDeleteSample(null)}
+                disabled={deletingSample}
+              >
+                Hủy bỏ
+              </Button>
+              <Button
+                tone="danger"
+                onClick={() => void handleConfirmDeleteSample()}
+                disabled={deletingSample}
+              >
+                {deletingSample ? "Đang xóa…" : "Xóa lần thu"}
               </Button>
             </div>
           </div>

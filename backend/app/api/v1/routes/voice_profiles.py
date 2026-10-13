@@ -137,6 +137,19 @@ async def delete_voice_profile(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@voice_profiles_router.delete(
+    "/{profile_id}/samples/{sample_index}", response_model=VoiceProfileResponse
+)
+async def delete_voice_sample(
+    profile_id: UUID,
+    sample_index: int,
+    user: CurrentUserDependency,
+    service: VoiceProfileServiceDependency,
+) -> VoiceProfileResponse:
+    profile = await service.delete_profile_sample(profile_id, sample_index, user)
+    return VoiceProfileResponse.model_validate(profile)
+
+
 @meeting_voice_profiles_router.get(
     "/{meeting_id}/voice-profiles", response_model=list[VoiceProfileResponse]
 )
