@@ -14,20 +14,30 @@ from app.models.transcript import CurrentSegment, Transcript
 from app.models.user import User
 from app.providers.contracts import TranscriptionSegment
 from app.schemas.transcript import TranscriptMutationResponse
+from app.services.meeting_sections import MeetingSectionService
 from app.services.transcripts import TranscriptService
 
 
 class RealtimeTranscriptService:
     """Owns durable final-segment writes for one realtime socket session."""
 
-    def __init__(self, session: AsyncSession, meeting: Meeting, actor_id: UUID) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        meeting: Meeting,
+        actor_id: UUID,
+        *,
+        time_offset_ms: int | None = None,
+    ) -> None:
         self._session = session
         self._meeting = meeting
         self._actor_id = actor_id
         self._diarization_enabled = meeting.diarization_enabled
         self._speaker_scope = uuid4().hex
         self._turns: dict[int, UUID] = {}
-        self._time_offset_ms = meeting.duration_ms or 0
+        self._time_offset_ms = (
+            (meeting.duration_ms or 0) if time_offset_ms is None else time_offset_ms
+        )
         self._started_stt_version = False
 
     def _scoped_label(self, label: str | None) -> str | None:
@@ -48,13 +58,14 @@ class RealtimeTranscriptService:
         return self._speaker_scope
 
     async def recording_started(self) -> None:
+        await MeetingSectionService(self._session).begin(self._meeting)
         if self._meeting.status in {
             MeetingStatus.CREATED,
             MeetingStatus.PROCESSING,
             MeetingStatus.FAILED,
         }:
             self._meeting.status = MeetingStatus.RECORDING
-            await self._session.commit()
+        await self._session.commit()
 
     async def recording_ended(self) -> None:
         if self._meeting.status in {MeetingStatus.RECORDING, MeetingStatus.PROCESSING}:
@@ -68,9 +79,11 @@ class RealtimeTranscriptService:
     async def persist_final(self, segment: TranscriptionSegment, turn_order: int | None = None):
         """Persist through the common STT ingestion boundary used by batch workers too."""
         stored = await TranscriptService(self._session).append_stt_final(
-            self._meeting, self._actor_id,
+            self._meeting,
+            self._actor_id,
             replace(
-                segment, speaker_label=self._scoped_label(segment.speaker_label),
+                segment,
+                speaker_label=self._scoped_label(segment.speaker_label),
                 start_ms=segment.start_ms + self._time_offset_ms,
                 end_ms=segment.end_ms + self._time_offset_ms,
             ),

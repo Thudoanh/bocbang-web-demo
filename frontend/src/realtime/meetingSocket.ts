@@ -1,5 +1,6 @@
 import { config } from "../app/config";
 import { recordArrival } from "./diagnostics";
+import type { MeetingSection } from "../types/domain";
 
 type TranscriptTrace = {
   event_id?: string; stream_segment_id?: string; backend_queue_ms?: number;
@@ -7,11 +8,15 @@ type TranscriptTrace = {
 };
 
 export type RealtimeEvent =
-  | { type: "session.ready"; provider: string; language: string; speaker_identification_available: boolean; fallback_active: boolean }
+  | { type: "session.ready"; paused?: boolean; provider: string; language: string; speaker_identification_available: boolean; fallback_active: boolean }
   | ({ type: "transcript.partial"; language: string; start_ms: number; end_ms: number; text: string; speaker_label?: string; speaker_name?: string; voice_profile_id?: string; is_identified?: boolean } & TranscriptTrace)
   | ({ type: "transcript.final"; language: string; start_ms: number; end_ms: number; text: string; logical_segment_id: string; speaker_id?: string; speaker_label?: string; speaker_name?: string; voice_profile_id?: string; is_identified?: boolean } & TranscriptTrace)
   | { type: "transcript.speaker_updated"; logical_segment_id: string; speaker_id: string | null; version_id: string; version_no: number }
   | { type: "meeting.status"; status: string }
+  | { type: "meeting.sections"; paused: boolean; sections: MeetingSection[] }
+  | { type: "recording.paused" }
+  | { type: "recording.resumed"; new_section?: boolean; speaker_identification_available?: boolean; fallback_active?: boolean }
+  | { type: "speakers.updated"; deferred?: boolean; speaker_identification_available: boolean; fallback_active: boolean }
   | { type: "error"; code: string; message: string; retryable: boolean }
   | { type: "translation.status"; enabled: boolean; source_language?: string; target_language?: string }
   | { type: "translation.final"; logical_segment_id: string; source_language: string; target_language: string; text: string }
@@ -22,6 +27,7 @@ export class MeetingSocket {
   private retry = 0;
   private retryTimer?: number;
   private stopped = false;
+  private paused = false;
 
   constructor(
     private meetingId: string,
@@ -42,6 +48,7 @@ export class MeetingSocket {
     this.onStatus(this.retry ? "reconnecting" : "connecting");
     const url = new URL(`${config.wsBaseUrl}/realtime/${this.meetingId}`);
     url.searchParams.set("access_token", this.token);
+    if (this.paused) url.searchParams.set("start_paused", "1");
     const socket = new WebSocket(url);
     this.socket = socket;
 
@@ -83,12 +90,16 @@ export class MeetingSocket {
     if (this.socket?.readyState === WebSocket.OPEN) this.socket.send(chunk);
   }
 
-  command(command: "recording.pause" | "recording.resume" | "recording.stop") {
+  command(command: "recording.pause" | "recording.resume" | "recording.stop" | "speakers.refresh", options?: { new_section?: boolean; acknowledge?: boolean }) {
+    if (this.socket?.readyState !== WebSocket.OPEN) return false;
+    if (command === "recording.pause") this.paused = true;
+    if (command === "recording.resume") this.paused = false;
     if (command === "recording.stop") {
       this.stopped = true;
       this.clearRetryTimer();
     }
-    this.sendCommand({ type: command });
+    this.sendCommand({ type: command, ...options });
+    return true;
   }
 
   enableTranslation(targetLanguage: string, logicalSegmentIds: string[]) {

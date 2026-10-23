@@ -1,4 +1,5 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useAuth } from "../auth/AuthContext";
 import { MeetingSocket, type RealtimeEvent } from "../realtime/meetingSocket";
 import { MicrophonePcmCapture } from "../realtime/microphonePcm";
@@ -10,24 +11,29 @@ import { useAsync } from "../hooks/useAsync";
 import { can } from "../utils/permissions";
 import { languageLabel } from "../utils/language";
 import { formatTimestampInput, parseTimestampInput } from "../utils/time";
-import type { Comment, Segment } from "../types/domain";
-import { Button, Empty, Failure, Icon, Loading, PageHeading, Status } from "../components/ui";
+import type { Segment } from "../types/domain";
+import { Button, Empty, Failure, Icon, Loading } from "../components/ui";
+import { VoiceLearningDialog, VOICE_IDENTITY_UPDATED } from "../components/VoiceLearningDialog";
+import { useJobMonitor } from "../state/useJobMonitor";
+import { MEETING_TRANSCRIPT_CHANGED, notifyMeetingSectionsChanged, notifyMeetingTranscriptChanged } from "../api/meetingEvents";
+import { TranscriptColumnsHeader, TranscriptPair, type RealtimeTranslation } from "../components/TranscriptPair";
+import { useRecordingToolbarHost } from "../components/MeetingToolbarContext";
+import { RecordingTools, type RecordingState, type RecordingStatusTone } from "../components/RecordingTools";
+import { useWorkspaceHeaderHost } from "../components/WorkspaceHeaderContext";
+import { MEETING_PLAYBACK_TIME, notifyMeetingPlaybackChanged, seekMeetingPlayback } from "../api/playbackEvents";
+import { PauseRecordingDialog } from "../components/PauseRecordingDialog";
 
 type SegmentDraft = { text: string; startTime: string; endTime: string; speakerId: string };
-type AudioPlayerHandle = { seek: (milliseconds: number) => void };
-type MeetingTab = "info" | "comments" | "versions";
-type RealtimeTranslation = { text: string; sourceLanguage: string; targetLanguage: string };
 type EmailAttachmentChoice = "audio" | "transcript" | "summary" | "translation";
 
 export function MeetingPage({ meetingId }: { meetingId: string }) {
-  const { user } = useAuth();
+  const recordingToolbarHost = useRecordingToolbarHost();
+  const headerHost = useWorkspaceHeaderHost();
   const meeting = useAsync(() => meetingsApi.get(meetingId), [meetingId]);
-  const transcript = useAsync(() => meetingsApi.transcript(meetingId), [meetingId]);
+  const transcript = useAsync((signal) => meetingsApi.fullTranscript(meetingId, signal), [meetingId]);
   const media = useAsync(() => meetingsApi.media(meetingId), [meetingId]);
   const speakers = useAsync(() => meetingsApi.speakers(meetingId), [meetingId]);
   const capabilities = useAsync(capabilitiesApi.get, []);
-  const comments = useAsync(() => meetingsApi.comments(meetingId), [meetingId]);
-  const versions = useAsync(() => meetingsApi.versions(meetingId), [meetingId]);
   const [editing, setEditing] = useState<Segment>();
   const [draft, setDraft] = useState<SegmentDraft>({ text: "", startTime: "00:00", endTime: "00:00", speakerId: "" });
   const [notice, setNotice] = useState("");
@@ -35,6 +41,25 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
   const [renameOpen, setRenameOpen] = useState(false);
   const [recordingActive, setRecordingActive] = useState(false);
   const [liveTranscript, setLiveTranscript] = useState<LiveTranscript>({});
+  const [learningSegment, setLearningSegment] = useState<Segment>();
+  const voiceJobs = useJobMonitor();
+  const handledVoiceJob = useRef<string | undefined>(undefined);
+  const voiceLearningBusy = Boolean(voiceJobs.job && !["completed", "failed"].includes(voiceJobs.job.status));
+
+  useEffect(() => {
+    const job = voiceJobs.job;
+    if (!job || job.id === handledVoiceJob.current) return;
+    if (job.status === "completed") {
+      handledVoiceJob.current = job.id;
+      setNotice("Đã xác nhận người nói và lưu mẫu giọng để sử dụng cho các cuộc họp sau.");
+      void speakers.reload(); void transcript.reload();
+      window.dispatchEvent(new Event(VOICE_IDENTITY_UPDATED));
+    }
+    if (job.status === "failed") {
+      handledVoiceJob.current = job.id;
+      setNotice(job.error?.message ?? "Không thể học mẫu giọng. Vui lòng chọn lại đoạn âm thanh.");
+    }
+  }, [voiceJobs.job]);
 
   const updateRecordingState = useCallback((active: boolean) => {
     setRecordingActive(active);
@@ -46,10 +71,35 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
   const [mergeIds, setMergeIds] = useState<string[]>([]);
   const [pendingMerge, setPendingMerge] = useState<Segment[]>();
   const [activeSegmentId, setActiveSegmentId] = useState<string>();
-  const [activeTab, setActiveTab] = useState<MeetingTab>("info");
   const [realtimeTranslations, setRealtimeTranslations] = useState<Record<string, RealtimeTranslation>>({});
   const [showRealtimeTranslations, setShowRealtimeTranslations] = useState(false);
-  const player = useRef<AudioPlayerHandle>(null);
+  const [translationHost, setTranslationHost] = useState<HTMLSpanElement | null>(null);
+
+  useEffect(() => {
+    const updateTime = (event: Event) => {
+      const detail = (event as CustomEvent<{ meetingId: string; milliseconds: number | null }>).detail;
+      if (detail?.meetingId !== meetingId) return;
+      setActiveSegmentId(detail.milliseconds === null ? undefined : transcript.data?.segments.find(
+        (item) => item.start_ms <= detail.milliseconds! && detail.milliseconds! < item.end_ms,
+      )?.logical_segment_id);
+    };
+    window.addEventListener(MEETING_PLAYBACK_TIME, updateTime);
+    return () => window.removeEventListener(MEETING_PLAYBACK_TIME, updateTime);
+  }, [meetingId, transcript.data]);
+
+  useEffect(() => {
+    // Includes accepted polishing from the toolbar dialog; refresh the visible current transcript.
+    const update = (event: Event) => {
+      const detail = (event as CustomEvent<{ meetingId: string; reloadCurrent?: boolean }>).detail;
+      if (detail?.meetingId === meetingId && detail.reloadCurrent) void transcript.reload();
+    };
+    window.addEventListener(MEETING_TRANSCRIPT_CHANGED, update);
+    return () => window.removeEventListener(MEETING_TRANSCRIPT_CHANGED, update);
+  }, [meetingId, transcript.reload]);
+  useEffect(() => {
+    // Also covers final STT, manual edits, voice labels and meeting completion.
+    if (meeting.data) notifyMeetingTranscriptChanged(meetingId);
+  }, [meetingId, meeting.data?.status, transcript.data?.version_id, transcript.data?.segments.length]);
 
   useEffect(() => {
     const stored = new Set(transcript.data?.segments.map((segment) => segment.logical_segment_id));
@@ -60,14 +110,12 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
 
   useEffect(() => { if (editing) setDraft({ text: editing.text, startTime: formatTimestampInput(editing.start_ms), endTime: formatTimestampInput(editing.end_ms), speakerId: editing.speaker_id ?? "" }); }, [editing]);
   useEffect(() => { if (!activeSegmentId || editing) return; document.getElementById(`segment-${activeSegmentId}`)?.scrollIntoView({ block: "nearest", behavior: "smooth" }); }, [activeSegmentId, editing]);
-  useEffect(() => { if (activeTab === "comments") void comments.reload(); }, [activeTab, comments.reload]);
 
   function applyMutation(result: TranscriptMutation, removedId?: string) {
     transcript.setData((current) => {
       if (!current) return current;
       return { ...current, version_id: result.version_id, version_no: result.version_no, segments: removedId ? current.segments.filter((segment) => segment.logical_segment_id !== removedId) : current.segments.map((segment) => segment.logical_segment_id === result.segment?.logical_segment_id ? result.segment : segment) };
     });
-    void versions.reload();
   }
 
   async function save() {
@@ -87,12 +135,12 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
       if (Object.keys(body).length) await meetingsApi.saveSegment(editing.logical_segment_id, body);
       if ((editing.speaker_id ?? null) !== changedSpeaker) await meetingsApi.setSegmentSpeaker(editing.logical_segment_id, changedSpeaker);
       if (!Object.keys(body).length && (editing.speaker_id ?? null) === changedSpeaker) { setEditing(undefined); return setNotice("Không có thay đổi mới."); }
-      await transcript.reload(); await versions.reload(); setEditing(undefined); setNotice("Đã lưu thay đổi và tạo phiên bản transcript mới.");
+      await transcript.reload(); setEditing(undefined); setNotice("Đã lưu thay đổi transcript.");
     } catch (cause) { setNotice(meetingErrorMessage(cause)); }
   }
 
   async function mutate(action: () => Promise<TranscriptMutation>, success: string, removedId?: string) {
-    try { const result = await action(); if (removedId) applyMutation(result, removedId); else { await transcript.reload(); await versions.reload(); } setNotice(success); }
+    try { const result = await action(); if (removedId) applyMutation(result, removedId); else await transcript.reload(); setNotice(success); }
     catch (cause) { setNotice(meetingErrorMessage(cause)); }
   }
 
@@ -130,19 +178,26 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
     ...(transcript.data?.segments.map((segment) => segment.end_ms) ?? [0]),
   );
 
-  return <>
-    <PageHeading
-      eyebrow="BẢN GHI"
-      title="Bản ghi"
-      context={meeting.data.title}
-      description={`${languageLabel(meeting.data.language_mode)} · ${meeting.data.source_type === "realtime" ? "Ghi âm" : "Tệp"}`}
-      actions={<>
+  const compactHeader = <div className="meeting-compact-header">
+      <div className="meeting-compact-identity">
+        <h1 title={meeting.data.title}>{meeting.data.title}</h1>
+        <span className="meeting-compact-meta">{languageLabel(meeting.data.language_mode)} · {meeting.data.source_type === "realtime" ? "Ghi âm" : "Tệp"}</span>
+      </div>
+      <div className="meeting-compact-actions">
         {editable && <Button onClick={() => setRenameOpen(true)}>Đổi tên</Button>}
         {meeting.data.source_type === "upload" && <a className="btn btn-light" href={`/meetings/${meetingId}/upload`}>Tải tệp</a>}
         {owner && <Button tone="dark" onClick={() => setShareOpen(true)}>Chia sẻ</Button>}
-      </>}
-    />
+      </div>
+    </div>;
+
+  return <>
+    {headerHost ? createPortal(compactHeader, headerHost) : compactHeader}
     {notice && <div className="notice">{notice}</div>}
+    {voiceLearningBusy && <div className="notice" role="status">{voiceJobs.error ? "Chưa đọc được tiến độ. Đang thử kết nối lại; yêu cầu lấy mẫu vẫn được lưu trên máy chủ." : "Đang phân tích và lưu mẫu giọng… Bạn có thể tiếp tục cuộc họp."}</div>}
+    {recordingToolbarHost && meeting.data.source_type === "realtime" && meeting.data.status === "completed" && createPortal(<RecordingTools
+      state="stopped" elapsed={Math.floor(initialRecordingDurationMs / 1000)} status="Cuộc họp đã kết thúc."
+      fallbackWarning="" translationStatus="" onStart={() => {}} onPause={() => {}} onResume={() => {}} onEnd={() => {}}
+    />, recordingToolbarHost)}
 
     <div className="meeting-layout">
       <section>
@@ -151,35 +206,31 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
         {editable && meeting.data.source_type === "realtime" && meeting.data.status !== "completed" && capabilities.data?.stt.streaming && (
           <RecordingPanel
             meetingId={meetingId}
+            translationHost={translationHost}
+            onSectionsChanged={() => { notifyMeetingSectionsChanged(meetingId); void transcript.reload(); }}
             targetLanguage={realtimeTranslationSupported ? realtimeTarget : undefined}
             translationVisible={showRealtimeTranslations}
             onTranslationVisibleChange={setShowRealtimeTranslations}
             onTranslation={(logicalSegmentId, translation) => setRealtimeTranslations((current) => ({ ...current, [logicalSegmentId]: translation }))}
             onTranscript={(event) => setLiveTranscript((current) => updateLiveTranscript(current, event))}
             onResetTranscript={() => setLiveTranscript((current) => Object.fromEntries(Object.entries(current).filter(([, event]) => event.type === "transcript.final")))}
-            onFinal={() => { void transcript.reload(); void speakers.reload(); void versions.reload(); }}
-            onComplete={() => { void meeting.reload(); void transcript.reload(); void media.reload(); }}
+            onFinal={() => { void transcript.reload(); void speakers.reload(); }}
+            onComplete={() => { void meeting.reload(); void transcript.reload(); void media.reload(); notifyMeetingSectionsChanged(meetingId); notifyMeetingPlaybackChanged(meetingId); }}
             onRecordingStateChange={updateRecordingState}
-            hasStartedBefore={transcript.data?.segments !== undefined && transcript.data.segments.length > 0}
+            hasStartedBefore={
+              Boolean(transcript.data?.segments.length) ||
+              meeting.data.status === "recording" ||
+              meeting.data.status === "processing"
+            }
             initialElapsedMs={initialRecordingDurationMs}
           />
         )}
 
-        {/* Media Player */}
-        {media.data?.[0] && (
-          <MediaPlayer
-            ref={player}
-            meetingId={meetingId}
-            mediaId={media.data[0].id}
-            filename={media.data[0].original_filename}
-            segments={transcript.data?.segments ?? []}
-            onActiveSegment={setActiveSegmentId}
-          />
-        )}
-
-        <div className="section-title">
+        <div className="section-title transcript-section-title">
           <h2>Nội dung</h2>
-          {transcript.data && <Status>v{transcript.data.version_no}</Status>}
+          <span ref={setTranslationHost} className="transcript-translation-toggle">
+            {meeting.data.status === "completed" && (showRealtimeTranslations || Object.keys(realtimeTranslations).length > 0) && <Button aria-pressed={showRealtimeTranslations} aria-controls="meeting-transcript-content" onClick={() => setShowRealtimeTranslations((visible) => !visible)}>{showRealtimeTranslations ? "Ẩn bản dịch" : "Hiển thị bản dịch"}</Button>}
+          </span>
         </div>
 
         {/* Merge Toolbar */}
@@ -204,14 +255,21 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
           </div>
         )}
 
-        {transcript.loading && <Loading label="Đang tải transcript…" />}
-        {transcript.error && <TranscriptState error={transcript.error} sourceType={meeting.data.source_type} uploadHref={`/meetings/${meetingId}/upload`} />}
-
+        <div id="meeting-transcript-content" className={`transcript-workspace${showRealtimeTranslations ? " has-translation" : ""}`}>
+        <TranscriptColumnsHeader translated={showRealtimeTranslations} />
+        {transcript.loading && <TranscriptPair translated={showRealtimeTranslations} speaker="Bản dịch" timestamp="" emptyMessage="Đang tải nội dung gốc để đối chiếu."><Loading label="Đang tải transcript…" /></TranscriptPair>}
+        {transcript.error && <TranscriptPair translated={showRealtimeTranslations} speaker="Bản dịch" timestamp="" emptyMessage="Chưa có nội dung dịch để hiển thị."><TranscriptState error={transcript.error} sourceType={meeting.data.source_type} uploadHref={`/meetings/${meetingId}/upload`} /></TranscriptPair>}
         {/* Live Incoming Streaming Transcripts */}
         {Object.entries(liveTranscript)
           .filter(([, event]) => event.type !== "transcript.final" || !transcript.data?.segments.some((segment) => segment.logical_segment_id === event.logical_segment_id))
           .sort(([, a], [, b]) => a.start_ms - b.start_ms)
-          .map(([key, event]) => <LiveTranscriptRow key={key} event={event} />)}
+          .map(([key, event]) => <TranscriptPair
+            key={key} translated={showRealtimeTranslations} live
+            translation={event.type === "transcript.final" ? realtimeTranslations[event.logical_segment_id] : undefined}
+            unconfirmed={event.type !== "transcript.final"}
+            speaker={event.speaker_name ?? (event.speaker_label ? `Người nói ${event.speaker_label}` : "Chưa xác định")}
+            timestamp={`${formatTime(event.start_ms)} – ${formatTime(event.end_ms)}`}
+          ><LiveTranscriptRow event={event} /></TranscriptPair>)}
 
         {/* Transcript Segments List */}
         {displayedSegments.length ? (
@@ -221,10 +279,13 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
               const mergeSelected = mergePosition !== undefined;
               const segSpeaker = speakers.data?.find((speaker) => speaker.id === segment.speaker_id);
               return (
+                <TranscriptPair key={segment.logical_segment_id} translated={showRealtimeTranslations}
+                  translation={realtimeTranslations[segment.logical_segment_id]}
+                  speaker={segSpeaker?.name ?? "Chưa xác định"}
+                  timestamp={`${formatTime(segment.start_ms)} – ${formatTime(segment.end_ms)}`}>
                 <article
                   className={`segment ${activeSegmentId === segment.logical_segment_id ? "is-playing" : ""} ${mergeSelected ? "is-merge-selected" : ""}`}
                   id={`segment-${segment.logical_segment_id}`}
-                  key={segment.logical_segment_id}
                 >
                   <div className="segment-meta">
                     <div className="segment-speaker-wrapper">
@@ -243,8 +304,9 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
                           <Icon name="check" /> Đã nhận diện
                         </span>
                       )}
+                      {segSpeaker?.voice_profile_id && !segSpeaker.is_identified && <span className="speaker-identified-badge">Đã xác nhận và lưu mẫu</span>}
                     </div>
-                    <button className="segment-time" type="button" onClick={() => player.current?.seek(segment.start_ms)}>
+                    <button className="segment-time" type="button" onClick={() => seekMeetingPlayback(meetingId, segment.start_ms)} aria-label={`Nghe từ ${formatTime(segment.start_ms)}`}>
                       {formatTime(segment.start_ms)} – {formatTime(segment.end_ms)}
                     </button>
                     {segment.confidence !== undefined && <small>{Math.round(segment.confidence * 100)}% tin cậy</small>}
@@ -282,15 +344,10 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
                     <div className="segment-content">
                       {mergeSelected && <span className="merge-selected-badge"><Icon name="check" />Đoạn gộp số {mergePosition}</span>}
                       <p>{segment.text}</p>
-                      {showRealtimeTranslations && realtimeTranslations[segment.logical_segment_id] && (
-                        <div className="realtime-translation">
-                          <small>BẢN DỊCH · {realtimeTranslations[segment.logical_segment_id].targetLanguage.toUpperCase()}</small>
-                          <p>{realtimeTranslations[segment.logical_segment_id].text}</p>
-                        </div>
-                      )}
                       {editable && (
                         <div className="inline-actions">
                           <Button onClick={() => setEditing(segment)}>Sửa</Button>
+                          <Button disabled={voiceLearningBusy} onClick={() => setLearningSegment(segment)}>Gán tên / Lưu giọng</Button>
                           <Button onClick={() => setPendingSplit(segment)}>Tách</Button>
                           <Button className={mergeSelected ? "is-selected" : ""} onClick={() => toggleMerge(segment)}>
                             {mergeSelected ? `Bỏ chọn #${mergePosition}` : "Chọn gộp"}
@@ -301,33 +358,30 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
                     </div>
                   )}
                 </article>
+                </TranscriptPair>
               );
             })}
           </div>
         ) : null}
+        </div>
       </section>
 
-      {/* Side Details Panel */}
-      <MeetingSidePanel
-        activeTab={activeTab}
-        setActiveTab={setActiveTab}
-        meeting={meeting.data}
-        segmentCount={transcript.data?.segments.length ?? 0}
-        speakerCount={speakers.data?.length ?? 0}
-        meetingId={meetingId}
-        canComment={can(meeting.data.permission, "comment")}
-        owner={owner}
-        currentUserId={user?.id}
-        comments={comments}
-        versions={versions}
-      />
     </div>
 
     {renameOpen && <RenameMeetingDialog title={meeting.data.title} close={() => setRenameOpen(false)} confirm={async (title) => { const updated = await meetingsApi.update(meetingId, { title }); meeting.setData(updated); setRenameOpen(false); setNotice("Đã đổi tên bản ghi."); }} />}
+    {learningSegment && <VoiceLearningDialog
+      meetingId={meetingId} ownerId={meeting.data.owner_id} segment={learningSegment}
+      segments={transcript.data?.segments ?? []}
+      speaker={speakers.data?.find((item) => item.id === learningSegment.speaker_id)}
+      canLearn={Boolean(capabilities.data?.meeting_voice_learning)}
+      close={() => setLearningSegment(undefined)}
+      onQueued={(job) => { voiceJobs.track(job); setLearningSegment(undefined); }}
+      onLabeled={() => { setLearningSegment(undefined); void speakers.reload(); void transcript.reload(); setNotice("Đã gán tên người phát biểu."); }}
+    />}
     {shareOpen && <ShareDialog meetingId={meetingId} close={() => setShareOpen(false)} />}
-    {pendingSplit && <SplitDialog segment={pendingSplit} close={() => setPendingSplit(undefined)} confirm={(splitAt, first, second) => { const segment = pendingSplit; setPendingSplit(undefined); void mutate(() => meetingsApi.splitSegment(segment.logical_segment_id, splitAt, first, second), "Đã tách đoạn và tạo phiên bản mới."); }} />}
-    {pendingMerge && <ConfirmDialog title={`Gộp ${pendingMerge.length} đoạn?`} detail="Các đoạn đã chọn sẽ được nối theo đúng thứ tự thời gian thành một đoạn." confirmLabel="Gộp đoạn" close={() => setPendingMerge(undefined)} confirm={() => { const selected = pendingMerge; setPendingMerge(undefined); setMergeIds([]); void mutate(() => meetingsApi.mergeSegments(selected.map((segment) => segment.logical_segment_id)), `Đã gộp ${selected.length} đoạn và tạo phiên bản mới.`); }} />}
-    {pendingDelete && <ConfirmDialog title="Xóa đoạn transcript?" detail="Đoạn đã xóa sẽ không còn trong phiên bản transcript hiện hành." confirmLabel="Xóa đoạn" close={() => setPendingDelete(undefined)} confirm={() => { const segment = pendingDelete; setPendingDelete(undefined); void mutate(() => meetingsApi.deleteSegment(segment.logical_segment_id), "Đã xóa đoạn và tạo phiên bản mới.", segment.logical_segment_id); }} />}
+    {pendingSplit && <SplitDialog segment={pendingSplit} close={() => setPendingSplit(undefined)} confirm={(splitAt, first, second) => { const segment = pendingSplit; setPendingSplit(undefined); void mutate(() => meetingsApi.splitSegment(segment.logical_segment_id, splitAt, first, second), "Đã tách đoạn transcript."); }} />}
+    {pendingMerge && <ConfirmDialog title={`Gộp ${pendingMerge.length} đoạn?`} detail="Các đoạn đã chọn sẽ được nối theo đúng thứ tự thời gian thành một đoạn." confirmLabel="Gộp đoạn" close={() => setPendingMerge(undefined)} confirm={() => { const selected = pendingMerge; setPendingMerge(undefined); setMergeIds([]); void mutate(() => meetingsApi.mergeSegments(selected.map((segment) => segment.logical_segment_id)), `Đã gộp ${selected.length} đoạn transcript.`); }} />}
+    {pendingDelete && <ConfirmDialog title="Xóa đoạn transcript?" detail="Đoạn đã xóa sẽ không còn trong nội dung transcript hiện tại." confirmLabel="Xóa đoạn" close={() => setPendingDelete(undefined)} confirm={() => { const segment = pendingDelete; setPendingDelete(undefined); void mutate(() => meetingsApi.deleteSegment(segment.logical_segment_id), "Đã xóa đoạn transcript.", segment.logical_segment_id); }} />}
   </>;
 }
 
@@ -357,39 +411,6 @@ function TranscriptState({ error, sourceType, uploadHref }: { error: Error; sour
   return <Empty title={missing ? "Chưa có transcript" : "Transcript chưa tải được"} detail={missing ? sourceType === "upload" ? "Tải tệp âm thanh để tạo transcript từ backend." : "Bắt đầu ghi âm để tạo transcript trực tiếp." : error.message} action={missing && sourceType === "upload" ? <a className="btn btn-dark" href={uploadHref}>Tải tệp âm thanh</a> : undefined} />;
 }
 
-function MeetingSidePanel({ activeTab, setActiveTab, meeting, segmentCount, speakerCount, meetingId, canComment, owner, currentUserId, comments, versions }: { activeTab: MeetingTab; setActiveTab: (tab: MeetingTab) => void; meeting: { status: string; language_mode: string; duration_ms?: number }; segmentCount: number; speakerCount: number; meetingId: string; canComment: boolean; owner: boolean; currentUserId?: string; comments: { data?: Comment[]; setData: React.Dispatch<React.SetStateAction<Comment[] | undefined>>; loading: boolean; error?: Error; reload: () => Promise<void> }; versions: { data?: Array<{ id: string; version_no: number; source: string; created_at: string }>; loading: boolean; error?: Error } }) {
-  const tabs: Array<[MeetingTab, string]> = [["info", "Thông tin"], ["comments", "Bình luận"], ["versions", "Phiên bản"]];
-  return <aside className="meeting-side"><div className="meeting-tabs" role="tablist" aria-label="Chi tiết cuộc họp">{tabs.map(([id, label]) => <button key={id} type="button" role="tab" aria-selected={activeTab === id} className={activeTab === id ? "active" : ""} onClick={() => setActiveTab(id)}>{label}</button>)}</div><div className="meeting-tab-content" role="tabpanel">{activeTab === "info" && <MeetingContext meeting={meeting} segmentCount={segmentCount} speakerCount={speakerCount} />}{activeTab === "comments" && <CommentsPanel meetingId={meetingId} canComment={canComment} owner={owner} currentUserId={currentUserId} comments={comments} />}{activeTab === "versions" && <section className="panel"><h2>Phiên bản</h2><VersionList versions={versions} /></section>}</div></aside>;
-}
-
-const MediaPlayer = forwardRef<AudioPlayerHandle, { meetingId: string; mediaId: string; filename: string; segments: Segment[]; onActiveSegment: (id?: string) => void }>(function MediaPlayer({ meetingId, mediaId, filename, segments, onActiveSegment }, ref) {
-  const audio = useRef<HTMLAudioElement>(null); const speedControl = useRef<HTMLDivElement>(null); const [source, setSource] = useState(""); const [error, setError] = useState(""); const [speed, setSpeed] = useState(1); const [speedOpen, setSpeedOpen] = useState(false);
-  useImperativeHandle(ref, () => ({ seek(milliseconds) { const element = audio.current; if (!element) return; element.currentTime = milliseconds / 1000; void element.play(); } }), []);
-  useEffect(() => { let active = true; let objectUrl = ""; setSource(""); setError(""); void meetingsApi.streamMedia(meetingId, mediaId).then((blob) => { if (!blob.size) throw new Error("Băng ghi âm đang trống."); objectUrl = URL.createObjectURL(blob); if (active) setSource(objectUrl); else URL.revokeObjectURL(objectUrl); }).catch((cause: Error) => active && setError(cause.message)); return () => { active = false; if (objectUrl) URL.revokeObjectURL(objectUrl); }; }, [meetingId, mediaId]);
-  useEffect(() => {
-    if (!speedOpen) return;
-    function closeOutside(event: PointerEvent) { if (!speedControl.current?.contains(event.target as Node)) setSpeedOpen(false); }
-    function closeOnEscape(event: KeyboardEvent) { if (event.key === "Escape") setSpeedOpen(false); }
-    document.addEventListener("pointerdown", closeOutside);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => { document.removeEventListener("pointerdown", closeOutside); document.removeEventListener("keydown", closeOnEscape); };
-  }, [speedOpen]);
-  function syncTranscript() { const milliseconds = (audio.current?.currentTime ?? 0) * 1000; const segment = segments.find((item) => item.start_ms <= milliseconds && milliseconds < item.end_ms); onActiveSegment(segment?.logical_segment_id); }
-  function changeSpeed(next: number) { setSpeed(next); setSpeedOpen(false); if (audio.current) audio.current.playbackRate = next; }
-  const speeds = [0.75, 1, 1.25, 1.5, 2];
-  return <section className="player"><div className="player-heading"><strong>Nghe lại băng · {filename}</strong>{source && <div className="player-tools"><div className="player-speed-control" ref={speedControl}><button type="button" className="player-speed-trigger" aria-label={`Tốc độ phát ${speed} lần`} aria-expanded={speedOpen} aria-haspopup="menu" title="Tốc độ phát" onClick={() => setSpeedOpen((open) => !open)}><Icon name="speed" /><span>{speed}×</span><Icon name="chevron-up" /></button>{speedOpen && <div className="player-speed-menu" role="menu" aria-label="Chọn tốc độ phát">{speeds.map((value) => <button type="button" role="menuitemradio" aria-checked={speed === value} className={speed === value ? "active" : ""} key={value} onClick={() => changeSpeed(value)}><span>{value}×</span>{speed === value && <Icon name="check" />}</button>)}</div>}</div><a className="player-icon-button" href={source} download={filename} aria-label="Tải băng ghi âm" title="Tải băng ghi âm"><Icon name="export" /></a></div>}</div>{error ? <div className="form-error">{error}</div> : source ? <audio ref={audio} controls controlsList="nodownload noplaybackrate" preload="metadata" src={source} onError={() => setError("Không thể tải băng ghi âm. Vui lòng tải lại trang và thử lại.")} onTimeUpdate={syncTranscript} onSeeking={syncTranscript} onEnded={() => onActiveSegment(undefined)}>Trình duyệt không hỗ trợ phát âm thanh.</audio> : <Loading label="Đang chuẩn bị audio…" />}</section>;
-});
-
-function MeetingContext({ meeting, segmentCount, speakerCount }: { meeting: { status: string; language_mode: string; duration_ms?: number }; segmentCount: number; speakerCount: number }) {
-  return <section className="panel meeting-context"><h2>Thông tin phiên họp</h2><dl><div><dt>Trạng thái</dt><dd><Status value={meeting.status}>{meeting.status}</Status></dd></div><div><dt>Ngôn ngữ</dt><dd>{languageLabel(meeting.language_mode)}</dd></div><div><dt>Người nói</dt><dd>{speakerCount || "Chưa xác định"}</dd></div><div><dt>Phân đoạn</dt><dd>{segmentCount}</dd></div></dl></section>;
-}
-
-function VersionList({ versions }: { versions: { data?: Array<{ id: string; version_no: number; source: string; created_at: string }>; loading: boolean; error?: Error } }) {
-  if (versions.loading) return <Loading />;
-  if (versions.error) return <p>Không tải được lịch sử.</p>;
-  if (!versions.data?.length) return <p>Chưa có phiên bản transcript.</p>;
-  return <ol className="versions">{versions.data.map((version) => <li key={version.id}>v{version.version_no} · {versionSourceLabel(version.source)} · {new Date(version.created_at).toLocaleString("vi-VN")}</li>)}</ol>;
-}
 
 function ConfirmDialog({ title, detail, confirmLabel, close, confirm }: { title: string; detail: string; confirmLabel: string; close: () => void; confirm: () => void }) {
   return <div className="dialog-backdrop" role="presentation"><section className="dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title"><h2 id="confirm-title">{title}</h2><p>{detail}</p><div className="dialog-actions"><Button onClick={close}>Hủy</Button><Button tone="danger" onClick={confirm}>{confirmLabel}</Button></div></section></div>;
@@ -473,77 +494,10 @@ function ShareDialog({ meetingId, close }: { meetingId: string; close: () => voi
   return <div className="dialog-backdrop"><section className="dialog" role="dialog" aria-modal="true" style={{ width: 520 }}><button className="close" onClick={close} type="button">×</button><h2>Chia sẻ cuộc họp</h2><p>Mời thành viên qua email và cấp quyền truy cập.</p><form onSubmit={submit}><label className="field">Email người nhận<input required type="email" placeholder="dongnghiep@congty.com" value={email} onChange={(event) => setEmail(event.target.value)} /></label><label className="field">Quyền hạn<select value={permission} onChange={(event) => setPermission(event.target.value as typeof permission)}><option value="read">Xem (Chỉ đọc)</option><option value="comment">Bình luận</option><option value="edit">Chỉnh sửa</option></select></label><div className="field"><span>Tệp đính kèm gửi qua email</span><div className="share-attachment-options">{choices.map((item) => <label key={item.value} className="checkbox-row"><input type="checkbox" checked={attachments.includes(item.value)} onChange={() => toggleAttachment(item.value)} /><div><strong>{item.label}</strong><small>{item.detail}</small></div></label>)}</div></div>{message && <div className={success ? "notice" : "form-error"}>{message}</div>}<div className="dialog-actions"><Button onClick={close}>Đóng</Button><Button type="submit" tone="dark" disabled={sending}>{sending ? "Đang gửi…" : "Gửi lời mời"}</Button></div></form></section></div>;
 }
 
-function CommentsPanel({ meetingId, canComment, owner, currentUserId, comments }: { meetingId: string; canComment: boolean; owner: boolean; currentUserId?: string; comments: { data?: Comment[]; setData: React.Dispatch<React.SetStateAction<Comment[] | undefined>>; loading: boolean; error?: Error; reload: () => Promise<void> } }) {
-  const [body, setBody] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState("");
-  const [editing, setEditing] = useState<{ id: string; body: string }>();
-
-  async function submit(event: React.FormEvent) {
-    event.preventDefault();
-    if (!body.trim()) return;
-    setSubmitting(true);
-    try {
-      const comment = await meetingsApi.addComment(meetingId, body.trim());
-      comments.setData((items) => [...(items ?? []), comment]);
-      setBody("");
-      setError("");
-    } catch (cause) {
-      setError(meetingErrorMessage(cause));
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  async function update() {
-    if (!editing) return;
-    const text = editing.body.trim();
-    if (!text) return setError("Bình luận không được để trống.");
-    try {
-      const comment = await meetingsApi.updateComment(editing.id, text);
-      comments.setData((items) => items?.map((item) => item.id === comment.id ? comment : item));
-      setEditing(undefined);
-      setError("");
-    } catch (cause) {
-      setError(meetingErrorMessage(cause));
-    }
-  }
-
-  async function remove(id: string) {
-    try {
-      await meetingsApi.deleteComment(id);
-      comments.setData((items) => items?.filter((item) => item.id !== id));
-      setError("");
-    } catch (cause) {
-      setError(meetingErrorMessage(cause));
-    }
-  }
-
-  return <section className="panel comments-panel">
-    <h2>Bình luận</h2>
-    {comments.loading && <Loading label="Đang tải bình luận…" />}
-    {comments.error && <Failure error={comments.error} retry={comments.reload} />}
-    {!comments.loading && !comments.error && !comments.data?.length && <p className="muted">Chưa có bình luận.</p>}
-    <div className="comment-list">{comments.data?.map((comment) => {
-      const own = comment.author_user_id === currentUserId;
-      const authorName = comment.author_name || (own ? "Bạn" : "Người dùng");
-      const initials = authorName.trim().split(/\s+/).slice(-2).map((part) => part[0]).join("").toUpperCase();
-      return <article className="comment-card" key={comment.id}>
-        <div className="comment-avatar" aria-hidden="true">
-          <span>{initials || "?"}</span>
-        </div>
-        <div className="comment-main">
-          <header><strong>{authorName}{own && <small>Bạn</small>}</strong><time dateTime={comment.created_at}>{new Date(comment.created_at).toLocaleString("vi-VN")}</time></header>
-          {editing?.id === comment.id ? <div className="comment-editor"><textarea aria-label="Sửa bình luận" value={editing.body} onChange={(event) => setEditing({ ...editing, body: event.target.value })} /><div><Button tone="dark" onClick={() => void update()}>Lưu</Button><Button onClick={() => setEditing(undefined)}>Hủy</Button></div></div> : <><p>{comment.content}</p><div className="comment-actions">{own && <Button onClick={() => setEditing({ id: comment.id, body: comment.content })}>Sửa</Button>}{(own || owner) && <Button tone="danger" onClick={() => void remove(comment.id)}>Xóa</Button>}</div></>}
-        </div>
-      </article>;
-    })}</div>
-    {canComment ? <form className="comments-form" onSubmit={submit}><textarea aria-label="Bình luận" placeholder="Viết bình luận…" value={body} required onChange={(event) => setBody(event.target.value)} /><Button type="submit" tone="dark" disabled={submitting || !body.trim()}>{submitting ? "Đang gửi…" : "Gửi bình luận"}</Button>{error && <div className="form-error">{error}</div>}</form> : <p>Bạn chỉ có quyền xem bình luận.</p>}
-  </section>;
-}
 
 function RecordingPanel({
   meetingId,
+  translationHost,
   targetLanguage,
   translationVisible,
   onTranslationVisibleChange,
@@ -555,8 +509,10 @@ function RecordingPanel({
   onRecordingStateChange,
   hasStartedBefore,
   initialElapsedMs,
+  onSectionsChanged,
 }: {
   meetingId: string;
+  translationHost: HTMLElement | null;
   targetLanguage?: string;
   translationVisible: boolean;
   onTranslationVisibleChange: (visible: boolean) => void;
@@ -568,8 +524,10 @@ function RecordingPanel({
   onRecordingStateChange: (active: boolean) => void;
   hasStartedBefore?: boolean;
   initialElapsedMs: number;
+  onSectionsChanged: () => void;
 }) {
   const { accessToken } = useAuth();
+  const recordingHost = useRecordingToolbarHost();
   const socket = useRef<MeetingSocket | undefined>(undefined);
   const capture = useRef<MicrophonePcmCapture | undefined>(undefined);
   const startedAt = useRef<number | undefined>(undefined);
@@ -578,13 +536,49 @@ function RecordingPanel({
   const finalSegmentIds = useRef(new Set<string>());
   const finalTurnIds = useRef(new Set<string>());
   const translatedSegmentIds = useRef(new Set<string>());
-  const [status, setStatus] = useState("Sẵn sàng ghi âm");
+  const [status, setStatusMessage] = useState("Sẵn sàng ghi âm");
+  const [statusTone, setStatusTone] = useState<RecordingStatusTone>("info");
   const [translationStatus, setTranslationStatus] = useState("");
   const [fallbackWarning, setFallbackWarning] = useState("");
-  const [state, setState] = useState<"idle" | "connecting" | "recording" | "paused" | "stopping" | "stopped" | "failed">("idle");
+  const [state, setState] = useState<RecordingState>("idle");
   const [elapsed, setElapsed] = useState(Math.floor(initialElapsedMs / 1000));
+  const [confirmingEnd, setConfirmingEnd] = useState(false);
+  const [confirmingPause, setConfirmingPause] = useState(false);
+  const pausing = useRef(false);
 
-  useEffect(() => () => { void stop(true); }, []);
+  function setStatus(message: string, tone: RecordingStatusTone = "info") {
+    setStatusMessage(message);
+    setStatusTone(tone);
+  }
+
+  useEffect(() => () => { void pauseForNavigation(); }, []);
+  useEffect(() => { if (state !== "recording") setConfirmingPause(false); }, [state]);
+  useEffect(() => {
+    if (state !== "pausing" && state !== "resuming") return;
+    const timer = window.setTimeout(() => {
+      socket.current?.close();
+      void releaseCapture(false);
+      setState("failed");
+      setStatus("Chưa nhận được xác nhận phiên họp. Vui lòng kết nối lại và kiểm tra danh sách phiên trước khi tiếp tục.");
+      onSectionsChanged();
+    }, 90000);
+    return () => window.clearTimeout(timer);
+  }, [state]);
+  useEffect(() => {
+    if (state !== "stopping") return;
+    const timer = window.setTimeout(() => {
+      void meetingsApi.get(meetingId).then((value) => {
+        if (value.status === "completed") { setState("stopped"); onComplete(); }
+        else { setState("failed"); setStatus("Chưa nhận được xác nhận kết thúc. Vui lòng kiểm tra kết nối và thử lại."); }
+      }).catch(() => { setState("failed"); setStatus("Không đọc được trạng thái kết thúc. Vui lòng tải lại để kiểm tra."); });
+    }, 90000);
+    return () => window.clearTimeout(timer);
+  }, [state, meetingId]);
+  useEffect(() => {
+    const refreshVoices = () => socket.current?.command("speakers.refresh");
+    window.addEventListener(VOICE_IDENTITY_UPDATED, refreshVoices);
+    return () => window.removeEventListener(VOICE_IDENTITY_UPDATED, refreshVoices);
+  }, []);
   useEffect(() => onRecordingStateChange(state !== "idle" && state !== "stopped" && state !== "failed"), [state, onRecordingStateChange]);
   useEffect(() => {
     if (state !== "idle") return;
@@ -609,8 +603,29 @@ function RecordingPanel({
   }
 
   function event(event: RealtimeEvent) {
+    if (event.type === "meeting.sections") {
+      setState("paused");
+      onSectionsChanged(); onResetTranscript();
+      const next = event.sections.at(-1);
+      setStatus(`Đã chuẩn bị ${next ? `Phiên ${next.sequence}` : "phiên tiếp theo"}. Mở “Phiên họp” để đặt tên; bấm Tiếp tục khi sẵn sàng.`);
+    }
+    if (event.type === "recording.resumed") {
+      void capture.current?.resume();
+      startedAt.current = Date.now(); setState("recording"); onSectionsChanged();
+      setFallbackWarning(event.fallback_active ? "Đang chép lời dự phòng; nhận diện theo tên tạm thời không khả dụng." : "");
+      setStatus(event.new_section ? "Đang ghi âm vào phiên mới." : "Đang tiếp tục ghi âm trong phiên hiện tại.");
+    }
+    if (event.type === "recording.paused") {
+      setState("paused");
+      setStatus("Đã tạm dừng, giữ nguyên phiên hiện tại. Bấm Tiếp tục khi sẵn sàng.");
+    }
     if (event.type === "session.ready") {
+      onSectionsChanged();
       onResetTranscript();
+      if (event.paused) {
+        setState("paused"); setStatus("Đã kết nối lại, ghi âm vẫn tạm dừng. Bấm Tiếp tục khi sẵn sàng.");
+        return;
+      }
       void capture.current?.resume();
       setState("recording");
       setStatus("Đang ghi âm và nhận transcript trực tiếp.");
@@ -630,6 +645,11 @@ function RecordingPanel({
       onFinal();
     }
     if (event.type === "transcript.speaker_updated") onFinal();
+    if (event.type === "speakers.updated") {
+      setStatus(event.deferred ? "Mẫu giọng mới sẽ được áp dụng khi bấm Tiếp tục." : "Đã cập nhật mẫu giọng. Đang tiếp tục nhận diện người nói.");
+      setFallbackWarning(event.fallback_active ? "Đang chép lời dự phòng; nhận diện theo tên tạm thời không khả dụng." : "");
+      onFinal();
+    }
     if (event.type === "translation.status") {
       setTranslationStatus(event.enabled ? "Đang dịch trực tiếp các đoạn đã được xác nhận." : "");
     }
@@ -651,7 +671,7 @@ function RecordingPanel({
       onComplete();
     }
     if (event.type === "error") {
-      setStatus(event.message || "Lỗi realtime.");
+      setStatus(event.message || "Lỗi realtime.", "error");
       if (event.retryable === false) {
         setState("failed");
         void releaseCapture(false);
@@ -670,9 +690,9 @@ function RecordingPanel({
       socket.current = new MeetingSocket(meetingId, accessToken, event, (next) => {
         if (next === "reconnecting") {
           void capture.current?.pause();
-          setStatus("Mất kết nối, đang thử kết nối lại…");
+          setStatus("Mất kết nối, đang thử kết nối lại…", "warning");
         }
-        if (next === "closed") setState((current) => (current === "stopped" || current === "stopping") ? "stopped" : "failed");
+        if (next === "closed") setState((current) => current === "stopped" ? "stopped" : current === "stopping" ? "stopping" : "failed");
       });
       socket.current.connect();
     } catch (cause) {
@@ -683,7 +703,6 @@ function RecordingPanel({
   }
 
   function toggleTranslation() {
-    if (!targetLanguage) return;
     if (translationVisible) {
       translationEnabled.current = false;
       onTranslationVisibleChange(false);
@@ -691,45 +710,53 @@ function RecordingPanel({
       socket.current?.disableTranslation();
       return;
     }
+    if (!targetLanguage) return;
     translationEnabled.current = true;
     onTranslationVisibleChange(true);
     setTranslationStatus("Đang bật dịch realtime…");
     socket.current?.enableTranslation(targetLanguage, missingTranslationIds());
   }
 
-  async function pause() {
-    await capture.current?.pause();
-    socket.current?.command("recording.pause");
-    elapsedBeforePause.current = elapsed;
-    setState("paused");
-    setStatus("Đã tạm dừng ghi âm.");
+  async function pause(newSection: boolean) {
+    setConfirmingPause(false);
+    if (state !== "recording" || pausing.current) return;
+    pausing.current = true;
+    setState("pausing");
+    try {
+      await capture.current?.pause();
+      elapsedBeforePause.current = elapsed;
+      if (!socket.current?.command("recording.pause", { new_section: newSection, acknowledge: true })) {
+        setState("failed"); setStatus("Mất kết nối; chưa xác nhận được tạm dừng. Kết nối lại để kiểm tra.");
+      } else setStatus(newSection ? "Đang lưu lời nói cuối và tạo phiên kế tiếp…" : "Đang tạm dừng, giữ nguyên phiên hiện tại…");
+    } catch (cause) {
+      setState("failed"); setStatus(cause instanceof Error ? cause.message : "Không thể tạm dừng microphone. Vui lòng kết nối lại.");
+    } finally { pausing.current = false; }
   }
 
   async function resume() {
-    socket.current?.command("recording.resume");
-    await capture.current?.resume();
-    startedAt.current = Date.now();
-    setState("recording");
-    setStatus("Đang tiếp tục ghi âm.");
+    setState("resuming"); setStatus("Đang tiếp tục ghi âm…");
+    if (!socket.current?.command("recording.resume", { acknowledge: true })) { setState("failed"); setStatus("Mất kết nối; vui lòng kết nối lại."); }
   }
 
-  async function stop(silent = false) {
-    if (silent) {
-      socket.current?.close();
-      await releaseCapture(false);
-      return;
-    }
+  async function pauseForNavigation() {
+    // Component teardown means the user is leaving this feature, not ending the
+    // meeting. Flush the last microphone samples, pause the provider when the
+    // connection is still writable, then release local resources.
+    await releaseCapture(true);
+    socket.current?.command("recording.pause");
+    socket.current?.close();
+    socket.current = undefined;
+  }
+
+  async function stop() {
     setState("stopping");
     setStatus("Đang hoàn tất transcript và kết thúc bản ghi…");
     await releaseCapture(true);
-    socket.current?.command("recording.stop");
-    try {
-      await meetingsApi.complete(meetingId);
-      setState("stopped");
-      setStatus("Đã kết thúc ghi âm.");
-      onComplete();
-    } catch {
-      // Sẽ nhận qua socket meeting.status hoặc người dùng bấm Kết thúc
+    // Wait for server acknowledgment: closing upstream flushes the last final
+    // segments before completion and the proofreading snapshot are persisted.
+    if (!socket.current?.command("recording.stop")) {
+      setState("failed");
+      setStatus("Mất kết nối trước khi kết thúc. Vui lòng kết nối lại để hoàn tất transcript.");
     }
   }
 
@@ -747,50 +774,38 @@ function RecordingPanel({
     }
   }
 
+  async function confirmEnd() {
+    setConfirmingEnd(false);
+    if (state === "recording" || state === "paused") {
+      await stop();
+      return;
+    }
+    await finishExisting();
+  }
+
   const canToggleTranslation = state === "recording" || state === "paused" || state === "stopping";
-  return (
-    <section className="panel recording-panel">
-      <div className="recording-heading">
-        <div>
-          <h2>Ghi âm</h2>
-          <p>{status}</p>
-        </div>
-        <strong className="recording-timer">{formatDuration(elapsed)}</strong>
-      </div>
-      {fallbackWarning && <div className="notice" style={{ marginTop: 10 }}>{fallbackWarning}</div>}
-      {translationStatus && <p className="realtime-translation-status">{translationStatus}</p>}
-      <div className="recording-actions">
-        {(state === "idle" || state === "failed") && (
-          <>
-            <Button tone="dark" onClick={() => void start()}>
-              {state === "failed" ? "Kết nối lại" : (hasStartedBefore ? "Tiếp tục ghi âm" : "Bắt đầu ghi âm")}
-            </Button>
-            {hasStartedBefore && <Button tone="danger" onClick={() => void finishExisting()}>Kết thúc</Button>}
-          </>
-        )}
-        {state === "connecting" && <Button disabled>Đang kết nối…</Button>}
-        {state === "recording" && (
-          <>
-            <Button onClick={() => void pause()}>Tạm dừng</Button>
-            <Button tone="danger" onClick={() => void stop()}>Kết thúc</Button>
-          </>
-        )}
-        {state === "paused" && (
-          <>
-            <Button tone="dark" onClick={() => void resume()}>Tiếp tục</Button>
-            <Button tone="danger" onClick={() => void stop()}>Kết thúc</Button>
-          </>
-        )}
-        {state === "stopping" && <Button disabled>Đang kết thúc…</Button>}
-        {state === "stopped" && <Button disabled>Đã kết thúc</Button>}
-        {canToggleTranslation && (
-          <Button disabled={!targetLanguage} onClick={toggleTranslation}>
-            {targetLanguage ? (translationVisible ? "Ẩn bản dịch" : "Dịch trực tiếp") : "Không thể dịch"}
-          </Button>
-        )}
-      </div>
-    </section>
-  );
+  const translationReason = !targetLanguage ? "Không có dịch trực tiếp cho ngôn ngữ hoặc provider hiện tại." : !canToggleTranslation ? "Bắt đầu hoặc tiếp tục ghi âm trước khi bật dịch." : undefined;
+  return <>
+    {recordingHost && createPortal(<RecordingTools
+      state={state} elapsed={elapsed} status={status} statusTone={statusTone} fallbackWarning={fallbackWarning}
+      translationStatus={translationStatus} hasStartedBefore={hasStartedBefore}
+      onStart={() => { void start(); }} onPause={() => setConfirmingPause(true)} onResume={() => { void resume(); }}
+      onEnd={() => setConfirmingEnd(true)}
+    />, recordingHost)}
+    {translationHost && createPortal(<Button
+      disabled={!translationVisible && (!targetLanguage || !canToggleTranslation)}
+      title={!translationVisible ? translationReason : undefined}
+      aria-pressed={translationVisible} aria-controls="meeting-transcript-content" onClick={toggleTranslation}
+    >{translationVisible ? "Ẩn bản dịch" : "Hiển thị bản dịch"}</Button>, translationHost)}
+    {confirmingPause && state === "recording" && <PauseRecordingDialog choose={(newSection) => { void pause(newSection); }} />}
+    {confirmingEnd && <ConfirmDialog
+      title="Kết thúc cuộc họp?"
+      detail="Cuộc họp sẽ được hoàn tất và bạn sẽ không thể tiếp tục ghi âm. Bạn có chắc chắn muốn kết thúc?"
+      confirmLabel="Xác nhận kết thúc"
+      close={() => setConfirmingEnd(false)}
+      confirm={() => { void confirmEnd(); }}
+    />}
+  </>;
 }
 
 function meetingErrorMessage(cause: unknown) {
@@ -804,15 +819,7 @@ function meetingErrorMessage(cause: unknown) {
   return message;
 }
 
-function versionSourceLabel(source: string) {
-  return ({ stt: "Nhận dạng giọng nói", user_edit: "Chỉnh sửa thủ công", rollback: "Khôi phục" } as Record<string, string>)[source] ?? source;
-}
-
 function formatTime(milliseconds: number) {
   const seconds = Math.floor(milliseconds / 1000);
   return `${Math.floor(seconds / 60).toString().padStart(2, "0")}:${(seconds % 60).toString().padStart(2, "0")}`;
-}
-
-function formatDuration(seconds: number) {
-  return `${Math.floor(seconds / 3600).toString().padStart(2, "0")}:${Math.floor((seconds % 3600) / 60).toString().padStart(2, "0")}:${(seconds % 60).toString().padStart(2, "0")}`;
 }

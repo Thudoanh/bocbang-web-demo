@@ -68,13 +68,14 @@ def test_speaker_revisions_persist_history_and_reconnect_isolates_labels(tmp_pat
             original = client.get(f"/api/v1/meetings/{meeting}/transcript", headers=headers).json()
             speakers = client.get(f"/api/v1/meetings/{meeting}/speakers", headers=headers).json()
             assert {s["name"] for s in speakers} == {"Người nói 1", "Người nói 2"}
-            ws.send_text('{"type":"recording.stop"}')
+            # Continue into another named session, not a completed meeting.
+            ws.send_json({"type": "recording.pause", "new_section": True})
             correction, resolved = ws.receive_json(), ws.receive_json()
             assert correction["type"] == "transcript.speaker_updated"
             assert correction["logical_segment_id"] == first["logical_segment_id"]
             assert correction["speaker_id"] == second["speaker_id"]
             assert resolved["speaker_id"] == first["speaker_id"]
-            assert ws.receive_json()["type"] == "meeting.status"
+            assert ws.receive_json()["type"] == "meeting.sections"
         current = client.get(f"/api/v1/meetings/{meeting}/transcript", headers=headers).json()
         assert [s["speaker_id"] for s in current["segments"]] == [
             second["speaker_id"], second["speaker_id"], first["speaker_id"],
@@ -269,14 +270,18 @@ def test_new_recording_preserves_previous_session_snapshot(tmp_path: Path):
         headers = {"Authorization": f"Bearer {token}"}
         meeting = _create_realtime_meeting(client, token)
         snapshots = []
-        for _ in range(2):
+        for index in range(2):
             provider.stream = SpeakerStream([(final(0, "A"),)])
             with connect(client, meeting, token) as ws:
                 ws.receive_json()
                 ws.send_bytes(b"audio")
                 assert ws.receive_json()["type"] == "transcript.final"
-                ws.send_text('{"type":"recording.stop"}')
-                assert ws.receive_json()["type"] == "meeting.status"
+                if index == 0:
+                    ws.send_json({"type": "recording.pause", "new_section": True})
+                    assert ws.receive_json()["type"] == "meeting.sections"
+                else:
+                    ws.send_text('{"type":"recording.stop"}')
+                    assert ws.receive_json()["type"] == "meeting.status"
             snapshots.append(client.get(
                 f"/api/v1/meetings/{meeting}/transcript", headers=headers,
             ).json())

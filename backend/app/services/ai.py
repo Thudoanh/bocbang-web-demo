@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings
 from app.core.errors import ApiError
 from app.db.session import Database
-from app.models.enums import JobStatus, MeetingPermission
+from app.models.enums import JobStatus, MeetingPermission, SummaryTemplateType
 from app.models.media import Job
 from app.models.summary import Summary, SummaryVersion
 from app.models.transcript import SegmentVersion, TranscriptVersion
@@ -26,6 +26,7 @@ from app.providers.contracts import (
 from app.providers.storage import MediaStorage
 from app.schemas.ai import (
     SummaryCreateRequest,
+    SummaryEditRequest,
     SummaryResponse,
     SummaryVersionResponse,
     TranslationCreateRequest,
@@ -33,8 +34,15 @@ from app.schemas.ai import (
     TranslationSegmentResponse,
 )
 from app.schemas.media import JobErrorResponse, JobResponse
+from app.schemas.meeting_section import MeetingSectionResponse
 from app.services.exports import ExportJobRunner
+from app.services.meeting_sections import (
+    MeetingSectionService,
+    check_sections_revision,
+    group_segments,
+)
 from app.services.meetings import MeetingService
+from app.services.transcript_versions import TranscriptVersionReader
 from app.workers import lifecycle
 
 
@@ -68,13 +76,46 @@ class AIService:
         meeting, _ = await self._meetings.require_access(meeting_id, user, MeetingPermission.EDIT)
         if self._llm is None or not self._llm.capabilities().structured_output:
             raise ApiError("PROVIDER_CAPABILITY_UNAVAILABLE", "AI summary generation is not configured.", 503)
-        version = await self._valid_current_transcript(meeting.current_transcript_version_id)
+        await self._session.refresh(meeting, with_for_update=True)
+        version = await self._session.get(TranscriptVersion, meeting.current_transcript_version_id) if meeting.current_transcript_version_id else None
+        if version is None:
+            raise ApiError("TRANSCRIPT_NOT_FOUND", "A transcript is required for this operation.", 422)
+        rows = await TranscriptVersionReader(self._session).read(version)
+        if not rows or any(not row["text"].strip() or row["start_ms"] < 0 or row["end_ms"] <= row["start_ms"] for row in rows):
+            raise ApiError("TRANSCRIPT_INVALID", "Transcript input is empty or invalid.", 422)
+        inputs = [{"text": row["text"], "start_ms": row["start_ms"], "end_ms": row["end_ms"]} for row in rows]
+        section_rows = await MeetingSectionService(self._session).rows(meeting_id)
+        check_sections_revision(section_rows, payload.sections_revision)
+        sections = [MeetingSectionResponse.model_validate(row).model_dump(mode="json", exclude={"revision"})
+                    for row in section_rows]
+        session_inputs = group_segments(inputs, sections) if payload.scope == "sessions" else None
+        if payload.section_ids is not None:
+            selected = {str(item) for item in payload.section_ids}
+            if not selected.issubset({section["id"] for section in sections}):
+                raise ApiError("MEETING_SECTION_NOT_FOUND", "Một phiên đã chọn không còn tồn tại hoặc không thuộc cuộc họp này.", 422)
+            # Group against ALL boundaries first; filtering beforehand would steal other sessions' text.
+            session_inputs = [section for section in session_inputs if section["id"] in selected]
         job = Job(
             meeting_id=meeting.id,
             job_type="summary",
             status=JobStatus.QUEUED,
             progress=0,
-            payload={"transcript_version_id": str(version.id), "template": payload.template.value, "output_language": payload.output_language, "actor_id": str(user.id)},
+            payload={
+                "scope": payload.scope,
+                "input_segments": inputs if payload.scope == "meeting" else None,
+                "session_inputs": session_inputs,
+                "section_ids": [section["id"] for section in session_inputs] if session_inputs else None,
+                "transcript_version_id": str(version.id),
+                "mode": payload.mode,
+                "template": (
+                    payload.template.value
+                    if payload.mode == "template" and payload.template
+                    else None
+                ),
+                "prompt": payload.prompt if payload.mode == "custom" else None,
+                "output_language": payload.output_language,
+                "actor_id": str(user.id),
+            },
         )
         self._session.add(job)
         await self._session.commit()
@@ -117,6 +158,51 @@ class AIService:
             raise ApiError("SUMMARY_VERSION_NOT_FOUND", "Summary version was not found.", 404)
         return self._summary_version_response(version)
 
+    async def edit_summary(
+        self,
+        summary_id: UUID,
+        user: User,
+        payload: SummaryEditRequest,
+    ) -> SummaryResponse:
+        summary = await self._session.get(Summary, summary_id)
+        if summary is None:
+            raise ApiError("SUMMARY_NOT_FOUND", "Summary was not found.", 404)
+        await self._meetings.require_access(
+            summary.meeting_id, user, MeetingPermission.EDIT
+        )
+        await self._session.refresh(summary, with_for_update=True)
+        current = await self._session.scalar(
+            select(SummaryVersion)
+            .where(SummaryVersion.summary_id == summary.id)
+            .order_by(SummaryVersion.version_no.desc())
+            .limit(1)
+        )
+        if current is None:
+            raise ApiError("SUMMARY_NOT_FOUND", "Summary is not complete.", 404)
+        if payload.expected_version_no is not None and payload.expected_version_no != current.version_no:
+            raise ApiError("VERSION_CONFLICT", "This summary was changed by another editor. Reload first.", 409)
+        if summary.scope == "sessions":
+            old, edited = current.content.get("sessions"), payload.content.get("sessions")
+            if not isinstance(old, list) or not isinstance(edited, list) or len(old) != len(edited):
+                raise ApiError("SUMMARY_INVALID", "Keep every meeting session when editing.", 422)
+            for before, after in zip(old, edited, strict=True):
+                if not isinstance(after, dict) or {key: value for key, value in before.items() if key != "content"} != {key: value for key, value in after.items() if key != "content"}:
+                    raise ApiError("SUMMARY_INVALID", "Session metadata cannot be changed in a summary.", 422)
+                if (before.get("content") is None and after.get("content") is not None) or (before.get("content") is not None and not isinstance(after.get("content"), dict)):
+                    raise ApiError("SUMMARY_INVALID", "Session summary content must retain its object shape.", 422)
+        next_version = SummaryVersion(
+            summary_id=summary.id,
+            version_no=current.version_no + 1,
+            prompt=current.prompt,
+            content=payload.content,
+            provider="user",
+            model="manual-edit",
+            created_by=user.id,
+        )
+        self._session.add(next_version)
+        await self._session.commit()
+        return await self._summary_response(summary)
+
     async def _valid_current_transcript(self, version_id: UUID | None) -> TranscriptVersion:
         if version_id is None:
             raise ApiError("TRANSCRIPT_NOT_FOUND", "A transcript is required for this operation.", 422)
@@ -133,7 +219,16 @@ class AIService:
         current = await self._session.scalar(select(SummaryVersion).where(SummaryVersion.summary_id == summary.id).order_by(SummaryVersion.version_no.desc()).limit(1))
         if current is None:
             raise ApiError("SUMMARY_NOT_FOUND", "Summary is not complete.", 404)
-        return SummaryResponse(id=summary.id, meeting_id=summary.meeting_id, transcript_version_id=summary.transcript_version_id, template=summary.template_type, output_language=summary.output_language, current_version=self._summary_version_response(current))
+        return SummaryResponse(
+            id=summary.id,
+            meeting_id=summary.meeting_id,
+            transcript_version_id=summary.transcript_version_id,
+            scope=summary.scope,
+            mode=summary.mode,
+            template=summary.template_type if summary.mode == "template" else None,
+            output_language=summary.output_language,
+            current_version=self._summary_version_response(current),
+        )
 
     async def _summary_for_read(self, summary_id: UUID, user: User) -> Summary:
         summary = await self._session.get(Summary, summary_id)
@@ -150,7 +245,7 @@ class AIService:
 
     @staticmethod
     def _summary_version_response(version: SummaryVersion) -> SummaryVersionResponse:
-        return SummaryVersionResponse(id=version.id, version_no=version.version_no, content=version.content, provider=version.provider, model=version.model, created_by=version.created_by, created_at=version.created_at)
+        return SummaryVersionResponse(id=version.id, version_no=version.version_no, prompt=version.prompt, content=version.content, provider=version.provider, model=version.model, created_by=version.created_by, created_at=version.created_at)
 
 
 class AIJobDispatcher:
@@ -163,7 +258,7 @@ class AIJobDispatcher:
     async def run(self, job_id: UUID) -> bool:
         """Run a durable job and return whether the actor must retry it."""
         async with self._database.session() as session:
-            job = await session.get(Job, job_id)
+            job = await session.scalar(select(Job).where(Job.id == job_id).with_for_update())
             if job is None or not await lifecycle.start(session, job):
                 return False
             try:
@@ -171,17 +266,23 @@ class AIJobDispatcher:
                     await self._run_translation(session, job)
                 elif job.job_type == "summary":
                     await self._run_summary(session, job)
+                elif job.job_type == "transcript_polish":
+                    from app.services.transcript_polish import run_polish
+                    await run_polish(session, job, self._llm)
                 elif job.job_type == "export":
                     await self._exports.run(session, job)
                 else:
                     raise ValueError("Unsupported AI job type.")
-                await session.commit()
+                if job.job_type != "transcript_polish":
+                    await session.commit()
                 await lifecycle.completed(session, job)
                 return False
             except (TranslationProviderError, LLMProviderError) as exc:
                 return await self._fail(session, job, exc.code, str(exc), exc.retryable)
             except ValueError as exc:
                 return await self._fail(session, job, "AI_RESULT_INVALID", str(exc), False)
+            except ApiError as exc:
+                return await self._fail(session, job, exc.code, exc.message, False)
             except Exception:
                 code = "EXPORT_GENERATION_FAILED" if job.job_type == "export" else "AI_PROVIDER_ERROR"
                 return await self._fail(session, job, code, "The job could not complete.", True)
@@ -209,18 +310,62 @@ class AIJobDispatcher:
             raise LLMProviderError("AI summary generation is not configured.", code="PROVIDER_CAPABILITY_UNAVAILABLE", retryable=False)
         payload = job.payload or {}
         version_id, actor_id = UUID(str(payload["transcript_version_id"])), UUID(str(payload["actor_id"]))
-        template = str(payload["template"])
+        mode = str(payload["mode"])
+        template_value = payload.get("template")
+        template = str(template_value) if template_value else None
+        user_prompt = str(payload["prompt"]) if payload.get("prompt") else None
         output_language = str(payload["output_language"])
-        originals = await _valid_segments(session, version_id)
-        content = _normalize_summary(await self._llm.generate_summary("\n".join(item.text for item in originals), template, output_language))
-        summary = await session.scalar(select(Summary).where(Summary.meeting_id == job.meeting_id, Summary.transcript_version_id == version_id, Summary.template_type == template, Summary.output_language == output_language))
+        scope = str(payload.get("scope", "meeting"))
+        input_rows = payload.get("input_segments")
+        if input_rows is None and scope != "sessions":  # Jobs queued before the session feature.
+            input_rows = [{"text": row.text} for row in await _valid_segments(session, version_id)]
+        template_type = (
+            SummaryTemplateType(template)
+            if mode == "template" and template
+            else SummaryTemplateType.GENERAL
+        )
+        async def summarize(rows):
+            return _normalize_summary(await self._llm.generate_summary(
+                "\n".join(row["text"] for row in rows), user_prompt, output_language, template,
+            ), mode)
+        if scope == "sessions":
+            outputs = []
+            for index, section in enumerate(payload["session_inputs"], 1):
+                outputs.append({**{key: value for key, value in section.items() if key != "segments"},
+                                "content": await summarize(section["segments"]) if section["segments"] else None})
+                job.progress = min(90, 10 + 80 * index // len(payload["session_inputs"]))
+                await session.commit()  # Progress only; no partial summary is published.
+            content = {"sessions": outputs}
+        else:
+            content = await summarize(input_rows)
+        summary = await session.scalar(
+            select(Summary).where(
+                Summary.meeting_id == job.meeting_id,
+                Summary.transcript_version_id == version_id,
+                Summary.scope == scope,
+                Summary.mode == mode,
+                Summary.template_type == template_type,
+                Summary.output_language == output_language,
+            ).with_for_update()
+        )
         if summary is None:
-            from app.models.enums import SummaryTemplateType
-            summary = Summary(meeting_id=job.meeting_id, transcript_version_id=version_id, template_type=SummaryTemplateType(template), output_language=output_language)
+            summary = Summary(
+                meeting_id=job.meeting_id,
+                transcript_version_id=version_id,
+                scope=scope,
+                mode=mode,
+                template_type=template_type,
+                output_language=output_language,
+            )
             session.add(summary)
             await session.flush()
         version_no = int(await session.scalar(select(func.coalesce(func.max(SummaryVersion.version_no), 0) + 1).where(SummaryVersion.summary_id == summary.id)))
-        session.add(SummaryVersion(summary_id=summary.id, version_no=version_no, content=content, provider=self._settings.llm_provider or self._llm.__class__.__name__, model=self._settings.llm_model or "configured-default", created_by=actor_id))
+        stored_prompt = (
+            user_prompt
+            if mode == "custom" and user_prompt
+            else _template_prompt(template_type)
+        )
+        session.add(SummaryVersion(summary_id=summary.id, version_no=version_no, prompt=stored_prompt, content=content, provider=self._settings.llm_provider or self._llm.__class__.__name__, model=self._settings.llm_model or "configured-default", created_by=actor_id))
         job.payload = {**payload, "summary_id": str(summary.id)}
 
     async def _fail(self, session: AsyncSession, job: Job, code: str, message: str, retryable: bool) -> bool:
@@ -245,7 +390,12 @@ async def _valid_segments(session: AsyncSession, version_id: UUID) -> list[Segme
     return segments
 
 
-def _normalize_summary(value: dict[str, object]) -> dict[str, object]:
+def _normalize_summary(value: dict[str, object], mode: str) -> dict[str, object]:
+    if mode == "custom":
+        content = value.get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("Summary provider returned invalid custom output.")
+        return {"content": content.strip()}
     if not isinstance(value, dict) or not isinstance(value.get("overview"), str) or not value["overview"].strip():
         raise ValueError("Summary provider returned invalid structured output.")
     result: dict[str, object] = {"overview": value["overview"].strip()}
@@ -255,6 +405,14 @@ def _normalize_summary(value: dict[str, object]) -> dict[str, object]:
             raise ValueError("Summary provider returned invalid structured output.")
         result[key] = [item.strip() for item in items]
     return result
+
+
+def _template_prompt(template: SummaryTemplateType) -> str:
+    return {
+        SummaryTemplateType.GENERAL: "Tóm tắt chung nội dung cuộc họp.",
+        SummaryTemplateType.BRIEFING: "Tóm tắt cuộc họp giao ban.",
+        SummaryTemplateType.VOTING: "Tóm tắt cuộc họp biểu quyết.",
+    }[template]
 
 
 def _job_response(job: Job) -> JobResponse:

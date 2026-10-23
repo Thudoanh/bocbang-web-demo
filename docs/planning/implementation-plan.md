@@ -23,8 +23,8 @@ Chi tiết test lịch sử nằm trong [Task Log](../../project_context/TASK_LO
 
 ## Công việc tiếp theo
 
-1. Sửa media download handler đang dùng `request` chưa khai báo, xác minh local/
-   S3 download. Đây là bug ghi nhận từ source trong đợt đồng bộ tài liệu.
+1. Media download handler đã sửa Request và kiểm thử local; còn cần browser/S3
+   smoke test cho playback ticket/presigned URL, TTL và băng realtime đã ghép.
 2. Chạy browser E2E upload → STT → edit/rollback → playback → AI → export;
    kiểm tra ACL, Google/OTP, share expiry/revoke, signed URL expiry.
 3. Kiểm thử realtime Speechmatics từ microphone thực: VI/EN, hai người nói,

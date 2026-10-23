@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { meetingsApi } from "../api/endpoints";
 import { useAsync } from "../hooks/useAsync";
 import type { Meeting, MeetingStatus } from "../types/domain";
@@ -61,12 +61,9 @@ function MeetingsOverview() {
 
   return <>
     <PageHeading
-      eyebrow="CUỘC HỌP"
-      title="Cuộc họp"
-      actions={<div className="quick-actions">
-        <a className="btn btn-dark" href="/meetings/create"><Icon name="meeting" /> Ghi âm mới</a>
-        <a className="btn btn-light" href="/meetings/create?mode=upload"><Icon name="upload" /> Tải file lên</a>
-      </div>}
+      eyebrow="LỊCH SỬ"
+      title="Quản lý cuộc họp"
+      description="Tìm kiếm, lọc và quản lý dữ liệu các cuộc họp đã lưu."
     />
     <div className="history-tools meeting-tools">
       <label><Icon name="search" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Tìm cuộc họp..." /></label>
@@ -79,19 +76,7 @@ function MeetingsOverview() {
     {meetings.data && meetings.data.length === 0 && (
       filtering
         ? <Empty title="Không tìm thấy" detail="Thử từ khóa hoặc bộ lọc khác." />
-        : <div className="onboarding">
-            <div className="onboarding-icon"><Icon name="meeting" /></div>
-            <h2>Bắt đầu bóc băng ngay!</h2>
-            <p>Ghi âm trực tiếp hoặc tải file âm thanh lên — AI sẽ tự động tạo transcript và tóm tắt cho bạn.</p>
-            <div className="onboarding-actions">
-              <a className="btn btn-dark" href="/meetings/create">
-                <Icon name="meeting" /> Ghi âm cuộc họp
-              </a>
-              <a className="btn btn-light" href="/meetings/create?mode=upload">
-                <Icon name="upload" /> Tải file âm thanh
-              </a>
-            </div>
-          </div>
+        : <Empty title="Chưa có cuộc họp" detail="Chọn Cuộc họp mới hoặc Tải bản ghi trong thanh bên để bắt đầu." />
     )}
     {meetings.data && meetings.data.length > 0 && <div className="meeting-list">{meetings.data.map((meeting) => <MeetingRow key={meeting.id} meeting={meeting} onMedia={() => setMediaMeeting(meeting)} onDelete={() => setPendingDelete(meeting)} />)}</div>}
     {mediaMeeting && <MediaDialog meeting={mediaMeeting} close={() => setMediaMeeting(undefined)} />}
@@ -106,9 +91,13 @@ function CreateMeeting({ initialSource }: { initialSource?: "realtime" | "upload
   const [diarization, setDiarization] = useState(true);
   const [creating, setCreating] = useState<"realtime" | "upload">();
   const [error, setError] = useState("");
+  const submitting = useRef(false);
+  const sourceType = initialSource ?? "realtime";
+  const uploading = sourceType === "upload";
 
-  async function create(sourceType: "realtime" | "upload") {
-    if (!title.trim()) return;
+  async function create() {
+    if (submitting.current || !title.trim()) return;
+    submitting.current = true;
     setCreating(sourceType);
     setError("");
     try {
@@ -122,28 +111,37 @@ function CreateMeeting({ initialSource }: { initialSource?: "realtime" | "upload
       window.location.assign(sourceType === "realtime" ? `/meetings/${meeting.id}` : `/meetings/${meeting.id}/upload`);
     } catch (cause) {
       setError((cause as Error).message);
-    } finally {
+      submitting.current = false;
       setCreating(undefined);
     }
   }
 
-  return <>
-    <PageHeading eyebrow="TẠO MỚI" title={initialSource === "upload" ? "Tải bản ghi" : "Cuộc họp mới"} description="Đặt tên rồi chọn cách bắt đầu." />
-    <section className="create-card compact-form">
-      <label className="field full">Tên cuộc họp<input autoFocus placeholder="Họp kế hoạch tuần" value={title} onChange={(event) => setTitle(event.target.value)} /></label>
-      <label className="field full">Ghi chú <span>(không bắt buộc)</span><textarea placeholder="Nội dung chính" value={description} onChange={(event) => setDescription(event.target.value)} /></label>
-      <div className="field-grid">
-        <label className="field">Ngôn ngữ<select value={language} onChange={(event) => setLanguage(event.target.value)}><option value="vi">Tiếng Việt</option><option value="en">English</option><option value="auto">Tự nhận diện Việt / Anh</option></select></label>
-        <label className="field">Người nói<select value={String(diarization)} onChange={(event) => setDiarization(event.target.value === "true")}><option value="true">Tự phân biệt</option><option value="false">Không phân biệt</option></select></label>
-      </div>
-      {error && <div className="form-error">{error}</div>}
-      <div className="form-actions">
-        <a className="btn btn-ghost" href="/meetings">Hủy</a>
-        <Button tone={initialSource === "upload" ? "dark" : "light"} disabled={Boolean(creating) || !title.trim()} onClick={() => void create("upload")}><Icon name="upload" />{creating === "upload" ? "Đang tạo…" : "Tải tệp"}</Button>
-        <Button tone={initialSource === "upload" ? "light" : "dark"} disabled={Boolean(creating) || !title.trim()} onClick={() => void create("realtime")}><Icon name="meeting" />{creating === "realtime" ? "Đang tạo…" : "Ghi âm"}</Button>
-      </div>
-    </section>
-  </>;
+  return <section className="meeting-start" aria-labelledby="meeting-start-title">
+    <div className="meeting-start-body">
+      <h1 id="meeting-start-title">{uploading ? "Tải bản ghi cuộc họp" : "Tạo cuộc họp mới"}</h1>
+      <p className="meeting-start-description">{uploading ? "Đặt tên cuộc họp để tiếp tục chọn file âm thanh hoặc video có sẵn." : "Nhập tên cuộc họp để mở không gian ghi âm và phân tích nội dung."}</p>
+      <form className="meeting-start-form" aria-busy={Boolean(creating)} onSubmit={(event) => { event.preventDefault(); void create(); }}>
+        <div className="meeting-name-entry">
+          <input autoFocus required maxLength={255} aria-label="Tên cuộc họp" aria-describedby="meeting-start-hint" placeholder="Ví dụ: Họp team hằng tuần, Thảo luận dự án…" value={title} disabled={Boolean(creating)} onChange={(event) => setTitle(event.target.value)} />
+          <Button type="submit" tone="dark" className="meeting-name-submit" disabled={Boolean(creating) || !title.trim()} aria-label={uploading ? "Tạo cuộc họp và tiếp tục tải bản ghi" : "Tạo cuộc họp"}>
+            {creating ? <span className="spinner" /> : <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 19V5m-6 6 6-6 6 6" /></svg>}
+          </Button>
+        </div>
+        <p className="meeting-start-hint" id="meeting-start-hint" role="status">{creating ? "Đang tạo cuộc họp…" : uploading ? "Nhấn Enter hoặc nút mũi tên để tiếp tục tải bản ghi" : "Nhấn Enter hoặc nút mũi tên để tạo cuộc họp"}</p>
+        {error && <div className="form-error" role="alert">{error}</div>}
+        <details className="meeting-start-options">
+          <summary>Tùy chọn cuộc họp</summary>
+          <fieldset className="compact-form" disabled={Boolean(creating)}>
+            <label className="field full">Ghi chú <span>(không bắt buộc)</span><textarea maxLength={20000} placeholder="Nội dung chính" value={description} onChange={(event) => setDescription(event.target.value)} /></label>
+            <div className="field-grid">
+              <label className="field">Ngôn ngữ<select value={language} onChange={(event) => setLanguage(event.target.value)}><option value="vi">Tiếng Việt</option><option value="en">English</option><option value="auto">Tự nhận diện Việt / Anh</option></select></label>
+              <label className="field">Người nói<select value={String(diarization)} onChange={(event) => setDiarization(event.target.value === "true")}><option value="true">Tự phân biệt</option><option value="false">Không phân biệt</option></select></label>
+            </div>
+          </fieldset>
+        </details>
+      </form>
+    </div>
+  </section>;
 }
 
 function MeetingRow({ meeting, onMedia, onDelete }: { meeting: Meeting; onMedia: () => void; onDelete: () => void }) {

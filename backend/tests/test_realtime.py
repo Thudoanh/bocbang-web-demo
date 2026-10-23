@@ -3,7 +3,7 @@ import json
 from concurrent.futures import CancelledError as FutureCancelledError
 from contextlib import suppress
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -191,7 +191,51 @@ def test_realtime_disconnect_flushes_pending_final_before_database_session_close
         assert [segment["text"] for segment in response.json()["segments"]] == [
             "Lời cuối trước ngắt kết nối"
         ]
+        meeting = client.get(
+            f"/api/v1/meetings/{meeting_id}",
+            headers={"Authorization": f"Bearer {session['access_token']}"},
+        )
+        assert meeting.status_code == 200
+        assert meeting.json()["status"] == "recording"
     assert provider.stream.readers == 0
+
+
+def test_realtime_disconnect_keeps_meeting_resumable_until_explicit_stop(
+    tmp_path: Path,
+) -> None:
+    app, sender, _ = _app(tmp_path)
+    provider = FakeProvider()
+    app.state.stt_provider = provider
+    with TestClient(app) as client:
+        session = _verified_session(client, sender)
+        token = session["access_token"]
+        meeting_id = _create_realtime_meeting(client, token)
+        websocket_url = f"/api/v1/realtime/{meeting_id}?access_token={token}"
+
+        with suppress(FutureCancelledError), client.websocket_connect(websocket_url) as websocket:
+            assert websocket.receive_json()["type"] == "session.ready"
+
+        interrupted = client.get(
+            f"/api/v1/meetings/{meeting_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert interrupted.status_code == 200
+        assert interrupted.json()["status"] == "recording"
+
+        with client.websocket_connect(websocket_url) as websocket:
+            assert websocket.receive_json()["type"] == "session.ready"
+            websocket.send_text('{"type":"recording.stop"}')
+            assert websocket.receive_json() == {
+                "type": "meeting.status",
+                "status": "completed",
+            }
+
+        completed = client.get(
+            f"/api/v1/meetings/{meeting_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert completed.status_code == 200
+        assert completed.json()["status"] == "completed"
 
 
 def test_realtime_push_provider_failure_is_reported_without_audio(tmp_path: Path) -> None:
@@ -268,7 +312,7 @@ def test_realtime_persists_finals_but_never_partials_and_handles_pause_resume(
             assert final["type"] == "transcript.final"
             assert final["text"] == "Bản cuối được lưu"
             websocket.send_text('{"type":"recording.stop"}')
-            assert websocket.receive_json() == {"type": "meeting.status", "status": "processing"}
+            assert websocket.receive_json() == {"type": "meeting.status", "status": "completed"}
 
     async def verify() -> None:
         engine = create_async_engine(database_url)
@@ -281,7 +325,7 @@ def test_realtime_persists_finals_but_never_partials_and_handles_pause_resume(
         assert len(versions) == 1
         assert len(segments) == 1
         assert segments[0].text == "Bản cuối được lưu"
-        assert meeting.status == "processing"
+        assert meeting.status == "completed"
 
     asyncio.run(verify())
     assert provider.options is not None and provider.options.diarization is True
@@ -399,7 +443,7 @@ def test_realtime_translation_only_translates_final_segments(tmp_path: Path) -> 
                 "text": "Translated: Bản cuối được lưu",
             }
             websocket.send_text('{"type":"recording.stop"}')
-            assert websocket.receive_json() == {"type": "meeting.status", "status": "processing"}
+            assert websocket.receive_json() == {"type": "meeting.status", "status": "completed"}
 
     assert len(translation.calls) == 1
     segments, source, target = translation.calls[0]
@@ -523,7 +567,7 @@ def test_realtime_translation_errors_do_not_interrupt_stt(tmp_path: Path) -> Non
             websocket.send_text('{"type":"recording.pause"}')
             websocket.send_text('{"type":"recording.resume"}')
             websocket.send_text('{"type":"recording.stop"}')
-            assert websocket.receive_json() == {"type": "meeting.status", "status": "processing"}
+            assert websocket.receive_json() == {"type": "meeting.status", "status": "completed"}
 
 
 def test_realtime_rejects_provider_without_streaming_capability(tmp_path: Path) -> None:
@@ -606,6 +650,87 @@ def test_realtime_non_retryable_provider_error_fails_meeting_not_completed(tmp_p
     asyncio.run(verify())
 
 
+def test_voice_learning_from_live_audio_refreshes_current_stream(tmp_path: Path) -> None:
+    from app.db.session import Database
+    from app.providers.contracts import SpeakerEnrollment
+    from app.services.voice_learning import VoiceLearningWorker
+
+    class ClockStream(FakeStream):
+        async def send_audio(self, chunk):
+            assert len(chunk) == 12 * 32000
+            return (StreamingTranscriptionEvent(
+                "final", "vi", TranscriptionSegment(0, 12000, "Đoạn phát biểu", "S1"),
+            ),)
+
+    class RotatingProvider(FakeProvider):
+        def __init__(self):
+            super().__init__()
+            self.sessions = []
+
+        async def open_stream(self, options):
+            self.sessions.append(options)
+            return ClockStream()
+
+    class Enrollment:
+        async def enroll_speaker(self, source, language):
+            assert source.is_file() and language == "vi"
+            return SpeakerEnrollment(("learned-lan",), 12000)
+
+    app, sender, database_url = _app(tmp_path)
+    provider = RotatingProvider()
+    app.state.stt_provider = provider
+    app.state.speaker_enrollment_provider = Enrollment()
+    published = []
+    app.state.enqueue_job = lambda job_id, settings: published.append(job_id)
+    with TestClient(app) as client:
+        session = _verified_session(client, sender)
+        token = session["access_token"]
+        meeting_id = _create_realtime_meeting(client, token)
+        headers = {"Authorization": f"Bearer {token}"}
+        with client.websocket_connect(
+            f"/api/v1/realtime/{meeting_id}?access_token={token}"
+        ) as websocket:
+            assert websocket.receive_json()["type"] == "session.ready"
+            websocket.send_bytes(b"\x10\x00" * 16000 * 12)
+            final = websocket.receive_json()
+            assert final["type"] == "transcript.final"
+            websocket.send_json({"type": "recording.pause"})
+            websocket.send_json({"type": "speakers.refresh"})
+            assert websocket.receive_json()["type"] == "speakers.updated"
+            selected = {"segment_ids": [final["logical_segment_id"]]}
+            clip = client.post(f"/api/v1/meetings/{meeting_id}/voice-learning/preview",
+                               json=selected, headers=headers)
+            assert clip.status_code == 200 and clip.content[:4] == b"RIFF"
+            queued = client.post(f"/api/v1/meetings/{meeting_id}/voice-learning",
+                                 json={**selected, "name": "Chị Lan"}, headers=headers)
+            assert queued.status_code == 202
+            job_id = UUID(queued.json()["id"])
+            assert published == [job_id]
+
+            async def run_worker():
+                database = Database(database_url)
+                try:
+                    await VoiceLearningWorker(database, app.state.media_storage,
+                                              Enrollment(), Settings(_env_file=None)).run(job_id)
+                finally:
+                    await database.dispose()
+
+            asyncio.run(run_worker())
+            job = client.get(f"/api/v1/jobs/{job_id}", headers=headers).json()
+            assert job["status"] == "completed", job
+            websocket.send_json({"type": "speakers.refresh"})
+            assert websocket.receive_json()["type"] == "speakers.updated"
+            assert [speaker.name for speaker in provider.sessions[-1].known_speakers] == ["Chị Lan"]
+            websocket.send_json({"type": "recording.resume"})
+            websocket.send_bytes(b"\x20\x00" * 16000 * 12)
+            following = websocket.receive_json()
+            assert following["type"] == "transcript.final"
+            assert following["start_ms"] == 12000
+            assert following["end_ms"] == 24000
+            websocket.send_json({"type": "recording.stop"})
+            assert websocket.receive_json() == {"type": "meeting.status", "status": "completed"}
+
+
 def _app(tmp_path: Path) -> tuple[object, CapturingEmailSender, str]:
     database_url = f"sqlite+aiosqlite:///{(tmp_path / 'realtime.sqlite3').as_posix()}"
 
@@ -623,6 +748,7 @@ def _app(tmp_path: Path) -> tuple[object, CapturingEmailSender, str]:
             jwt_secret="test-secret",
             frontend_origins="http://localhost:5173",
             stt_provider="fake",
+            media_storage_path=tmp_path / "audio",
         )
     )
     sender = CapturingEmailSender()

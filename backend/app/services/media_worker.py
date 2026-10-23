@@ -77,8 +77,13 @@ class MediaProcessingWorker:
                 await TranscriptService(session).replace_stt_batch(
                     meeting, meeting.owner_id, result.segments
                 )
+                job.payload = {**(job.payload or {}), "transcript_version_id": str(meeting.current_transcript_version_id)}
                 meeting.duration_ms = media.duration_ms
                 meeting.status, media.status = MeetingStatus.COMPLETED, "completed"
+                from app.services.meeting_sections import MeetingSectionService
+                section = await MeetingSectionService(session).ensure(meeting)
+                section.is_started = True
+                section.end_ms = max(meeting.duration_ms or 0, max(row.end_ms for row in result.segments))
                 await session.commit()
                 await lifecycle.completed(session, job)
                 return False

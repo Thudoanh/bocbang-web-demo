@@ -27,11 +27,24 @@ Code là nguồn xác minh hành vi đã triển khai; BA/UI specs mô tả yêu
     multilingual theo capability provider.
 -   **Diarization:** bắt buộc trong demo nếu provider được chọn hỗ trợ;
     UI hiển thị Speaker 1, Speaker 2...
+-   **Học giọng:** không bắt buộc thu trước; thư ký xác nhận tên và lấy mẫu
+    trực tiếp từ transcript/audio cuộc họp qua durable job. Mẫu được tái sử dụng
+    theo owner/member scope, không dùng thư viện của tài khoản không liên quan.
 -   **Translation:** provider mở; demo bảo đảm VI ↔ EN; mở rộng
     multilingual theo provider.
 -   **LLM:** provider mở; không hard-code vendor/model vào business
     service.
--   **Summary:** `general`, `briefing`, `voting`.
+-   **Summary:** chọn `general`/`briefing`/`voting` hoặc nhập prompt tùy chỉnh;
+    hỗ trợ VI/EN và chỉnh sửa thủ công bằng version mới.
+-   **Phiên trong meeting:** Tạm dừng mở lựa chọn tạo phiên hoặc giữ phiên cũ;
+    chỉ chọn Tạo phiên mới mới chốt phiên cũ/tạo phiên có tên đang chờ;
+    chỉ Tiếp tục mới ghi lại. Navigation/disconnect không tách phiên. UI mặc
+    định tóm tắt từng phiên, whole-meeting scope giữ tương thích output cũ.
+    Xem `docs/architecture/meeting-sessions.md` và migration `0017`.
+-   **Quản lý phiên:** thêm mốc, sửa boundary, xóa/gộp chỉ đổi grouping, tuyệt
+    đối không sửa/xóa transcript hoặc audio. Tóm tắt được chọn nhiều phiên;
+    snapshot toàn boundary trước rồi lọc input. Layout revision chống stale,
+    summary versions cũ giữ nguyên, không migration bổ sung.
 -   **Export:** PDF, DOCX, TXT, SRT, VTT, JSON.
 -   **Share:** `read`, `comment`, `edit`.
 -   **Retention:** không tự xóa audio theo thời gian trong demo; user có
@@ -40,6 +53,13 @@ Code là nguồn xác minh hành vi đã triển khai; BA/UI specs mô tả yêu
     liên quan.
 -   **Versioning:** giữ lịch sử transcript và summary. Không overwrite
     version cũ.
+-   **Làm mịn transcript:** explicit end flush STT rồi tạo proposal qua LLM;
+    bản gốc/AI/nháp tách riêng, chỉ người dùng chốt mới tạo current revision.
+    Xem `docs/architecture/transcript-polish.md`; không tự chốt kết quả AI.
+-   **Nghe lại:** explicit end còn tạo durable `recording_assembly` độc lập AI,
+    ghép raw chunks thành MediaFile WAV theo timeline, private playback/download.
+    Meeting cũ chỉ khôi phục explicit khi còn audio; không hồi sinh băng đã xóa.
+    Xem `docs/architecture/recording-playback.md`; không có migration mới.
 -   **Xin ý kiến:** loại khỏi scope.
 -   **Deploy demo:** ưu tiên **Render** cho frontend static, FastAPI web
     service, background worker, PostgreSQL và Redis-compatible Key

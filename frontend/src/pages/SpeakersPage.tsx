@@ -92,7 +92,7 @@ export function SpeakersPage({ meetingId }: { meetingId: string }) {
       <PageHeading
         title="Người nói"
         context={meeting.data.title}
-        description="Danh sách người nói được thiết lập riêng cho cuộc họp này. Các mẫu giọng dùng chung đã lưu sẽ được tự động nhận diện cho cuộc họp; bạn có thể tùy chỉnh tên, vai trò và đơn vị tại đây mà không ảnh hưởng mẫu giọng gốc."
+        description="Bạn có thể bắt đầu họp ngay. Trong Bản ghi, chọn đoạn phát biểu để gán tên và lưu mẫu giọng; mẫu đã xác nhận sẽ hỗ trợ nhận diện những lần phát biểu và cuộc họp tiếp theo."
       />
 
       <div className="speakers-layout">
@@ -313,7 +313,7 @@ function SpeakerCard({
       <div className="speaker-card-top">
         <div className="speaker-avatar">{speaker.name.slice(0, 2).toUpperCase()}</div>
         <small className={speaker.is_identified ? "speaker-state identified" : "speaker-state"}>
-          {speaker.is_identified ? "✓ Nhận diện từ mẫu giọng" : "Người nói cuộc họp"}
+          {speaker.is_identified ? "✓ Nhận diện từ mẫu giọng" : speaker.voice_profile_id ? "Đã xác nhận và lưu mẫu" : "Người nói cuộc họp"}
         </small>
       </div>
       {editing ? (

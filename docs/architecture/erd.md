@@ -1,6 +1,6 @@
 # ERD v2
 
-_Đối chiếu SQLAlchemy models và Alembic head `20261008_0012`: 2026-10-08._
+_Đối chiếu SQLAlchemy models và Alembic head `20261020_0017`: 2026-10-20._
 
 ## 1. Core relationships
 
@@ -9,6 +9,7 @@ USER 1---N MEETING(owner)
 USER N---N MEETING via MEETING_MEMBER(permission)
 
 MEETING 1---N MEDIA_FILE
+MEETING 1---N MEETING_SECTION
 MEETING 1---N JOB
 MEETING 1---1 TRANSCRIPT
 TRANSCRIPT 1---N TRANSCRIPT_VERSION
@@ -122,6 +123,17 @@ deleted_at NULL
 
 ## 5. Transcript versioning
 
+`meeting_sections` (0017): UUID PK, meeting_id FK CASCADE + index, sequence,
+title VARCHAR(255), start_ms BIGINT, end_ms BIGINT nullable, is_started BOOLEAN,
+created_at/updated_at. Unique(meeting_id,sequence); check start>=0,end>=start.
+No inferred historical session splits: old meetings backfill one session.
+Manual create/update/delete only edits these grouping rows: split at recorded
+timestamp, shift neighboring boundaries, or merge deleted interval into a neighbor.
+There is deliberately no section FK/cascade on transcript, audio or summary
+versions. Sequence renumbering uses a two-phase flush to preserve uniqueness.
+The API revision is a computed layout hash, not a new DB column/migration.
+See [session timeline/data model](meeting-sessions.md).
+
 ### transcripts
 
 ``` text
@@ -230,7 +242,14 @@ created_at, updated_at
 
 Personal profile có user_id và meeting_id null; guest có meeting_id và user_id
 null. Service giới hạn ba identifiers/profile, không trả identifiers/audio path
-qua REST. Hiện enrollment chỉ dùng file tạm, không lưu sample recording lâu dài.
+qua REST. Sample WAV của profile được lưu trong private storage. Học từ cuộc
+họp tạo job `voice_learning`, lưu clip snapshot tạm và nguồn đoạn/timestamps/
+người xác nhận trong payload; profile đã học thuộc thư viện của chủ cuộc họp.
+
+Bảng `meeting_audio_chunks` (migration `0016`) có UUID primary key, meeting FK
+cascade, recording UUID, `start_ms`, `end_ms`, unique `storage_key`, `created_at`
+và constraint `end_ms > start_ms`. Audio chunks được dọn khi xóa meeting; profile
+tái sử dụng tồn tại độc lập. Xem [luồng học giọng](meeting-voice-learning.md).
 Migration `0012` xóa profile MFCC cũ và thay representation bằng Speechmatics.
 
 ## 7. Comments
@@ -257,21 +276,27 @@ summaries:
 id
 meeting_id
 transcript_version_id
+mode VARCHAR(16)
+scope VARCHAR(16) -- meeting | sessions; legacy/default meeting
 template_type
 output_language VARCHAR(2)
 created_at
-UNIQUE(meeting_id, transcript_version_id, template_type, output_language)
+UNIQUE(meeting_id, transcript_version_id, scope, mode, template_type, output_language)
 
 summary_versions:
 id
 summary_id
 version_no
+prompt TEXT
 content JSON
 provider
 model
 created_by
 created_at
 ```
+
+`mode` là `template` hoặc `custom`; custom vẫn dùng `template_type=general` như
+giá trị nội bộ tương thích schema cũ, nhưng API trả `template: null`.
 
 ## 9. Translation/export/job
 
@@ -292,8 +317,19 @@ Models hiện có các field phục vụ xử lý và kết quả:
 - Job status: `queued | processing | retrying | completed | failed`.
   PostgreSQL là authority; Redis message chỉ chứa job ID.
 - Dịch realtime không lưu vào translation tables.
+- `recording_assembly` dùng jobs payload snapshot chunk IDs/keys/timing/recording
+  IDs và kết quả gap_ms; job.media_file_id trỏ MediaFile WAV sau thành công,
+  cùng transaction job completed. Không thêm column/table/migration. Raw chunks
+  vẫn phục vụ học giọng; owner xóa băng tổng thì xóa chunks và giữ tombstone media.
+  Xem [recording playback](recording-playback.md).
 
 ## 10. Delete rule
+
+Job type `transcript_polish` lưu snapshot nguồn, đề xuất AI, bản nháp/revision,
+requester và accepted version/user/time trong JSON payload; không thêm table hay
+migration. Chốt tạo transcript user_edit/checkpoint và edit events gắn proposal;
+commit cùng accepted pointer của job. Source/generated không bị overwrite bởi
+review. Xem [data lifecycle](transcript-polish.md).
 
 Owner delete meeting → toàn bộ DB entities thuộc meeting bị xóa/cascade
 theo transaction + storage objects được cleanup. User cũng có endpoint

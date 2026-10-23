@@ -35,6 +35,28 @@ URL fragment. No token is placed in a query parameter.
 
 ## 2. Meetings
 
+Named sessions within a meeting:
+
+```text
+GET   /meetings/{id}/sections
+POST  /meetings/{id}/sections
+PATCH /meetings/{id}/sections/{section_id}
+DELETE /meetings/{id}/sections/{section_id}?expected_revision=...
+```
+
+GET requires read and returns ordered `{id,meeting_id,sequence,title,start_ms,
+end_ms:null|number,is_started,revision}`. All mutations require edit permission
+and serialize on the meeting row. POST accepts `{title,start_ms,expected_revision}`
+and returns the full ordered list (201). It splits at a unique interior recorded
+timestamp; legacy meetings without rows initialize at zero first. PATCH accepts
+title and/or start_ms/end_ms; boundary edits require expected_revision, adjust
+neighboring boundaries, keep first start=0 and final end unchanged. Title-only
+PATCH remains backward compatible. DELETE requires expected_revision and returns
+the full list (200); merge into previous, or next for the first, retaining one
+session minimum. Layout conflicts return 409 SECTION_CONFLICT. Invalid intervals
+return 422. These operations only edit grouping rows, never transcript/audio or
+existing summary snapshots. No migration required. See [meeting sessions](meeting-sessions.md).
+
 `GET /meetings` accepts `q`, `status`, `source_type`, `limit` (100 default,
 250 max), `offset`; it returns a list without total count/cursor.
 
@@ -74,6 +96,19 @@ revokes the link (rather than hard-deleting its audit record).
 
 ## 4. Media
 
+```text
+GET  /meetings/{id}/recording
+POST /meetings/{id}/recording
+```
+
+GET requires read, returns `{status,media:null|MediaFileResponse,job:null|JobResponse,
+can_prepare:boolean,warning:null|string}`; statuses: not_completed, unavailable,
+pending, ready, failed, deleted. Never creates a job. POST requires edit and a
+completed realtime meeting with retained chunks; returns 202 and the same shape,
+reuses active/ready job, explicitly retries a failed assembly. No revival of
+deleted audio. Completion automatically queues independent `recording_assembly`
+when chunks exist. See [playback contract/lifecycle](recording-playback.md).
+
 ``` text
 POST   /meetings/{id}/media
 GET    /meetings/{id}/media
@@ -106,9 +141,10 @@ returns `{url, expires_in_seconds}`; S3 returns a presigned URL, local returns
 the ticket route above. Both proxy stream routes support a single byte Range.
 The direct `/stream` endpoint proxies bytes in both storage modes.
 
-Known implementation issue: the media `/download` handler references `request`
-without declaring it; this route needs repair and runtime verification. The
-playback route and export download use separate handlers.
+The media `/download` handler declares Request for settings resolution; local
+download and ticket playback stream in <=1MiB blocks with declared length,
+ticket playback retains Range/206. S3 download remains a presigned redirect.
+Export download has its own handler.
 
 ## 5. Provider capability endpoint
 
@@ -137,6 +173,7 @@ Example with configured providers (unavailable capabilities are false/empty):
   },
   "summary_languages": ["vi","en"],
   "summary_templates": ["general","briefing","voting"],
+  "custom_summary_prompt": true,
   "exports": ["pdf","docx","txt","srt","vtt","json"]
 }
 ```
@@ -157,6 +194,33 @@ Jobs expose `id`, `meeting_id`, optional `media_file_id`, `job_type`, `status`,
 may only query jobs belonging to a meeting they can read.
 
 ## 7. Transcript & versions
+
+### AI proofreading proposal
+
+```text
+GET   /meetings/{id}/transcript/polish
+POST  /meetings/{id}/transcript/polish
+PATCH /meetings/{id}/transcript/polish/{job_id}
+POST  /meetings/{id}/transcript/polish/{job_id}/accept
+```
+
+GET (read ACL) returns latest proposal or null. POST (edit ACL, completed meeting)
+returns 202 proposal and durable job; same source snapshot reuses a non-failed
+job. Confirmation of meeting completion automatically requests proofreading when
+configured and nonempty; it waits for final STT flush. Capability `transcript_polish`
+advertises availability. No auto proofreading on pause/navigation/disconnect.
+
+Proposal: `{job:JobResponse,source_version_id,accepted_version_id:null|uuid,
+revision:number,segments:[{logical_segment_id,speaker_id,start_ms,end_ms,
+original_text,generated_text,text}]}`. The `text` field is the saved draft if any,
+otherwise generated proposal. Before job completion, text fields are source text,
+not an AI result. PATCH saves draft; accept creates a new current transcript
+revision, preserving source/AI proposal. Both accept exactly
+`{revision:number,segments:[{logical_segment_id:uuid,text:string}]}` with all
+source IDs once, nonempty texts, max 50,000 characters/text. Backend preserves
+timing/speaker/IDs. Changed draft/source returns 409; incomplete job cannot be
+accepted; already accepted proposal cannot be finalized twice. Errors do not
+overwrite source. See [proofreading lifecycle](transcript-polish.md).
 
 ``` text
 GET  /meetings/{id}/transcript
@@ -239,24 +303,82 @@ retryability flag.
 
 ## 11. Summary & versions
 
+Requests additionally accept `scope: "sessions" | "meeting"`; omitted defaults
+to meeting for backward compatibility, UI defaults sessions. Responses expose
+scope. Sessions scope generates separate results from immutable text/name/range
+snapshots stored in the job, each with its own existing template/custom content
+inside `current_version.content.sessions[]`. Empty sessions have content:null;
+no AI call or invented output. Only publish after all nonempty groups succeed.
+Manual edit keeps all session metadata, changes content only, creates a new
+version. Optional `expected_version_no` on PATCH /summaries/{id} returns 409
+VERSION_CONFLICT when another edit/regeneration won. See [schema and lifecycle](meeting-sessions.md).
+
+Sessions requests optionally accept `section_ids:[uuid,...]` (nonempty, unique,
+maximum 1000, all belonging to this meeting), plus `sections_revision` from GET
+sections for stale-layout protection (409). Omitted IDs preserve legacy all-session
+behavior; explicit [] or IDs with meeting scope are rejected (422). Group against
+all boundaries first, then filter selected IDs in timeline order. Only selected
+text/metadata is stored in session_inputs and sent to the worker. A different
+selection produces a new SummaryVersion under the existing summary identity;
+previous versions and their selection/name/range snapshots remain unchanged.
+
 ``` text
 POST /meetings/{id}/summaries
 GET  /meetings/{id}/summaries
 GET  /summaries/{id}
 GET  /summaries/{id}/versions
 GET  /summaries/{id}/versions/{version_id}
+PATCH /summaries/{id}
 ```
 
-Templates: `general | briefing | voting`. Request also requires
-`output_language: "vi" | "en"`; responses include it. Summary identity is scoped
-by meeting, transcript version, template and output language.
+Built-in template request:
+
+```json
+{
+  "mode": "template",
+  "template": "general",
+  "output_language": "vi"
+}
+```
+
+Custom request:
+
+```json
+{
+  "mode": "custom",
+  "prompt": "Tóm tắt các quyết định và người chịu trách nhiệm.",
+  "output_language": "vi"
+}
+```
+
+Exactly one mode-specific field is accepted. Built-in `general`, `briefing`, and
+`voting` requests retain the stable five-field schema. A custom `prompt` is
+trimmed, required and limited to 4000 characters; its result is a free-form
+`content` string containing the requested paragraphs, headings or lists.
+`output_language` must
+be `"vi"` or `"en"`. Provider adapters add system-controlled accuracy,
+language and JSON constraints around the trusted transcript.
 
 Regenerate → new summary version.
 
-`POST /meetings/{id}/summaries` returns a `202` Job. Repeating a template for
-the same transcript input appends an immutable `SummaryVersion` rather than
-overwriting it. Summary reads return the latest version and the version routes
-expose the immutable history.
+`POST /meetings/{id}/summaries` returns a `202` Job. Repeating generation for
+the same transcript input, mode/template and output language appends an
+immutable `SummaryVersion` rather than overwriting it. Every version stores the
+effective prompt. Summary reads return the latest version and the version
+routes expose the immutable history.
+
+Manual edit request:
+
+```json
+{
+  "content": {
+    "content": "Biên bản đã chỉnh sửa\n\nKết luận\nNội dung đã sửa."
+  }
+}
+```
+
+`PATCH /summaries/{id}` requires edit permission and appends a new version with
+provider `user` and model `manual-edit`; it never mutates an older version.
 
 ## 12. Export
 
@@ -312,10 +434,34 @@ Client sends raw PCM16 little-endian binary audio chunks at 16 kHz mono and
 JSON commands
 `{"type":"recording.pause"}`, `{"type":"recording.resume"}`, or
 `{"type":"recording.stop"}`. A partial is never persisted. A final is stored
-as a `SegmentVersion` in a new/current STT transcript version. Stop or client
-disconnect leaves the meeting `processing`; it does not mark a meeting or job
-`completed`. A non-retryable provider failure marks the meeting `failed`; a
-retryable error keeps the socket available for another chunk/command.
+as a `SegmentVersion` in a new/current STT transcript version. Explicit stop
+completes the meeting; disconnect preserves resumability. PCM is retained in
+private `meeting_audio_chunks` every five seconds and on pause/stop/disconnect.
+A non-retryable provider failure marks the meeting `failed`; retryable errors
+close with 1013 so the client can reconnect.
+
+The current UI asks before pause. Create-session sends
+`{"type":"recording.pause","new_section":true,"acknowledge":true}` for an
+explicit session boundary. Server closes/flushes STT, saves audio, then commits
+closed old + pending named next session and sends
+`{type:"meeting.sections",paused:true,sections:[...]}`. No new upstream is opened
+until resume; after initialization `recording.resumed` authorizes client capture
+and reports actual `speaker_identification_available` / `fallback_active` flags.
+Pause without the flag preserves the session (navigation/legacy clients).
+Only-pause sends `new_section:false,acknowledge:true`, returns `recording.paused`
+after audio/provider pause. Resume with `acknowledge:true` returns
+`recording.resumed` for either path, with boolean `new_section` based on the real
+pending session plus actual provider flags. Client capture resumes only after ACK.
+`acknowledge` is optional boolean, default false: legacy plain pause/resume does
+not gain unsolicited ACKs; existing split/reconnect resume ACKs are retained.
+Reconnect with query `start_paused=1` preserves pause; `session.ready.paused`
+signals this. Paused `speakers.refresh` may return `speakers.updated.deferred=true`,
+meaning profiles are loaded at next resume rather than an active recognition claim.
+
+`{"type":"speakers.refresh"}` flushes the old provider, opens a new upstream
+with updated known speakers and continues the timeline from the retained PCM
+clock. It preserves pause state and returns `speakers.updated` with
+`speaker_identification_available` and `fallback_active`.
 
 Realtime diarization follows `meeting.diarization_enabled` when the socket
 opens; changing it takes effect on the next connection. If enabled but the
@@ -376,6 +522,22 @@ Realtime endpoint checks configured STT capability. Nếu
 realtime.
 
 ## 14. Voice profiles
+
+Meeting-based learning adds:
+
+```text
+POST /meetings/{id}/voice-learning/preview
+POST /meetings/{id}/voice-learning
+```
+
+Preview requires read and `{segment_ids:[uuid,...]}`, returns WAV. Learning
+requires edit and `{segment_ids:[uuid,...],name:string,profile_id?:uuid|null}`,
+returns `202 JobResponse` for the durable `voice_learning` worker. Capability
+`meeting_voice_learning` indicates enrollment availability. Audio must have
+10–25 seconds of one speaker (up to 50 selected intervals concatenated); IDs,
+ACL, timing and source audio are verified by the backend, never accepted as
+client-provided audio/text. Profiles survive the source meeting and are reused
+within owner/member access scope. See [learning contract](meeting-voice-learning.md).
 
 ```text
 GET    /voice-profiles/me

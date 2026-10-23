@@ -96,7 +96,8 @@ CORS theo frontend origin khi browser dùng presigned URLs. Xem đầy đủ
 7. Xóa media vẫn giữ transcript; xóa meeting loại bỏ dữ liệu và storage objects.
 
 Public share hiện chỉ đọc metadata/transcript, không có comment/edit bằng token
-hay endpoint share summary/translation/media. Media download route hiện có lỗi
-`request` chưa khai báo trong handler; cần sửa và smoke-test trước khi coi luồng
-download media là hoạt động. Export download có handler riêng. Những kiểm tra
+hay endpoint share summary/translation/media. Media download đã sửa Request và
+stream theo phần; recording_assembly cần worker/reconciler và storage chung như
+các job hiện tại, không cần migration mới. Cần smoke-test local/S3 và browser.
+Export download có handler riêng. Những kiểm tra
 provider/browser ở trên phải chạy thật; tài liệu cập nhật không thay thế E2E.

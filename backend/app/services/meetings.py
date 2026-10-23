@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.errors import ApiError
 from app.models.enums import MeetingPermission, MeetingSourceType, MeetingStatus
 from app.models.meeting import Meeting, MeetingMember, ShareLink
+from app.models.meeting_section import MeetingSection
 from app.models.user import User
 from app.schemas.auth import UserResponse
 from app.schemas.meeting import (
@@ -21,12 +22,11 @@ from app.schemas.meeting import (
     MeetingMemberCreateRequest,
     MeetingResponse,
     MeetingUpdateRequest,
-    ShareLinkCreateRequest,
     ShareLinkCreatedResponse,
+    ShareLinkCreateRequest,
     ShareLinkResponse,
     ShareLinkUpdateRequest,
 )
-
 
 _PERMISSION_RANK = {
     MeetingPermission.READ: 1,
@@ -43,6 +43,8 @@ class MeetingService:
     async def create(self, owner: User, payload: MeetingCreateRequest) -> MeetingResponse:
         meeting = Meeting(owner_id=owner.id, **payload.model_dump())
         self._session.add(meeting)
+        await self._session.flush()
+        self._session.add(MeetingSection(meeting_id=meeting.id, sequence=1, title="Phiên 1", start_ms=0, is_started=False))
         await self._session.commit()
         await self._session.refresh(meeting)
         return self._meeting_response(meeting, "owner")

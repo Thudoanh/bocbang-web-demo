@@ -15,7 +15,7 @@ frontend bundle hay WebSocket events.
 | `STTStream` | `send_audio/pause/resume/close` trả tuple `StreamingEvent`; metadata `provider_name`, `speaker_identification_available`, `fallback_active`. |
 | `SpeakerEnrollmentProvider` | `enroll_speaker(source, language="vi")` trả `SpeakerEnrollment`. |
 | `TranslationProvider` | `capabilities()`, `translate_segments(segments, source, target)`. |
-| `LLMProvider` | `capabilities()`, `generate_summary(transcript, template, output_language)`. |
+| `LLMProvider` | `capabilities()`, `generate_summary(transcript, prompt, output_language, template)`, `polish_transcript(texts, context)`. |
 
 STT capability gồm batch, streaming, diarization, timestamps, confidence,
 supported languages và multilingual auto-detect. Translation khai báo cặp
@@ -36,7 +36,7 @@ confidence và optional speaker name/voice profile/identified flag.
 | STT fallback hoặc primary tùy chọn | AssemblyAI, `STT_FALLBACK_PROVIDER=assemblyai` hoặc `STT_PROVIDER=assemblyai`, `STT_API_KEY`. |
 | Enrollment | Speechmatics voice, được tạo khi có Speechmatics key. |
 | Translation | Gemini hoặc Groq, VI ↔ EN, segment-aligned output. |
-| Summary | Gemini hoặc Groq; `general/briefing/voting`, output VI/EN. |
+| Summary | Gemini hoặc Groq; mẫu có sẵn dùng schema 5 trường, prompt tùy chỉnh dùng một `content` string tự do; output VI/EN. |
 | Storage | Local filesystem và private S3-compatible bucket. |
 | Email | SMTP cho delivery thật; console cho dev in OTP ra stdout, không gửi mail. Chưa có email API adapter. |
 
@@ -64,7 +64,10 @@ song. Lỗi chuẩn hóa có stable code/retryable; worker lưu failed/retry sta
 FFmpeg chuẩn hóa sample thành mono PCM16 WAV/16 kHz; sample bắt buộc 10–25 giây
 và một người nói. Profile lưu tối đa ba Speechmatics identifiers, provider và
 sample count; REST schema không trả identifiers hay audio storage path.
-Audio mẫu được xử lý qua temporary files, không giữ durable sample recording.
+Audio mẫu được lưu trong private storage. Enrollment trước cuộc họp là tùy chọn;
+thư ký có thể xác nhận các đoạn phát biểu và tạo mẫu qua job `voice_learning`.
+Sau thành công, `speakers.refresh` mở upstream mới với known speakers cập nhật,
+giữ PCM timeline và trạng thái pause. Xem [học giọng từ cuộc họp](meeting-voice-learning.md).
 
 Candidates gồm guest profiles thuộc meeting và personal profiles của owner/
 members. Tối đa 50 profiles có identifiers; mỗi phiên phân bổ tối đa 50
@@ -111,6 +114,18 @@ không lưu translation tables. Saved translation/summary/export dùng worker
 và immutable transcript input.
 
 ## Thêm provider
+
+Tóm tắt từng phiên vẫn dùng `generate_summary` không đổi contract: service gọi
+riêng trên text snapshot của từng phiên, không gửi text các phiên khác, không
+gọi provider cho nhóm rỗng. Job chỉ publish sau mọi nhóm thành công; xem
+[scope và phiên có tên](meeting-sessions.md).
+
+Gemini/Groq proofreading dùng schema `{texts:string[]}`, cùng thứ tự/số đoạn,
+không ép schema summary. Dùng LLM fallback hiện có; bảo toàn metadata ở service,
+chỉ đưa text làm mịn vào proposal để người dùng duyệt. Xem
+[làm mịn transcript](transcript-polish.md). Adapter structured output tiếp tục dùng
+[Gemini GenerateContent schema](https://ai.google.dev/gemini-api/docs/generate-content/structured-output)
+và [Groq JSON schema](https://console.groq.com/docs/structured-outputs).
 
 Implement contract và capability trung thực; normalize response; đăng ký factory
 và config backend; bổ sung contract tests, integration verification khi có

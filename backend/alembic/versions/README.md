@@ -1,6 +1,6 @@
 # Migration revisions
 
-Schema đã có chuỗi migration từ `20260930_0001` đến `20261008_0012`.
+Schema đã có chuỗi migration từ `20260930_0001` đến `20261020_0017`.
 Chạy từ `backend/` với root `.env` đã cấu hình `DATABASE_URL`:
 
 ```powershell
@@ -23,8 +23,13 @@ alembic upgrade head
 | `0010` | Summary output language và uniqueness theo language. |
 | `0011` | Voice profiles và liên kết speaker (schema nhận diện cũ). |
 | `0012` | Speechmatics identifiers, provider/sample count; bỏ MFCC cũ. |
+| `0013` | Cho phép một người dùng có nhiều voice profile. |
+| `0014` | Lưu prompt do người dùng nhập trên từng summary version. |
+| `0015` | Tách summary mẫu có sẵn và prompt tùy chỉnh; uniqueness có thêm mode. |
+| `0016` | Audio chunks theo timeline cho học giọng từ cuộc họp realtime. |
+| `0017` | Phiên có tên/range trong meeting; summary scope meeting/sessions; backfill legacy một phiên. |
 
-Head hiện tại: `20261008_0012`. Migration `0012` xóa voice profile cũ để đổi
+Head hiện tại: `20261020_0017`. Migration `0012` xóa voice profile cũ để đổi
 representation; cần enrollment lại. Giữ `0011` trong lịch sử migration.
 Compose chạy `migrate` trước API/worker/reconciler; database đã có cần chạy
 `docker compose run --rm migrate` khi cập nhật schema. Dùng database test độc

@@ -231,12 +231,11 @@ class VoiceProfileService:
         return True
 
     async def list_user_profiles(self, user: User) -> list[VoiceProfile]:
-        """List all global voice profiles and user-specific profiles, purging any whose audio files are missing."""
+        """List the user's reusable profiles and guests in meetings they own."""
         stmt = (
             select(VoiceProfile)
             .where(
                 or_(
-                    VoiceProfile.meeting_id.is_(None),
                     VoiceProfile.user_id == user.id,
                     VoiceProfile.meeting_id.in_(
                         select(Meeting.id).where(Meeting.owner_id == user.id)
@@ -290,6 +289,8 @@ class VoiceProfileService:
             raise ApiError("VOICE_PROFILE_NOT_FOUND", "Không tìm thấy mẫu giọng.", 404)
         if profile.meeting_id:
             await self._meetings.require_access(profile.meeting_id, user, MeetingPermission.EDIT)
+        elif profile.user_id != user.id:
+            raise ApiError("FORBIDDEN", "Bạn không có quyền sửa hồ sơ giọng nói này.", 403)
         if profile.sample_count >= MAX_IDENTIFIERS_PER_PROFILE:
             raise _sample_limit_error()
         enrollment, wav_bytes = await self._enroll(audio_bytes, filename)
@@ -307,6 +308,8 @@ class VoiceProfileService:
             raise ApiError("VOICE_PROFILE_NOT_FOUND", "Không tìm thấy mẫu giọng.", 404)
         if profile.meeting_id:
             await self._meetings.require_access(profile.meeting_id, user, MeetingPermission.EDIT)
+        elif profile.user_id != user.id:
+            raise ApiError("FORBIDDEN", "Bạn không có quyền xóa hồ sơ giọng nói này.", 403)
         await self._delete_profile_audio(profile)
         await self._session.delete(profile)
         await self._session.commit()
@@ -319,6 +322,8 @@ class VoiceProfileService:
             raise ApiError("VOICE_PROFILE_NOT_FOUND", "Không tìm thấy mẫu giọng.", 404)
         if profile.meeting_id:
             await self._meetings.require_access(profile.meeting_id, user, MeetingPermission.EDIT)
+        elif profile.user_id != user.id:
+            raise ApiError("FORBIDDEN", "Bạn không có quyền sửa hồ sơ giọng nói này.", 403)
         if sample_index < 1 or sample_index > profile.sample_count:
             raise ApiError("SAMPLE_NOT_FOUND", "Không tìm thấy lần thu này.", 404)
 
@@ -431,11 +436,16 @@ class VoiceProfileService:
                 .order_by(VoiceProfile.created_at, VoiceProfile.id)
             )
         )
-        # Tất cả các mẫu giọng đã lưu (toàn cục - meeting_id is None) được tự động dùng chung cho mọi cuộc họp
+        # Reusable profiles belong to the owner/members of this meeting. Do not
+        # send another account's newly learned voiceprints to an unrelated call.
+        members = select(MeetingMember.user_id).where(MeetingMember.meeting_id == meeting_id)
         global_profiles = list(
             await self._session.scalars(
                 select(VoiceProfile)
-                .where(VoiceProfile.meeting_id.is_(None))
+                .where(VoiceProfile.meeting_id.is_(None), or_(
+                    VoiceProfile.user_id == meeting.owner_id,
+                    VoiceProfile.user_id.in_(members),
+                ))
                 .order_by(VoiceProfile.created_at, VoiceProfile.id)
             )
         )
@@ -582,7 +592,8 @@ def _sample_limit_error() -> ApiError:
 
 
 def _combine_wavs(wav1_bytes: bytes, wav2_bytes: bytes) -> bytes:
-    import io, wave
+    import io
+    import wave
 
     try:
         with wave.open(io.BytesIO(wav1_bytes), "rb") as w1:

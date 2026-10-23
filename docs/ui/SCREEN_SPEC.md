@@ -7,6 +7,28 @@
 
 This document maps the BA UI into implementable frontend screens. Reference images are extracted directly from the BA document.
 
+Named sessions: Phiên họp is a bottom-toolbar button opening an in-place native
+dialog with editable names/ranges/status, not a separate route or inline panel
+above the transcript. Opening/closing/renaming does not pause recording.
+Pause first asks whether to create a session. Only an explicit Create new session
+choice closes the old session and prepares a pending one, with a short hint
+to open the manager (no auto-open); resume ACK starts capture. Summary defaults
+to từng phiên, with independently rendered/editable cards and whole-meeting
+compatibility selector. See [meeting sessions](../architecture/meeting-sessions.md).
+
+The other choice only pauses within the same session; Close/Escape use this
+safe choice. The modal states capture continues until a choice, and focuses
+Only pause by default. No pause/split on modal open, no duplicate selection.
+Both pause paths and resume wait for server acknowledgement; only Resume
+restarts capture. Keep session names/boundaries unchanged on ordinary pause.
+
+Transcript post-meeting review: ending waits for final STT, then the Làm mịn
+toolbar button reports durable AI proofreading progress. Open its in-place
+dialog for original comparison, text editing,
+save draft, and explicit finalize. Current transcript does not change before
+finalization; preserve speakers/timestamps/history, show provider errors/retry
+and source/draft conflicts. See [review lifecycle](../architecture/transcript-polish.md).
+
 ## 01. Sidebar / authenticated navigation
 **Reference:** `references/01-sidebar.png`
 
@@ -15,12 +37,33 @@ This document maps the BA UI into implementable frontend screens. Reference imag
 - Primary CTA: Tạo phiên họp mới.
 - Secondary CTA: Tải lên bản ghi.
 - Search input.
-- Recent meeting list with title and duration.
-- Tool/management navigation group.
+- Meeting history grouped by update date, with search, active meeting highlight,
+  independent scrolling and load-more pagination from the authenticated API.
 - User identity block at bottom.
+- Meeting tools (Nghe lại, Bản ghi, Phiên họp, Làm mịn, Tóm tắt, Người nói, Bản dịch, Xuất) in a fixed bottom
+  toolbar inside the meeting workspace, with space reserved beneath the content.
+- Use separate circular tools with their own solid surfaces, borders and subtle
+  shadows, not a shared rounded panel/background/blur. The timer/state is a small
+  independent chip to the left. Keep gaps visually clear and click-through;
+  only actual tools/status/alert surfaces receive pointer events.
+- Mobile history opens as a left drawer; meeting tools remain at the bottom.
+- A 44px sidebar toggle stays in the workspace header, outside the sidebar,
+  with an accessible name, tooltip and accurate expanded/controls attributes.
+  Desktop hides the sidebar fully and remembers its state in browser storage;
+  content and bottom toolbar recenter using the reclaimed width. Mobile starts
+  closed regardless of the desktop preference, with backdrop/Escape dismissal,
+  focus containment/restoration and body-scroll cleanup across breakpoints.
+  Visibility changes must not unmount editors, recording or toolbar hosts.
+- Voice profiles and settings are accessed from the account menu.
 
 ### Notes
-Sidebar is the primary access point to meetings, upload, processing tools, and profile-related functions.
+Sidebar is the primary access point to meeting history and creation/upload.
+Meeting tools belong to the workspace bottom toolbar, not the history sidebar.
+Brand links always open the centered new-meeting form at `/meetings` (also `/`).
+The meeting overview is a separate management screen at `/history`, accessible
+through Xem tất cả. Do not repeat creation/upload launch buttons in the main
+home or management content. Theme switching belongs in Settings, not in a
+floating authenticated-workspace corner control.
 
 ---
 
@@ -82,16 +125,18 @@ Request recovery -> verify OTP/recovery link -> set new password -> return to lo
 
 ### Required structure
 - Authenticated AppShell.
-- Breadcrumb/back context.
-- Eyebrow: Tạo phiên họp.
-- Title: Cuộc họp mới.
-- Main form card on the left.
-- Process guidance panel on the right.
-- Form fields shown by BA: meeting name, description, recognition language, speaker mode.
-- Footer actions: cancel and primary action to continue to recording.
+- Centered, spacious title and short guidance: Tạo cuộc họp mới.
+- Wide meeting-name field (1–255 characters), with one submit arrow and Enter.
+- Description, recognition language and speaker mode under collapsed Tùy chọn cuộc họp.
+- No duplicate central history, search/filter bar or recording/upload launch buttons.
+- Sidebar upload link selects upload mode with source-specific title, guidance
+  and one submit action, leading to file selection after naming.
+- Disable duplicate submissions; show actual API errors and retain input for retry.
 
 ### Business behavior
-Successful creation creates a Meeting and leads to realtime recording.
+Successful creation creates a Meeting and opens the recording workspace (or
+upload workspace for upload mode). Do not claim microphone capture has started
+merely because the creation form was submitted.
 
 ---
 
@@ -102,10 +147,24 @@ Successful creation creates a Meeting and leads to realtime recording.
 - AppShell.
 - Meeting title and realtime context.
 - Recording/connection state indicator and timer.
-- Controls for pause/resume and end recording when supported.
+- Icon-only start/pause/resume/end controls in the bottom toolbar, not a large
+  recording panel above the transcript. End still requires confirmation.
+  Keep the timer/state and readable warnings/errors visible in the toolbar.
+  Routine messages live in the timer's hover/focus tooltip and accessible live
+  region, not a permanent second row. Show error/warning banners only when
+  needed: fatal and retryable failures, reconnects, provider fallback and
+  translation failures. Never hide retryable errors merely because capture's
+  state is still recording. Measure the resulting banner height for clearance.
+  Tool names appear on hover/keyboard focus, with accessible names, Escape
+  dismissal and at least 44px targets. Presentation portals must not remount
+  the recording controller or restart microphone/socket.
+- Place the Show/Hide translation button to the right of the Nội dung heading.
 - Realtime transcript list grouped by speaker and timestamp.
 - Current/partial segment visually distinguishable from finalized segments.
 - Optional segment actions only when supported.
+- `Gán tên / Lưu giọng` on saved segments: listen to selected intervals, enter
+  the person's name and create/add a reusable voice sample. Allow name-only
+  confirmation; sample learning requires 10 seconds and runs in the background.
 - Player/control area may appear at bottom when meaningful.
 
 ### Business behavior
@@ -142,11 +201,56 @@ Successful creation creates a Meeting and leads to realtime recording.
 ### Playback view structure
 - AppShell.
 - Meeting title/header.
+- Use a slim header beside the sidebar toggle: actual meeting title, small
+  language/source metadata and ACL-aware Rename/Share (upload link retained).
+  Remove the duplicate BẢN GHI eyebrow and large Bản ghi heading. Long names
+  truncate without horizontal overflow; mobile actions can wrap. Render only
+  header presentation into a stable shell slot, keeping workspace state intact.
+  Transcript fills available width with a small top inset; Nội dung and the
+  translation toggle follow immediately, without the old heading spacer.
 - Top-level actions such as export/share/summary when actually supported.
-- Audio visualization/player area when a real media URL is available.
-- Transcript segments stacked vertically.
+- Nghe lại opens a small nonmodal player above the toolbar icons, not a large
+  inline panel. Realtime completion prepares a persistent WAV through the worker;
+  show real preparing/ready/failure/unavailable/deleted states, with explicit retry
+  or old-meeting preparation only when edit ACL/source allow. No autoplay on open.
+  Provide play/pause/time/seek, speed and download; closing/Escape pauses and
+  restores focus. A transcript timestamp explicitly opens/seeks/plays and time
+  events highlight matching segments. Playback URL TTL refresh is bounded.
+  Do not reconstruct missing audio from text or revive deleted recordings.
+- Transcript segments stacked vertically, full-width when realtime translation
+  is hidden. When enabled, split the content into equal original-left and
+  translation-right columns, with column headings and matching speaker/timing.
+- Align each pair by logical segment ID and shared grid-row height/page scroll,
+  not two independent lists that drift when sentence lengths differ. Original
+  editing, selection, voice learning and playback anchors remain on the left.
+- Show honest placeholders for missing translations/unconfirmed live speech,
+  never translate partials speculatively or copy another row's text. Hide removes
+  the right column entirely; retained in-memory translations can be shown again
+  after end, without creating a saved translation or changing capture lifecycle.
 - Each segment shows speaker, timestamp, text, and optional play-segment action.
-- Right-side contextual panel for meeting information and quick summary/next action where supported.
+- Single full-width workspace column for transcript; recording controls and
+  mini playback live in the bottom toolbar. No reserved right-hand column.
+  The transcript itself uses the conditional 50/50 bilingual layout above.
+- Remove the Thông tin / Bình luận / Phiên bản tabs and their user-facing
+  features, without replacing them with menus or dialogs. No transcript version
+  badge. Do not fetch comments/version lists on the recording page.
+- Retain internal transcript revision/history storage and backend APIs; removal
+  is not a data purge or change to ACL, summary/export provenance or editing.
+- Phiên họp is available from the bottom toolbar on all authenticated meeting
+  tool pages. Native modal focus containment, Escape/Close, focus restoration,
+  loading/error/retry/empty states, unsaved-name warning and read/edit ACL.
+  Keep recording mounted; no route change, capture stop or socket pause on open/save/close.
+- Làm mịn opens a native dialog (portal) rather than an inline review panel.
+  Show a status marker in its icon button even when closed, with the complete
+  processing/review-needed/accepted/error/stale status in its tooltip and accessible
+  label; never auto-open/auto-accept. Disabled tools expose their reason through
+  a keyboard-focusable tooltip. Keep original comparison,
+  draft editing/save, explicit accept, read/edit ACL and source/revision guards.
+- Protect unsaved edits on refresh/error/close. Acceptance refreshes the current
+  transcript in Bản ghi. Eight meeting-tool icons share a flex-wrapping toolbar
+  with recording controls; mobile separates the recording/tool groups into rows.
+  Measure the actual toolbar height to reserve transcript clearance, including
+  long feedback messages, rather than assuming a fixed number of rows.
 
 ### Editing behavior from BA
 The BA additionally requires a transcript editing mode with:
@@ -209,14 +313,21 @@ Synchronize audio position with active transcript segment when timing/media data
 ### Required structure
 - AppShell.
 - Summary page title tied to meeting.
-- Top actions: regenerate, export, copy when supported.
+- Two creation modes: built-in template selector, or prompt textarea for a
+  user-authored structure; both include an output language selector.
+- Top actions: regenerate, copy and edit when supported.
 - Main summary content divided into numbered/labelled sections.
 - Possible sections: overall summary, key points, decisions, action items, risks/notes.
 - Right-side panel for speaker distribution and template/context information where data exists.
 
 ### Business behavior
 - Summary requires a valid transcript.
-- BA supports general, briefing, voting, or configured templates.
+- User chooses a built-in general/briefing/voting template or supplies a custom
+  prompt; the backend retains accuracy and structured-output constraints.
+- Custom output uses one free-form content field for the requested paragraphs,
+  headings or lists rather than the fixed five built-in fields. The effective
+  prompt is stored with every immutable version.
+- Manual edits append a new version; they do not mutate history.
 - Regeneration must not silently overwrite history if versioning is implemented.
 
 ---
@@ -244,6 +355,9 @@ Use actual permission model. BA describes read/comment/edit sharing levels in th
 ## 13. History / data management
 **Reference:** `references/13-history.png`
 
+This is an explicit management destination at `/history`, not the home opened
+by the brand link. Creation/upload launch actions remain in the sidebar.
+
 ### Required structure
 - AppShell.
 - Heading: Lịch sử bản ghi.
@@ -267,6 +381,8 @@ Use actual permission model. BA describes read/comment/edit sharing levels in th
 - Main profile card with avatar/initials and editable account/contact fields.
 - Secondary account-actions panel.
 - Primary update profile action.
+- Giao diện group with a labeled light/dark toggle, persisted in the current
+  browser; no floating theme control in the authenticated AppShell.
 
 ### BA capabilities
 - View account/contact information.

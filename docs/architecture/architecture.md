@@ -14,7 +14,7 @@ phát lại queued/due-retrying job sau sự cố publish/delivery.
 | Frontend | `frontend/src/`, React + TypeScript + Vite; Docker phục vụ bằng Nginx. |
 | API | `backend/app/api/v1/routes/`, auth, ACL, meeting, upload, transcript, AI request, export/share và voice profiles. |
 | Domain service | `backend/app/services/`; kiểm tra quyền và transaction. |
-| Persistence | `backend/app/models/`, async SQLAlchemy; Alembic head `20261008_0012`. |
+| Persistence | `backend/app/models/`, async SQLAlchemy; Alembic head `20261020_0017`. |
 | Worker | `app.workers.worker`, Dramatiq/Redis, media/STT, translation, summary, export. |
 | Reconciler | `app.workers.reconciler`, recovery durable job và retry schedule. |
 | Provider | `app/providers/`, contracts và adapters STT/translation/LLM/storage/email. |
@@ -35,8 +35,12 @@ sau lúc enqueue. API không xử lý các job inline.
 Realtime: browser AudioWorklet → PCM16 mono 16 kHz → authenticated WebSocket →
 STT stream. Partial chỉ truyền socket; final được lưu. Mỗi kết nối upstream
 có speaker scope riêng và final timestamp tiếp tục từ retained meeting duration.
-Stop/disconnect để meeting `processing`; không tự đánh dấu completed hay tạo
+Explicit stop flushes upstream rồi hoàn tất meeting và tạo proposal làm mịn
+qua job khi AI khả dụng; disconnect chỉ tạm dừng, không hoàn tất. Không tạo
 upload job. Dịch realtime chạy queue tạm theo connection, không lưu DB.
+Completion có raw chunks còn tạo `recording_assembly` độc lập làm mịn; worker
+ghép WAV đúng timeline vào MediaFile, phát qua ACL/Range và tải lại sau reload.
+Meeting cũ chỉ khôi phục explicit khi còn chunks. Xem [nghe lại](recording-playback.md).
 Enrollment voiceprint gọi provider trực tiếp qua API; không phải durable job.
 
 ## Provider và nhận diện người nói
@@ -47,9 +51,22 @@ stream đã mở. Speechmatics dùng known speakers từ voice profiles của ow
 members và khách thuộc meeting; người chưa nhận diện giữ nhãn `Người nói N`.
 AssemblyAI fallback không nhận diện tên từ Speechmatics identifiers.
 
-Gemini/Groq có adapter dịch VI ↔ EN và summary `general/briefing/voting`;
-summary bắt buộc output language VI/EN. Capability endpoint quyết định khả năng
+Gemini/Groq có adapter dịch VI ↔ EN và hai chế độ summary: mẫu có sẵn dùng
+schema năm trường ổn định, hoặc prompt tùy chỉnh dùng một chuỗi nội dung tự do
+để biểu diễn đoạn văn/tiêu đề/danh sách. Summary bắt buộc output language VI/EN,
+prompt được lưu theo từng version;
+chỉnh sửa thủ công cũng tạo version mới.
+Capability endpoint quyết định khả năng
 sử dụng thực tế; credentials chỉ ở backend. Xem [provider contracts](provider-architecture.md).
+
+Sau kết thúc, AI proofreading giữ snapshot gốc/đề xuất/nháp riêng trong durable
+job. Chỉ khi người dùng duyệt mới tạo transcript revision mới; optimistic source
+và draft checks ngăn ghi đè sửa đồng thời. Xem [luồng làm mịn](transcript-polish.md).
+
+Explicit pause của UI chốt một phiên và tạo phiên có tên tiếp theo đang chờ;
+navigation/disconnect không tách phiên. Tóm tắt theo phiên chụp text/tên/range
+và gọi LLM riêng cho mỗi nhóm, không trộn nội dung; whole-meeting scope vẫn
+có để đọc/generate output cũ. Xem [nhiều phiên họp](meeting-sessions.md).
 
 ## ACL, versioning và public share
 
@@ -69,7 +86,10 @@ không nằm trong lịch sử. Xem [ERD](erd.md) và [API](api-spec.md).
 Local storage dùng cho host/Compose; API/worker cần cùng thư mục hoặc volume.
 S3 adapter đã có và dùng bucket private, object keys trong DB. Playback trả
 presigned URL S3 hoặc ticket local có TTL; player phát retained uploaded media,
-seek theo segment. Realtime capture hiện không lưu audio để nghe lại.
+seek theo segment. Realtime capture lưu audio chunks theo timeline trong private
+storage, dùng cho nghe đoạn/lấy mẫu giọng. Học giọng dùng durable job và xác nhận
+của thư ký, không bắt buộc enrollment trước cuộc họp. Xem
+[thiết kế học giọng](meeting-voice-learning.md).
 
 Xóa media: owner được kiểm tra, xóa original/normalized object, soft-delete
 record và fail các job còn hoạt động gắn media; transcript được giữ.

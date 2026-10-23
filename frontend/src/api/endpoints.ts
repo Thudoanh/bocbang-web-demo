@@ -1,6 +1,10 @@
 import { config } from "../app/config";
 import { apiClient } from "./client";
-import type { AuthSession, Capabilities, Comment, CreatedShareLink, ExportArtifact, ExportFormat, Job, Meeting, MeetingStatus, MediaFile, Permission, Segment, ShareLink, Speaker, SpeakerSample, Summary, SummaryLanguage, SummaryTemplate, Transcript, Translation, User, VoiceProfile } from "../types/domain";
+import { notifyMeetingsChanged } from "./meetingEvents";
+import type { TranscriptPolish } from "../types/domain";
+import type { MeetingRecording } from "../types/domain";
+import type { MeetingSection, SummaryScope } from "../types/domain";
+import type { AuthSession, Capabilities, Comment, CreatedShareLink, ExportArtifact, ExportFormat, Job, Meeting, MeetingStatus, MediaFile, Permission, Segment, ShareLink, Speaker, SpeakerSample, Summary, SummaryLanguage, SummaryMode, SummaryTemplate, Transcript, Translation, User, VoiceProfile } from "../types/domain";
 
 type Page = { limit?: number; offset?: number; q?: string; status?: MeetingStatus; source_type?: Meeting["source_type"] };
 export type TranscriptMutation = { version_id: string; version_no: number; segment?: Segment };
@@ -13,6 +17,25 @@ const pageQuery = ({ limit, offset, q, status, source_type }: Page = {}) => {
   if (source_type) query.set("source_type", source_type);
   return query.size ? `?${query}` : "";
 };
+
+async function fullTranscript(id: string, signal?: AbortSignal, retry = true): Promise<Transcript> {
+  const base = `/meetings/${id}/transcript?limit=500`;
+  const first = await apiClient.get<Transcript>(base, { signal });
+  const segments = [...first.segments];
+  const seen = new Set<string>();
+  let cursor = first.next_cursor;
+  while (cursor && !seen.has(cursor)) {
+    seen.add(cursor);
+    const page = await apiClient.get<Transcript>(`${base}&cursor=${encodeURIComponent(cursor)}`, { signal });
+    if (page.version_id !== first.version_id) {
+      if (retry) return fullTranscript(id, signal, false);
+      throw new Error("Transcript vừa thay đổi. Vui lòng tải lại để xem các đoạn mới.");
+    }
+    segments.push(...page.segments);
+    cursor = page.next_cursor;
+  }
+  return { ...first, segments, next_cursor: undefined };
+}
 
 export const authApi = {
   login: (email: string, password: string) => apiClient.post<AuthSession>("/auth/login", { email, password }),
@@ -30,18 +53,24 @@ export const authApi = {
 };
 
 export const meetingsApi = {
+  sections: (id: string) => apiClient.get<MeetingSection[]>(`/meetings/${id}/sections`),
+  renameSection: (meetingId: string, sectionId: string, title: string) => apiClient.patch<MeetingSection>(`/meetings/${meetingId}/sections/${sectionId}`, { title }),
+  updateSection: (meetingId: string, sectionId: string, body: { title: string; start_ms: number; end_ms: number | null; expected_revision: string }) => apiClient.patch<MeetingSection>(`/meetings/${meetingId}/sections/${sectionId}`, body),
+  createSection: (meetingId: string, body: { title: string; start_ms: number; expected_revision: string }) => apiClient.post<MeetingSection[]>(`/meetings/${meetingId}/sections`, body),
+  deleteSection: (meetingId: string, sectionId: string, revision: string) => apiClient.delete<MeetingSection[]>(`/meetings/${meetingId}/sections/${sectionId}?expected_revision=${encodeURIComponent(revision)}`),
   list: (page?: Page, signal?: AbortSignal) => apiClient.get<Meeting[]>(`/meetings${pageQuery(page)}`, { signal }),
   get: (id: string) => apiClient.get<Meeting>(`/meetings/${id}`),
-  create: (body: Pick<Meeting, "title" | "description" | "source_type" | "language_mode" | "diarization_enabled">) => apiClient.post<Meeting>("/meetings", body),
-  update: (id: string, body: Partial<Pick<Meeting, "title" | "description" | "language_mode" | "diarization_enabled">>) => apiClient.patch<Meeting>(`/meetings/${id}`, body),
-  complete: (id: string) => apiClient.post<Meeting>(`/meetings/${id}/complete`),
-  remove: (id: string) => apiClient.delete<void>(`/meetings/${id}`),
+  create: (body: Pick<Meeting, "title" | "description" | "source_type" | "language_mode" | "diarization_enabled">) => apiClient.post<Meeting>("/meetings", body).then(notifyMeetingsChanged),
+  update: (id: string, body: Partial<Pick<Meeting, "title" | "description" | "language_mode" | "diarization_enabled">>) => apiClient.patch<Meeting>(`/meetings/${id}`, body).then(notifyMeetingsChanged),
+  complete: (id: string) => apiClient.post<Meeting>(`/meetings/${id}/complete`).then(notifyMeetingsChanged),
+  remove: (id: string) => apiClient.delete<void>(`/meetings/${id}`).then(notifyMeetingsChanged),
   uploadMedia: (id: string, file: File) => { const data = new FormData(); data.append("file", file); return apiClient.post<Job>(`/meetings/${id}/media`, data); },
   media: (id: string) => apiClient.get<MediaFile[]>(`/meetings/${id}/media`),
   playbackUrl: (meetingId: string, mediaId: string) => apiClient.post<{ url: string; expires_in_seconds: number }>(`/meetings/${meetingId}/media/${mediaId}/playback-url`),
   streamMedia: (meetingId: string, mediaId: string) => apiClient.getBlob(`/meetings/${meetingId}/media/${mediaId}/stream`),
   deleteMedia: (meetingId: string, mediaId: string) => apiClient.delete<void>(`/meetings/${meetingId}/media/${mediaId}`),
   transcript: (id: string, page?: Page) => apiClient.get<Transcript>(`/meetings/${id}/transcript${pageQuery(page)}`),
+  fullTranscript,
   versions: (id: string, page?: Page) => apiClient.get<Array<{ id: string; version_no: number; source: string; created_at: string }>>(`/meetings/${id}/transcript/versions${pageQuery(page)}`),
   saveSegment: (id: string, body: { text?: string; start_ms?: number; end_ms?: number }) => apiClient.patch<TranscriptMutation>(`/segments/${id}`, body),
   deleteSegment: (id: string) => apiClient.delete<TranscriptMutation>(`/segments/${id}`),
@@ -56,8 +85,9 @@ export const meetingsApi = {
   addMember: (meetingId: string, email: string, permission: Exclude<Permission, "owner">, attachments: Array<"audio" | "transcript" | "summary" | "translation"> = []) => apiClient.post<void>(`/meetings/${meetingId}/members`, { email, permission, attachments }),
   translation: (id: string, source_language: string, target_language: string) => apiClient.post<Job>(`/meetings/${id}/translations`, { source_language, target_language }),
   translations: (id: string) => apiClient.get<Translation[]>(`/meetings/${id}/translations`),
-  summary: (id: string, template: SummaryTemplate, output_language: SummaryLanguage) => apiClient.post<Job>(`/meetings/${id}/summaries`, { template, output_language }),
+  summary: (id: string, body: { scope?: SummaryScope; section_ids?: string[]; sections_revision?: string; mode: SummaryMode; template?: SummaryTemplate; prompt?: string; output_language: SummaryLanguage }) => apiClient.post<Job>(`/meetings/${id}/summaries`, body),
   summaries: (id: string) => apiClient.get<Summary[]>(`/meetings/${id}/summaries`),
+  editSummary: (id: string, content: Record<string, unknown>, expected_version_no?: number) => apiClient.patch<Summary>(`/summaries/${id}`, { content, expected_version_no }),
   comments: (id: string, page?: Page) => apiClient.get<Comment[]>(`/meetings/${id}/comments${pageQuery(page)}`),
   addComment: (id: string, body: string, segment_logical_id?: string) => apiClient.post<Comment>(`/meetings/${id}/comments`, { body, segment_logical_id }),
   updateComment: (id: string, body: string) => apiClient.patch<Comment>(`/comments/${id}`, { body }),
@@ -72,6 +102,22 @@ export const meetingsApi = {
 };
 export const capabilitiesApi = { get: () => apiClient.get<Capabilities>("/capabilities") };
 export const jobsApi = { get: (id: string) => apiClient.get<Job>(`/jobs/${id}`) };
+export const recordingApi = {
+  latest: (id: string, signal?: AbortSignal) => apiClient.get<MeetingRecording>(`/meetings/${id}/recording`, { signal }),
+  prepare: (id: string) => apiClient.post<MeetingRecording>(`/meetings/${id}/recording`),
+  download: (meetingId: string, mediaId: string) => apiClient.getBlob(`/meetings/${meetingId}/media/${mediaId}/download`),
+};
+export const transcriptPolishApi = {
+  latest: (id: string, signal?: AbortSignal) => apiClient.get<TranscriptPolish | null>(`/meetings/${id}/transcript/polish`, { signal }),
+  create: (id: string) => apiClient.post<TranscriptPolish>(`/meetings/${id}/transcript/polish`),
+  review: (id: string, jobId: string, body: { revision: number; segments: Array<{ logical_segment_id: string; text: string }> }, accept: boolean) => accept
+    ? apiClient.post<TranscriptPolish>(`/meetings/${id}/transcript/polish/${jobId}/accept`, body)
+    : apiClient.patch<TranscriptPolish>(`/meetings/${id}/transcript/polish/${jobId}`, body),
+};
+export const voiceLearningApi = {
+  preview: (meetingId: string, segment_ids: string[]) => apiClient.postBlob(`/meetings/${meetingId}/voice-learning/preview`, { segment_ids }),
+  learn: (meetingId: string, body: { segment_ids: string[]; name: string; profile_id?: string }) => apiClient.post<Job>(`/meetings/${meetingId}/voice-learning`, body),
+};
 export const sharesApi = {
   resolve: (token: string) => apiClient.get<{ meeting: Meeting; permission: Exclude<Permission, "owner"> }>(`/shares/${token}`),
   transcript: (token: string) => apiClient.get<{ meeting: Meeting; permission: Exclude<Permission, "owner">; transcript: Transcript }>(`/shares/${token}/transcript`),

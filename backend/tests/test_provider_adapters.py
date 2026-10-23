@@ -94,26 +94,88 @@ def test_gemini_translation_preserves_segment_alignment(monkeypatch) -> None:
 
 def test_gemini_summary_declares_structured_output(monkeypatch) -> None:
     provider = GeminiSummaryProvider("key", "model", "https://gemini.test/v1beta")
+    captured = {}
 
-    async def response(*_args):
-        return {"overview": "Overview", "key_points": [], "action_items": [], "decisions": [], "risks_notes": []}
+    async def response(prompt, schema):
+        captured["prompt"] = prompt
+        captured["schema"] = schema
+        return {"content": "Quyết định\nPhê duyệt phát hành."}
 
     monkeypatch.setattr(provider, "_generate", response)
-    result = asyncio.run(provider.generate_summary("Transcript", "general", "vi"))
+    result = asyncio.run(provider.generate_summary("Transcript", "Chỉ nêu các quyết định.", "vi"))
     assert provider.capabilities().structured_output
-    assert result["overview"] == "Overview"
+    assert result["content"].startswith("Quyết định")
+    assert set(captured["schema"]["properties"]) == {"content"}
+    assert "Chỉ nêu các quyết định." in captured["prompt"]
+    assert "Transcript" in captured["prompt"]
 
 
 def test_groq_summary_declares_structured_output(monkeypatch) -> None:
     provider = GroqSummaryProvider("key", "openai/gpt-oss-20b", "https://groq.test/openai/v1")
+    captured = {}
 
-    async def response(*_args):
+    async def response(prompt, schema):
+        captured["prompt"] = prompt
+        captured["schema"] = schema
         return {"overview": "Overview", "key_points": [], "action_items": [], "decisions": [], "risks_notes": []}
 
     monkeypatch.setattr(provider, "_generate", response)
-    result = asyncio.run(provider.generate_summary("Transcript", "general", "en"))
+    result = asyncio.run(provider.generate_summary("Transcript", None, "en", "briefing"))
     assert provider.capabilities().structured_output
     assert result["overview"] == "Overview"
+    assert set(captured["schema"]["properties"]) == {"overview", "key_points", "action_items", "decisions", "risks_notes"}
+    assert "briefing" in captured["prompt"]
+    assert "Transcript" in captured["prompt"]
+
+
+def test_groq_custom_summary_uses_freeform_content_schema(monkeypatch) -> None:
+    provider = GroqSummaryProvider("key", "openai/gpt-oss-20b", "https://groq.test/openai/v1")
+    captured = {}
+
+    async def response(prompt, schema):
+        captured["prompt"] = prompt
+        captured["schema"] = schema
+        return {"content": "One paragraph with the main outcomes."}
+
+    monkeypatch.setattr(provider, "_generate", response)
+    result = asyncio.run(
+        provider.generate_summary("Transcript", "Write one paragraph.", "en")
+    )
+    assert result == {"content": "One paragraph with the main outcomes."}
+    assert set(captured["schema"]["properties"]) == {"content"}
+    assert captured["schema"]["required"] == ["content"]
+    assert "entire result in the JSON content string" in captured["prompt"]
+
+
+def test_groq_json_validation_failure_is_retryable(monkeypatch) -> None:
+    provider = GroqSummaryProvider("key", "openai/gpt-oss-20b", "https://groq.test/openai/v1")
+
+    class Response:
+        is_error = True
+        status_code = 400
+
+        @staticmethod
+        def json():
+            return {"error": {"code": "json_validate_failed"}}
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            return Response()
+
+    monkeypatch.setattr(
+        "app.providers.groq.httpx.AsyncClient",
+        lambda *_args, **_kwargs: Client(),
+    )
+    with pytest.raises(LLMProviderError) as caught:
+        asyncio.run(provider.generate_summary("Transcript", "One paragraph.", "en"))
+    assert caught.value.code == "GROQ_JSON_VALIDATE_FAILED"
+    assert caught.value.retryable is True
 
 
 def test_groq_translation_preserves_segment_alignment(monkeypatch) -> None:
@@ -145,7 +207,7 @@ def test_llm_fallback_uses_secondary_after_primary_failure() -> None:
             return {"overview": "Fallback", "key_points": [], "action_items": [], "decisions": [], "risks_notes": []}
 
     provider = FallbackLLMProvider(FailingProvider(), SuccessfulProvider())
-    assert asyncio.run(provider.generate_summary("Transcript", "general", "en"))["overview"] == "Fallback"
+    assert asyncio.run(provider.generate_summary("Transcript", "Summarize decisions.", "en"))["overview"] == "Fallback"
 
 
 def test_llm_registry_builds_groq_fallback() -> None:

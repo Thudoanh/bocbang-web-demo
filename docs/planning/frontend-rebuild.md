@@ -11,8 +11,22 @@ có mock data, chỉ dùng reference. Không tiếp tục phát triển feature 
 - Auth routes riêng login/register/forgot-password, OTP/recovery/Google handoff.
 - Danh sách/tạo meeting riêng realtime/upload; History filter phía server.
 - AudioWorklet PCM16 mono 16 kHz; socket start/pause/resume/stop/reconnect.
+- Pause opens a two-choice native dialog: new pending session or same-session
+  pause; Close/Escape use same-session pause. No capture command on open. Both
+  paths flush capture and use opt-in pause/resume ACK before UI/capture restart.
+- Slim Bản ghi header uses actual meeting title/metadata/actions, no repeated
+  Bản ghi title. Sidebar toggle outside the panel on all authenticated pages;
+  desktop collapse persists locally, mobile drawer state is independent.
+  Layout-only visibility changes preserve editors/recording/portal hosts and
+  recenter the bottom toolbar without routing or capture lifecycle operations.
 - Partial/final transcript, speaker correction, optional transient VI ↔ EN.
-- Transcript edit/timing/speaker, split/merge/delete, version history/rollback.
+- Realtime translation display: hidden = original full width; enabled = original
+  left/translation right, equal tracks and paired row heights by logical ID,
+  matching metadata and honest empty/partial placeholders. Shared page scroll;
+  hide restores one column. Capture/socket translation workflow unchanged.
+- Transcript edit/timing/speaker, split/merge/delete. Trang Bản ghi một cột,
+  bỏ Thông tin/Bình luận/Phiên bản và không có nút mở thay thế. Lịch sử/revision
+  backend vẫn giữ, không xóa dữ liệu hoặc thay ACL/API.
 - Audio player cho uploaded media với signed playback URL, seek theo segment,
   highlight đoạn đang phát và playback speed.
 - Speakers, voice enrollment trước phiên, personal profiles trong Settings;
@@ -39,7 +53,9 @@ Quyền collaborator theo `read/comment/edit`; owner quản lý share/members/de
 - Public summary/translation/media và token-based comment/edit cần ACL thiết kế
   riêng; link hiện có permission metadata không tự cấp các chức năng này.
 - Settings preferences/retention/storage metadata cần API/schema trước khi thêm UI.
-- Realtime hiện không giữ audio recording; audio replay dùng retained uploads.
+- Realtime giữ audio chunks và sau explicit end worker ghép băng WAV bền vững;
+  Nghe lại trên toolbar mở mini player, hỗ trợ cả retained upload. Meeting cũ
+  chỉ khôi phục khi còn chunks; xem [playback](../architecture/recording-playback.md).
 
 Không coi build hoặc static reference review là browser acceptance. Xem
 [QA checklist](phase-4-qa.md) và

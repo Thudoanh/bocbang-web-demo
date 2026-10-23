@@ -6,7 +6,17 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -59,3 +69,18 @@ class Job(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     meeting: Mapped[Meeting] = relationship(back_populates="jobs")
+
+
+class MeetingAudioChunk(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
+    """Private PCM16 audio, aligned to the same timeline as realtime transcript rows."""
+
+    __tablename__ = "meeting_audio_chunks"
+    __table_args__ = (CheckConstraint("end_ms > start_ms", name="ck_audio_chunk_interval"),)
+
+    meeting_id: Mapped[UUID] = mapped_column(
+        ForeignKey("meetings.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    recording_id: Mapped[UUID] = mapped_column(nullable=False)
+    start_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    end_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    storage_key: Mapped[str] = mapped_column(String(512), nullable=False, unique=True)

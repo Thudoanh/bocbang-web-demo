@@ -12,6 +12,357 @@ Mục mới nhất được thêm ở đầu file. Dùng format ngắn dưới �
 - Follow-up / blocker: ...
 ```
 
+## 2026-10-22 — Chọn phiên tóm tắt và chỉnh phân chia phiên
+
+- Status: done (browser/microphone/provider acceptance pending)
+- Scope: Chọn một/nhiều phiên bằng checkbox/all/none cho tóm tắt; thêm phiên
+  tại mốc, sửa tên/range và xóa có xác nhận. Chỉ đổi grouping, không sửa/xóa
+  transcript, audio, speaker hay summary/history cũ.
+- Changed: backend meeting_section schemas/service/routes và summary request/
+  snapshot filtering; frontend MeetingSections dialog, SummaryPage, endpoints,
+  types/CSS. Meeting lock + computed layout revision chống stale; two-phase
+  sequence renumber; validate mốc đầu/cuối/interior/neighbor, minimum one.
+  Group bằng tất cả boundary trước khi lọc IDs, snapshot riêng phiên chọn;
+  các lần tạo khác selection lưu SummaryVersion mới theo identity hiện tại.
+  Không migration, không đổi provider/credentials hoặc lifecycle bộ ghi.
+- Verified: npm build, 85 frontend tests; 54 backend session-management/
+  sessions/AI/realtime tests pass (20 ca management mới). SQLite/PCM/mock LLM,
+  gồm so sánh mọi bảng ngoài meeting_sections, preserved snapshots/versions,
+  invalid/stale/ACL, live pending delete/resume và legacy init. Ruff + diff check
+  pass; Windows pytest ngoài sandbox, temp path ngắn, không gọi API thật.
+- Follow-up / blocker: Người dùng rebuild Docker rồi test chọn phiên 2, CRUD
+  mốc và live pause/resume trong browser. Chưa acceptance PostgreSQL/AI/micro
+  thật; không tự rebuild/restart stack hay chỉnh dữ liệu production.
+
+## 2026-10-22 — Chọn tạo phiên mới hay chỉ tạm dừng
+
+- Status: done (browser/microphone acceptance pending)
+- Scope: Nút pause mở dialog hai lựa chọn, chỉ split khi đồng ý. Nhánh thường
+  giữ phiên/ID/tên/boundary; cả hai chỉ thu lại sau Tiếp tục và server ACK.
+- Changed: PauseRecordingDialog native focus trap/return/scroll, safe default/
+  Close/Escape thường, one-shot; RecordingPanel guard/state/error/ACK, tooltip;
+  optional acknowledge boolean trên socket/server, recording.paused và resumed
+  new_section thực tế, default legacy giữ response cũ. Không migration/provider/
+  credentials/DB data changes; cập nhật docs và 4 frontend/4 backend tests mới.
+- Verified: Build + 82 frontend tests pass, backend session/realtime regression,
+  scoped Ruff/diff checks. Backend dùng SQLite/provider giả ngoài Windows sandbox;
+  frontend SSR/source/FakeWebSocket không thay browser/microphone acceptance.
+- Follow-up: Người dùng rebuild API/frontend rồi thử hai lựa chọn, Escape/Close,
+  resume/reconnect, số phiên, timer/transcript/audio; không tự rebuild Docker.
+
+## 2026-10-21 — Bỏ viền focus lồng nhau trong tìm kiếm sidebar
+
+- Status: done
+- Scope: Chỉ khung search ngoài đổi viền khi focus, input không ring riêng.
+- Changed: Scoped CSS input focus/focus-visible border/outline/shadow reset;
+  giữ wrapper focus-within, accessible label và global form styles; 1 test mới.
+- Verified: TypeScript/Vite build + 78 frontend tests pass, diff check.
+- Follow-up: Người dùng rebuild/Ctrl+F5 kiểm tra click/Tab ô search; không đổi
+  API/backend, debounce/query hay dữ liệu, không tự rebuild Docker.
+
+## 2026-10-21 — Lưu băng realtime và nghe lại qua mini player
+
+- Status: done (browser/microphone/S3 acceptance pending)
+- Scope: End tạo băng WAV bền vững từ chunks, thêm Nghe lại mở mini player
+  phía trên toolbar, play/pause/tua/tốc độ/tải xuống, timestamp seek/highlight.
+- Changed: RecordingService/Worker + RecordingResponse/GET/POST status/prepare;
+  completion enqueue độc lập AI, worker early dispatch, private MediaFile,
+  bounded WAV assembly/source validation/retry/gap warning; delete recording
+  purges chunks/tombstone, sửa Request trong download và bounded ticket/local
+  download stream. MeetingPlaybackTool/recording API/types/events/utils/CSS,
+  bỏ inline MediaPlayer; kiến trúc/API/ERD/UI/deployment/context docs.
+- Compatibility: Không đổi STT/capture/session boundaries/summary/polish,
+  credentials/provider config hoặc schema (head 0017, không migration mới).
+  GET chỉ đọc; restore meeting cũ/retry qua explicit POST edit. Không có audio
+  không fake từ text; deleted không phục hồi. No autoplay, URL TTL refresh giới
+  hạn, giữ host/clearance/sidebar layout, readonly nghe được nhưng không tạo job.
+- Verified: TypeScript/Vite build + 77 frontend tests, 50 backend regression
+  tests pass với PCM tổng hợp/SQLite/provider giả; Ruff và diff check pass.
+  Recheck cuối 21 recording/media/voice-learning tests pass sau bounded streaming,
+  có download >1MiB, ticket Range và worker dispatch không phụ thuộc AI/STT.
+  Sandbox asyncio bị treo nên tests backend chạy ngoài sandbox, thư mục tạm ngắn
+  tránh giới hạn path Windows. Chưa browser/microphone/S3/PostgreSQL thực.
+- Follow-up: Người dùng rebuild API/worker/frontend, thử end/pending/ready/reload,
+  microphone nhiều phiên, seek/speed/download/close/Escape/mobile, retry/source
+  errors/ACL/deleted và S3/ticket expiry. Không tự rebuild/restart stack.
+
+## 2026-10-21 — Các nút toolbar độc lập, không khung bao chung
+
+- Status: done (browser/microphone acceptance pending)
+- Scope: Bỏ panel lớn; từng icon nút tròn có nền/viền/bóng nhẹ riêng, timer chip
+  nhỏ bên trái. Routine info không còn hàng cố định, lỗi/cảnh báo vẫn dễ thấy.
+- Changed: CSS transparent dock/click-through gaps/individual surfaces, tooltip
+  timer hover/focus/Escape, RecordingTools conditional alerts + info live region,
+  RecordingPanel UI-only severity cho retryable error/reconnect và reset info;
+  6 SSR/source/CSS tests mới, frontend/UI/decision/context docs.
+- Safety: Không thay capture/socket commands/pause/resume/session/confirmation,
+  backend/API/DB/provider/env/credentials; giữ portal host và đo chiều cao thật
+  để chừa khoảng khi alerts/mobile wrap. Không tự rebuild/restart Docker.
+- Verified: TypeScript/Vite build + 73 tests pass, diff check. SSR/source tests
+  không chứng minh browser pointer/focus/layout hoặc microphone/provider E2E.
+- Follow-up: Người dùng rebuild, thử visual sáng/tối/mobile, tooltip/keyboard,
+  click giữa nút, normal/end không thừa hàng, cảnh báo/error/fallback/dịch vẫn
+  hiện, recording controls/modal/confirmation và khoảng chừa transcript.
+
+## 2026-10-21 — Header gọn và toggle sidebar để mở rộng transcript
+
+- Status: done (browser/microphone acceptance pending)
+- Scope: Bỏ BẢN GHI/tiêu đề Bản ghi lớn, tên meeting/metadata/actions vào thanh
+  đầu mỏng cạnh toggle sidebar. Nội dung/transcript lên cao và dùng full width.
+- Changed: AppShell workspace header/stable slot, WorkspaceHeaderContext portal
+  presentation, MeetingPage compact header, sidebarPreference utility, CSS grid/
+  width/clearance/mobile wrapping; 7 SSR/preference/source tests và UI/context docs.
+- Behavior: Desktop sidebar hidden, lưu preference localStorage có fallback;
+  mobile drawer độc lập, backdrop/Escape/focus trap/return/scroll cleanup/resize.
+  Toggle không điều hướng/unmount children, không thay capture/socket/session,
+  không mất editor state; toolbar dùng sidebar width=0 để tự căn lại.
+- Verified: TypeScript/Vite build, 67 tests pass và diff check. Không có backend/
+  API/schema/provider/env/credential changes, không tự rebuild/restart Docker.
+- Follow-up: Người dùng rebuild, kiểm tra visual desktop/mobile, tên dài/actions
+  ACL, reload/preference/blocked storage, keyboard focus/resize và microphone/
+  editor nháp thật khi toggle. SSR/source checks không thay browser acceptance.
+
+## 2026-10-21 — Toolbar icon-only, chuyển điều khiển ghi âm và nút dịch
+
+- Status: done (browser/microphone acceptance pending)
+- Scope: Bỏ khung Ghi âm, đưa start/pause/resume/end xuống toolbar; giữ đồng
+  hồ/trạng thái/lỗi, xác nhận end. Nút Hiển thị/Ẩn bản dịch bên phải Nội dung.
+  Bảy công cụ icon-only, tên hiện hover/focus, icon Bản ghi đổi thành transcript.
+- Changed: RecordingTools presentation, MeetingToolbarContext host ổn định,
+  ToolbarTooltip accessible/Escape/disabled focus, AppShell portal slot/đo chiều
+  cao, MeetingPage presentation portals, polish status dot/spinner, SVG/CSS,
+  9 SSR/source tests mới và UI/frontend/architecture/context docs.
+- Compatibility: Không chuyển controller ghi âm khỏi trang hoặc đổi lifecycle,
+  socket/capture/STT/pause/resume/session, AI/backend/API/DB/env/credentials.
+  Không tự build/restart Docker. Nội dung chừa theo chiều cao thật của toolbar.
+- Verified: TypeScript/Vite build + 60 tests pass; diff check. Tests fixture/
+  SSR/source/CSS không thay thế browser focus/layout/microphone acceptance.
+- Follow-up: Người dùng rebuild rồi thử desktop/mobile, hover/Tab/Escape,
+  start/pause/resume/end/cancel/confirm, đồng hồ/lỗi dài, dịch show/hide và các
+  hộp Phiên họp/Làm mịn không làm microphone/socket khởi tạo lại.
+
+## 2026-10-21 — Transcript gốc/dịch hai cột có điều kiện
+
+- Status: done (browser/microphone acceptance pending)
+- Scope: Chưa bật dịch thì gốc full width; bật thì gốc trái/dịch phải bằng nhau,
+  không chèn dịch dưới từng đoạn. Hide khôi phục một cột, giữ cache đang có.
+- Changed: TranscriptPair/TranscriptColumnsHeader, MeetingPage paired live and
+  persisted rows theo logical ID, column headers, honest empty/partial states,
+  cache toggle sau end. CSS equal grid/shared row heights, compact wrapping;
+  giữ original editor/actions/playback anchors, cập nhật tests/UI/context docs.
+- Compatibility: Không đổi capture/STT/socket/translation commands/API/provider,
+  saved translation flow, dữ liệu hay migration. Cache realtime không persist
+  qua reload như trước. Không tự rebuild/restart stack hoặc đổi credentials.
+- Verified: TypeScript/Vite build + 51 tests pass (45 cũ + 6 SSR/source/CSS mới),
+  diff check pass. Cases hidden/on, mapping/metadata, missing/partial không fake,
+  actual VI/EN target, editor/anchor và không có recording pause/stop trong toggle.
+- Follow-up: Người dùng rebuild và thử visual desktop/mobile, microphone/dịch
+  thật, text dài, partial/final, hide/show/pause/resume/end, edit/merge/voice/player.
+  Không coi static render/build là browser/provider acceptance.
+
+## 2026-10-21 — Làm mịn trong toolbar và hộp duyệt, không chiếm trang Bản ghi
+
+- Status: done (browser/provider acceptance pending)
+- Scope: Bỏ khung làm mịn inline; nút Làm mịn trên toolbar mở hộp so gốc/sửa/
+  lưu nháp/chốt. Giữ auto AI sau end và chỉ accept mới thay current transcript.
+- Changed: TranscriptPolishTool/Dialog, controlled TranscriptPolishReview,
+  useTranscriptPolish controller + pure state utility, scoped transcript events,
+  MeetingPage accept refresh, AppShell bảy mục và responsive CSS hai hàng,
+  10 utility tests + 4 SSR/source tests mới, cập nhật docs/context.
+- Safety: Khóa trước completed/trống với lý do; không nuốt network error thành
+  transcript thiếu, ACL read/edit, job states theo backend, no auto accept/open,
+  giữ expected draft revision và nháp qua query errors/focus, chống gửi lặp,
+  đóng/Escape cảnh báo bỏ nháp. Không sửa backend/API/schema/prompt/providers/
+  env hoặc xóa dữ liệu, không migration/rebuild/restart runtime.
+- Verified: TypeScript/Vite build + 45 tests pass (14 reducer, 5 route,
+  4 landing/theme, 12 workspace/modal/source/CSS, 10 polish state), diff pass.
+  Tests fixture/static; chưa chạy hook timing, native focus/dialog/browser,
+  mobile visual hoặc Gemini/Groq/microphone acceptance thật.
+- Follow-up: Người dùng tự rebuild như thường, kiểm tra pending → review →
+  accept và current transcript refresh, empty/incomplete/error/ACL, nháp/source
+  conflicts và bố cục toolbar bảy mục trên điện thoại.
+
+## 2026-10-21 — Quản lý phiên qua nút toolbar, không gián đoạn ghi âm
+
+- Status: done (browser/microphone acceptance pending)
+- Scope: Bỏ khung phiên phía trên transcript; thêm nút Phiên họp vào toolbar
+  sáu mục, mở hộp ngay tại chỗ trên mọi trang công cụ meeting, không điều hướng.
+- Changed: AppShell giữ modal sibling, MeetingSectionsDialog dùng native dialog,
+  focus/Escape/close/nháp/lỗi/ACL/rename; meetingEvents thêm scoped sections
+  notification; MeetingPage bỏ inline manager/query, đổi nhắc sau pause và
+  phát sự kiện refresh. Responsive toolbar/dialog CSS, SSR/source tests/docs.
+- Compatibility: Không unmount RecordingPanel khi mở/đóng, không có thao tác
+  microphone/socket/navigation trong modal. Giữ API/backend/ACL/pause boundary/
+  summary snapshots và migration; không xóa dữ liệu, đổi env hay restart stack.
+- Verified: TypeScript/Vite production build và 31 tests pass (14 reducer,
+  5 route, 4 landing/theme, 8 workspace/modal/toolbar/CSS/source), diff check pass.
+  Fixture SSR không gọi API/provider/microphone thật; static architecture checks
+  không thay thế acceptance mở/đổi tên trong khi audio đang chạy trên browser.
+- Follow-up: Người dùng tự rebuild, thử recording → mở/rename/close → transcript
+  tiếp tục, pause/hint/resume, nháp/lỗi/read-only, meeting cũ/upload và mobile.
+
+## 2026-10-21 — Bỏ Thông tin/Bình luận/Phiên bản khỏi Bản ghi
+
+- Status: done (browser acceptance pending)
+- Scope: Xóa cả khung và chức năng giao diện ba tab, không thêm nút/hộp thoại
+  thay thế. Một cột rộng cho ghi âm/các phiên/làm mịn/player/transcript.
+- Changed: MeetingPage bỏ components/state/fetch/reload của comments và version
+  list, badge version; styles bỏ cột phải và CSS chết. Thêm workspace SSR/CSS
+  tests; Vite render tests tắt ws server, cập nhật frontend/UI/context docs.
+- Compatibility: Giữ backend/API/ACL, lịch sử/revision, dữ liệu cũ và các reload
+  phục vụ transcript/speaker/session/edit. Không thay provider/env, không có
+  migration, không xóa dữ liệu hoặc rebuild/restart stack.
+- Verified: Frontend TypeScript/Vite production build + 27 tests pass (14
+  reducer, 5 route, 4 landing/theme, 4 workspace render/CSS), diff check pass.
+  Workspace fixtures chặn comments/version API, giữ recording/edit/share,
+  upload/player, completed polishing/read-only và một grid track. Không gọi
+  API/provider thật; static render không thay thế browser acceptance.
+- Follow-up: Người dùng rebuild Docker như thường và thử desktop/mobile,
+  recording lifecycle, sửa transcript, phiên đặt tên, làm mịn, học giọng/player.
+
+## 2026-10-20 — Home tối giản và theme trong Cài đặt
+
+- Status: done (browser acceptance pending)
+- Scope: Bấm Bóc Băng luôn mở form tên ở giữa; bỏ danh sách/filters và các
+  nút ghi âm/tải file lặp ở home, giữ sidebar. Theme chuyển vào Cài đặt.
+- Changed: App/route, MeetingsPage, AppShell, MeetingHistory, ThemeToggle,
+  SettingsPage, styles.css, route/static-render tests và frontend/UI/context docs.
+- Compatibility: `/history` qua Xem tất cả giữ lọc/mở/xóa meeting/media theo
+  quyền; upload mode và deep links công cụ không đổi. Form Enter/arrow chống
+  gửi lặp, giữ lỗi/input, advanced options thu gọn. Không tự thu ở home,
+  không sửa backend/AI, dữ liệu, credentials hoặc thêm migration.
+- Verified: TypeScript/Vite production build và 23 tests pass (14 reducer,
+  5 route, 4 static render). Vite SSR không gọi API; diff check pass.
+- Follow-up: Người dùng tự rebuild frontend rồi thử desktop/mobile, Enter/
+  arrow, API errors, upload flow, lịch sử/sidebar và theme sau reload.
+  Chưa chạy browser acceptance hoặc rebuild/restart Docker.
+
+## 2026-10-20 — Phiên có tên và tóm tắt riêng từng phiên
+
+- Status: done (real provider/browser/PostgreSQL acceptance pending)
+- Scope: Trong một meeting, explicit Tạm dừng chốt phiên/tạo pending session,
+  đặt tên, resume rồi tóm tắt từng phiên theo mẫu hoặc prompt, sửa version riêng.
+- Changed: MeetingSection model/schema/service/API, migration 0017/backfill,
+  audio-clock/upstream pause/resume ACK/reconnect handling, upload/completion
+  metadata, summary scope/immutable input snapshots/progress/manual-edit conflict
+  checks, frontend name manager/scope/cards/editor và tests/docs/context.
+- Compatibility: Navigation/legacy pause không split; meeting cũ một Phiên 1,
+  API summary default meeting và UI default sessions; output/version cũ giữ
+  nguyên. Generic speaker scope có thể đổi khi upstream mới; known voices tải lại.
+- Verified: Final combined regression 80 backend tests pass, gồm 11 session
+  cases và AI/realtime/speakers/migration/model/polish/transcript/meeting/media/
+  worker lifecycle. Frontend build + 14 reducer tests, new-file Ruff/scoped F/I,
+  compile/diff pass. Sau bổ sung ACK provider flags, 36 session/realtime/speakers
+  tests recheck pass. Provider mô phỏng.
+- Follow-up: Người dùng tự rebuild, migration 0017, thử microphone/Gemini/Groq/
+  PostgreSQL thật. Không tự rebuild/restart runtime hoặc đổi .env. Downgrade
+  có scope trùng unique cũ yêu cầu xử lý rõ ràng, không tự xóa summary.
+
+## 2026-10-20 — Làm mịn transcript sau kết thúc, sửa nháp và chốt
+
+- Status: done (real provider/browser acceptance pending)
+- Scope: Kết thúc flush hết final STT, chụp transcript đầy đủ vào durable job,
+  Gemini/Groq làm mịn theo ngữ cảnh rồi người dùng xem gốc/sửa/lưu nháp/chốt.
+- Changed: New proofreading provider mixin/schema/service, LLM/fallback contract,
+  AI job dispatch/claim, completion routes, transcript atomic acceptance/checkpoint,
+  capability, frontend review/polling/stop acknowledgment và tests/docs/context.
+- Data: Source/generated/draft riêng trong job payload, expected revision/source
+  chống ghi đè, ACL recheck, người nói/timing/logical IDs/STT gốc giữ nguyên.
+  Không cần migration mới (head vẫn 0016); không sửa key hay provider config.
+- Verified: Final combined regression 80 backend tests pass (12 proofreading
+  cases + AI/transcript/provider/realtime/speakers/meeting/voice learning).
+  Frontend build + 14 reducer tests pass; new-file full Ruff, existing-file F/I,
+  compile và diff check pass. Provider mô phỏng, không gọi dịch vụ thật.
+- Follow-up: Người dùng rebuild Docker rồi test microphone/provider/UX/long
+  meeting; không rebuild/restart runtime trong lượt này. Worker bị kill khi
+  processing vẫn phụ thuộc recovery hiện tại, chưa thêm execution lease.
+
+## 2026-10-20 — Học giọng từ đoạn phát biểu trong cuộc họp
+
+- Status: done (real microphone/provider/browser acceptance pending)
+- Scope: Thu trực tiếp hoặc dùng audio/transcript đã lưu, thư ký xác nhận tên,
+  chọn các đoạn cùng người và tạo/bổ sung reusable voice profile qua durable job;
+  refresh known speakers trong phiên hiện tại và dùng lại cho cuộc họp sau.
+- Changed: Audio chunk model/migration `0016`, audio reader/writer, voice-learning
+  service/routes/worker, transcript manual confirmation, scoped profile ACL,
+  live refresh protocol, frontend dialog/job tracking/full-transcript pagination,
+  tests/FFmpeg check script, API/ERD/provider/UI/README và project context.
+- Verified: 39 focused backend tests pass (provider mô phỏng), frontend production
+  build và 14 reducer tests pass. FFmpeg thật trong container network-none với
+  source read-only trích và ghép chính xác hai đoạn audio tổng hợp. Migration
+  upgrade/downgrade SQLite pass; scoped Ruff, syntax và diff kiểm tra riêng.
+- Follow-up / blocker: Người dùng tự rebuild cả API/worker/frontend để áp dụng
+  migration; cần thử giọng thật/lẫn giọng, ongoing refresh, upload cũ và reuse
+  trong cuộc họp sau. Audio realtime cũ không có dữ liệu không thể phục dựng từ
+  transcript. Không sửa credentials hoặc restart/rebuild stack đang chạy.
+
+## 2026-10-20 — Lịch sử sidebar và thanh công cụ cuộc họp ở dưới
+
+- Status: done (user browser acceptance pending)
+- Scope: Đưa lịch sử meeting thật vào sidebar trái với search/nhóm ngày/tải thêm;
+  đưa công cụ theo meeting xuống thanh dưới vùng làm việc và hỗ trợ drawer mobile.
+- Changed: `AppShell.tsx`, `MeetingHistory.tsx`, meeting API change events,
+  stylesheet, frontend README, screen spec và project context/decisions.
+- Verified: TypeScript/Vite production build và `git diff --check` pass. Vite
+  local đã mở được trang đăng nhập; chưa kiểm thử giao diện có đăng nhập hoặc
+  microphone. Người dùng sẽ tự rebuild Docker và kiểm thử trên browser.
+- Follow-up / blocker: Kiểm tra history/search/load-more/active meeting, cập nhật
+  sau rename/delete, toolbar theo route và drawer trên màn hình nhỏ.
+
+## 2026-10-20 — Xác nhận trước khi kết thúc cuộc họp
+
+- Status: done (browser acceptance pending)
+- Scope: Chặn thao tác kết thúc tức thời; hiển thị cảnh báo và chỉ stop/complete
+  sau khi người dùng xác nhận, áp dụng cho idle/dang dở, recording và paused.
+- Changed: `frontend/src/pages/MeetingPage.tsx` và project context.
+- Verified: Frontend TypeScript/Vite production build, 14 reducer tests và
+  `git diff --check` pass.
+- Follow-up / blocker: Rebuild frontend và thử Hủy/Xác nhận trên browser thật;
+  Hủy khi đang recording phải tiếp tục thu bình thường.
+
+## 2026-10-20 — Tạm dừng khi rời tính năng và ghi âm nền khi đổi tab
+
+- Status: done (browser/WebSocket runtime acceptance pending)
+- Scope: Không tự hoàn tất meeting khi route/WebSocket bị đóng; cho phép quay
+  lại tiếp tục ghi âm, giữ explicit stop là thao tác kết thúc duy nhất và giữ
+  AudioWorklet hoạt động khi tab trình duyệt chạy nền.
+- Changed: `backend/app/api/v1/routes/realtime.py`,
+  `frontend/src/pages/MeetingPage.tsx`, `frontend/src/realtime/microphonePcm.ts`,
+  realtime regression tests và project context.
+- Verified: Frontend TypeScript/Vite production build và 14 reducer tests pass;
+  scoped Ruff và `py_compile` backend pass; `git diff --check` pass. Runtime WebSocket tests bị
+  Windows sandbox chặn asyncio socket; yêu cầu chạy ngoài sandbox không thực thi
+  được do giới hạn usage của hệ thống.
+- Follow-up / blocker: Rebuild Docker rồi thử microphone thật cho đổi tab,
+  Bản ghi → Tóm tắt/Bản dịch → quay lại tiếp tục và explicit Kết thúc.
+
+## 2026-10-20 — Hai chế độ tóm tắt và sửa kết quả
+
+- Status: done (provider/browser acceptance pending)
+- Scope: Giữ ba mẫu có sẵn, thêm prompt tùy chỉnh không bị ép năm mục và cho
+  phép người có quyền edit sửa nội dung thành một version mới.
+- Changed: Summary frontend/API/schema/service/provider contracts và adapters,
+  migrations `20261020_0014`/`0015`, tests, kiến trúc/API/ERD/README và context.
+- Verified: 33 focused backend tests pass ngoài Windows sandbox; frontend
+  TypeScript/Vite production build và 14 reducer tests pass; migration
+  upgrade/downgrade SQLite, backfill prompt, phân loại mode, ACL edit và provider
+  schema có regression coverage; scoped Ruff F/I và diff check pass. Full suite
+  104 pass/16 fail ở export queue/file Windows (7), realtime status cũ (3) và
+  voice-profile thiếu FFmpeg (6), ngoài 33 test mục tiêu đều pass.
+- Follow-up / blocker: Chưa rebuild Docker với schema mới hoặc chạy
+  browser E2E. Cần thử cả hai mode VI/EN, sửa, tạo lại và export summary.
+
+### Groq structured-output follow-up
+
+- Chẩn đoán live xác nhận Gemini primary trả 429; Groq fallback trả xen kẽ 400
+  `json_validate_failed`, 429 và 200. Cùng request dữ liệu giả từng trả 400 rồi
+  200, nên lỗi validation có tính không ổn định và bị tăng bởi xung đột giữa
+  prompt “một đoạn văn” với schema `title + sections`.
+- Custom schema đổi thành một `content` string tự do; Groq phân loại riêng lỗi
+  validation/rate-limit để retry và hiển thị thông báo đúng hơn. 33 backend
+  tests mục tiêu, frontend build, 14 frontend tests, Ruff F/I và diff check
+  pass. Cần rebuild và kiểm thử live sau thay đổi này.
+
 ## 2026-10-12 — Sửa ô transcript bị kẹt ở trạng thái nhận diện
 
 - Status: done (new Docker rebuild/microphone verification pending)

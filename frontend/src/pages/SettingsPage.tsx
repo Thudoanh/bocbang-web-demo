@@ -4,6 +4,7 @@ import { voiceProfilesApi } from "../api/endpoints";
 import { useAsync } from "../hooks/useAsync";
 import { PasswordModal } from "../components/PasswordModal";
 import { VoiceEnrollmentModal } from "../components/VoiceEnrollmentModal";
+import { ThemeToggle } from "../components/ThemeToggle";
 import { Button, Icon, PageHeading } from "../components/ui";
 
 export function SettingsPage() {
@@ -57,11 +58,23 @@ export function SettingsPage() {
     <PageHeading 
       eyebrow="TÀI KHOẢN" 
       title="Cài đặt" 
-      description="Quản lý thông tin cá nhân, mẫu giọng nói nhận diện và bảo mật tài khoản." 
+      description="Quản lý giao diện, thông tin cá nhân, mẫu giọng nói và bảo mật tài khoản."
     />
     
     <div className="settings-container">
       {message && <div className={message.includes("thành công") ? "notice" : "form-error"}>{message}</div>}
+
+      <h3 className="settings-group-title">Giao diện</h3>
+      <div className="setting-card">
+        <div className="setting-row">
+          <div className="setting-icon"><Icon name="sun" /></div>
+          <div className="setting-content">
+            <strong>Chế độ sáng / tối</strong>
+            <small>Lựa chọn được lưu trên trình duyệt này và áp dụng cho toàn bộ giao diện.</small>
+          </div>
+          <div className="setting-action"><ThemeToggle showLabel /></div>
+        </div>
+      </div>
 
       <h3 className="settings-group-title">Thông tin cá nhân</h3>
       <div className="setting-card">

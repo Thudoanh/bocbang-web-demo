@@ -11,6 +11,7 @@ export class MicrophonePcmCapture {
     private readonly context: AudioContext,
     private readonly source: MediaStreamAudioSourceNode,
     private readonly processor: AudioWorkletNode,
+    private readonly silentOutput: GainNode,
     private readonly onChunk: PcmChunkHandler,
   ) {
     processor.port.onmessage = ({ data }: MessageEvent<ArrayBuffer | { type?: string }>) => {
@@ -43,13 +44,27 @@ export class MicrophonePcmCapture {
       const source = context.createMediaStreamSource(stream);
       const processor = new AudioWorkletNode(context, "pcm16-capture", {
         numberOfInputs: 1,
-        numberOfOutputs: 0,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
         channelCount: 1,
         channelCountMode: "explicit",
       });
+      // Keep the Web Audio graph attached to an output while emitting silence.
+      // Chromium may throttle output-less graphs after the tab is backgrounded.
+      const silentOutput = context.createGain();
+      silentOutput.gain.value = 0;
       source.connect(processor);
+      processor.connect(silentOutput);
+      silentOutput.connect(context.destination);
       await context.suspend();
-      return new MicrophonePcmCapture(stream, context, source, processor, onChunk);
+      return new MicrophonePcmCapture(
+        stream,
+        context,
+        source,
+        processor,
+        silentOutput,
+        onChunk,
+      );
     } catch (error) {
       stream.getTracks().forEach((track) => track.stop());
       if (context) await context.close();
@@ -74,6 +89,7 @@ export class MicrophonePcmCapture {
     this.flushResolver = undefined;
     this.source.disconnect();
     this.processor.disconnect();
+    this.silentOutput.disconnect();
     this.stream.getTracks().forEach((track) => track.stop());
     await this.context.close();
   }

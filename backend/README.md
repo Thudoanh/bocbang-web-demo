@@ -6,6 +6,20 @@ ownership/ACL, media/STT, realtime, transcript editing/versioning, translation,
 summary, exports, public transcript sharing and voice profiles are implemented.
 Providers require backend configuration; see [environment settings](../docs/deployment/environment.md).
 
+Named sessions and per-session summaries require migration `20261020_0017`.
+Explicit UI pause saves a boundary; navigation/disconnect does not. See
+[session API, timeline and compatibility](../docs/architecture/meeting-sessions.md).
+
+Meeting completion queues transcript proofreading through the configured LLM
+after final STT flush. Original/generated/draft text stays separate until a human
+accepts a new transcript revision. See [proofreading design](../docs/architecture/transcript-polish.md).
+
+Realtime completion also queues independent `recording_assembly` from retained
+PCM chunks, without AI/STT. Worker publishes a persistent WAV MediaFile for
+playback/download; old completed meetings can explicitly prepare from existing
+chunks. Read-status/prepare APIs, ACL, gaps/errors/deletion and bounded streaming:
+[recording playback](../docs/architecture/recording-playback.md). No new migration.
+
 ## Local development
 
 Create the root `.env` from `.env.example`; set a reachable PostgreSQL/Redis URL,
@@ -35,8 +49,9 @@ deployment and for Alembic migrations. PostgreSQL URLs are normalized to the
 alembic upgrade head
 ```
 
-The migration chain currently ends at `20261008_0012`; it includes transcript
-projection/edit events, job retries/reconciliation, summary output language and
+The migration chain currently ends at `20261020_0017`; it includes transcript
+projection/edit events, job retries/reconciliation, summary output language,
+separate built-in/custom summary modes, manual summary revisions and
 Speechmatics voiceprints. See [migration history](alembic/versions/README.md). `TEST_DATABASE_URL`, when configured
 by a future PostgreSQL integration environment, must point to an isolated test
 database; it is never read by the application itself.
@@ -56,6 +71,13 @@ then return a durable `202` Job. A separate Dramatiq worker claims the job,
 persists only normalized successful output, and records a stable failed state
 with retryability otherwise. Translation output is segment-aligned and stored
 separately; summary regeneration appends an immutable `SummaryVersion`.
+Summary requests choose exactly one mode: a built-in `general`, `briefing`, or
+`voting` template; or a user-authored prompt (1–4000 characters). Both require
+`output_language` (`vi` or `en`). Custom prompts produce one free-form content
+string that can contain the requested paragraphs, headings or lists instead of
+the built-in five-field schema. The effective prompt is
+persisted on every version. `PATCH /summaries/{id}` appends a manual-edit
+version and preserves history.
 
 Register deployment adapters in `app/providers/translation.py` and
 `app/providers/llm.py`. The API never executes provider calls itself. Run the
@@ -157,10 +179,15 @@ loaded from the meeting's trusted current transcript, and results are not
 persisted. The existing asynchronous translation REST APIs remain unchanged.
 
 Only normalized `transcript.final` results create `TranscriptVersion` and
-`SegmentVersion` rows; partial results are socket-only. Stopping or disconnecting
-changes an active meeting to `processing`, not `completed`; a non-retryable STT
-provider error changes it to `failed`. Realtime sessions do not fabricate or
-complete upload jobs.
+`SegmentVersion` rows; partial results are socket-only. Explicit stop completes
+the meeting; disconnect preserves resumability. A non-retryable STT provider
+error changes it to `failed`. Realtime sessions do not complete upload jobs.
+
+Realtime PCM is retained in private storage as timeline-aligned five-second
+chunks (migration `0016`). `POST /meetings/{id}/voice-learning` creates a durable
+job from human-confirmed transcript intervals; `speakers.refresh` reloads known
+voices in the active session without finishing the meeting. Uploaded recordings
+can supply the same training clips. See [meeting voice learning](../docs/architecture/meeting-voice-learning.md).
 
 ## Production provider adapters
 
@@ -181,7 +208,8 @@ Set `TRANSLATION_PROVIDER=gemini` with `TRANSLATION_API_KEY` (or `LLM_API_KEY`)
 for segment-aligned VI ↔ EN translations. To fall back to Groq for translation,
 set `TRANSLATION_FALLBACK_PROVIDER=groq` with `GROQ_API_KEY`; Groq is called
 only after the primary translator returns an error. Set `LLM_PROVIDER=gemini` with
-`LLM_API_KEY` (or `TRANSLATION_API_KEY`) for structured `general`, `briefing`, and `voting` summaries.
+`LLM_API_KEY` (or `TRANSLATION_API_KEY`) for built-in structured summaries and
+custom prompt-driven summaries.
 `GEMINI_MODEL` defaults to `gemini-2.5-flash`; `LLM_MODEL` overrides it for
 summary generation. Provider keys are backend-only values.
 To fall back from Gemini to Groq, set `LLM_FALLBACK_PROVIDER=groq` and provide
