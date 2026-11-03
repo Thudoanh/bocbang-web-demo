@@ -213,7 +213,7 @@ test("a hung engine is restarted after the final wait and late callbacks cannot 
     f.speech.observeAudio(pcm(1500));
     f.speech.observeAudio(pcm(1500));
     assert.equal(stops, 1);
-    context.mock.timers.tick(2500);
+    context.mock.timers.tick(5000);
     assert.equal(aborts, 1);
     assert.equal(f.received.at(-1)!.recognition_status, "unconfirmed");
     assert.equal(f.received.some(item => item.final), false);
@@ -240,6 +240,24 @@ test("manual stop during automatic finalization waits for the same final and pre
   context.mock.timers.tick(10000);
   assert.equal(FakeRecognition.instances.at(-1), f.engine);
   assert.equal(f.received.filter(item => item.final).length, 1);
+});
+
+test("a native final delayed beyond the old 2.5-second deadline still replaces its draft", context => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  const f = fixture();
+  let aborts = 0;
+  f.engine.stop = () => {};
+  f.engine.abort = () => { aborts++; };
+  try {
+    f.emit([["Nội dung tạm", false]]);
+    f.speech.observeAudio(pcm(1500));
+    context.mock.timers.tick(3500);
+    assert.equal(aborts, 0);
+    f.engine.onresult({ resultIndex: 0, results: [{ isFinal: true, 0: { transcript: "Nội dung đã chốt." } }] });
+    f.engine.onend();
+    assert.equal(f.received.at(-1)!.final, true);
+    assert.equal(f.received.at(-1)!.text, "Nội dung đã chốt.");
+  } finally { f.speech.cancel(); }
 });
 
 test("background near the measured RMS 0.019 counts toward silence instead of waiting 8 seconds", context => {

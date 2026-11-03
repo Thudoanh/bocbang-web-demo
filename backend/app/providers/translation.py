@@ -3,6 +3,8 @@
 from collections.abc import Callable
 
 from app.core.config import Settings
+from app.core.logging import get_logger
+from app.providers.translation_validation import validate_translation
 from app.providers.contracts import (
     TranscriptionSegment,
     TranslationCapabilities,
@@ -11,6 +13,7 @@ from app.providers.contracts import (
 )
 
 TranslationProviderFactory = Callable[[Settings], TranslationProvider]
+logger = get_logger(__name__)
 
 
 class TranslationProviderRegistry:
@@ -46,9 +49,17 @@ class FallbackTranslationProvider:
         self, segments: tuple[TranscriptionSegment, ...], source: str, target: str
     ) -> tuple[TranscriptionSegment, ...]:
         try:
-            return await self._primary.translate_segments(segments, source, target)
-        except Exception:
-            return await self._fallback.translate_segments(segments, source, target)
+            result = await self._primary.translate_segments(segments, source, target)
+            return validate_translation(segments, result, source, target)
+        except Exception as exc:
+            logger.warning("translation_fallback_activated", extra={
+                "primary_provider": type(self._primary).__name__,
+                "fallback_provider": type(self._fallback).__name__,
+                "error_code": getattr(exc, "code", type(exc).__name__),
+                "segment_count": len(segments),
+            })
+            result = await self._fallback.translate_segments(segments, source, target)
+            return validate_translation(segments, result, source, target)
 
 
 translation_provider_registry = TranslationProviderRegistry()
@@ -71,4 +82,15 @@ def build_translation_provider(settings: Settings) -> TranslationProvider:
     google_fallback = GoogleTranslateProvider()
     if primary is None:
         return google_fallback
-    return FallbackTranslationProvider(primary, google_fallback)
+    fallback = google_fallback
+    fallback_name = (settings.translation_fallback_provider or "").strip().lower()
+    if fallback_name and fallback_name not in {settings.translation_provider.strip().lower(), "google", "google_translate"}:
+        factory = translation_provider_registry.factory_for(fallback_name)
+        if factory is None:
+            raise ValueError(f"Unsupported translation fallback provider: {fallback_name}.")
+        try:
+            fallback = FallbackTranslationProvider(factory(settings), google_fallback)
+        except ValueError:
+            # Optional cloud credentials may be absent. Google remains available.
+            logger.warning("translation_fallback_unavailable", extra={"provider": fallback_name})
+    return FallbackTranslationProvider(primary, fallback)

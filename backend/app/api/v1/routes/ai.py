@@ -121,26 +121,23 @@ class InstantTranslateResponse(BaseModel):
 
 async def _gtx_translate_single(client: httpx.AsyncClient, text: str, source: str, target: str) -> str:
     from urllib.parse import quote
-    import re
+    from app.providers.translation_validation import translation_is_source_echo
     clean = text.strip()
     if not clean:
         return ""
-    # Smart bidirectional target detection:
-    is_vi = any(c in clean.casefold() for c in "ăâđêôơưàáảãạằắẳẵặầấẩẫậèéẻẽẹềếểễệìíỉĩịòóỏõọồốổỗộờớởỡợùúủũụừứửữựỳýỷỹỵ")
-    if not is_vi:
-        is_vi = bool(re.search(r"\b(và|của|là|được|không|tôi|em|anh|chị|mọi|người|xin|chào|cảm|ơn|có|thì|với|trong|này|đó|cho|đã|sẽ|rồi|nhé|gì|nào|sao|đây)\b", clean.casefold()))
-    tl = "en" if is_vi else "vi"
-    sl = "auto"
+    tl = target or "vi"
+    sl = source or "auto"
     url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl={sl}&tl={tl}&dt=t&q={quote(clean)}"
     try:
         resp = await client.get(url, timeout=5.0)
         if resp.status_code == 200:
             data = resp.json()
             if isinstance(data, list) and len(data) > 0 and isinstance(data[0], list):
-                return "".join(part[0] for part in data[0] if isinstance(part, list) and part and part[0])
+                translated = "".join(part[0] for part in data[0] if isinstance(part, list) and part and isinstance(part[0], str))
+                return "" if translation_is_source_echo(clean, translated) else translated
     except Exception:
         pass
-    return clean
+    return ""
 
 
 @translations_router.post("/instant", response_model=InstantTranslateResponse)
@@ -152,7 +149,7 @@ async def instant_translate(payload: InstantTranslateRequest, request: Request) 
         if payload.texts:
             tasks = [_gtx_translate_single(client, t, payload.source_language, payload.target_language) for t in payload.texts]
             results = await asyncio.gather(*tasks, return_exceptions=True)
-            translations = [r if isinstance(r, str) else t for r, t in zip(results, payload.texts)]
+            translations = [r if isinstance(r, str) else "" for r in results]
             return InstantTranslateResponse(translations=translations)
         elif payload.text:
             translated = await _gtx_translate_single(client, payload.text, payload.source_language, payload.target_language)

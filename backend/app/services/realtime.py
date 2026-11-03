@@ -32,7 +32,7 @@ class RealtimeTranscriptService:
         self._session = session
         self._meeting = meeting
         self._actor_id = actor_id
-        self._diarization_enabled = meeting.diarization_enabled
+        self._diarization_enabled = meeting.diarization_enabled and meeting.stt_mode != "browser"
         self._speaker_scope = uuid4().hex
         self._turns: dict[int, UUID] = {}
         self._time_offset_ms = (
@@ -92,7 +92,12 @@ class RealtimeTranscriptService:
         meeting = await self._ensure_meeting()
         if browser_stream_id is not None:
             from app.services.browser_drafts import BrowserDraftService
-            await BrowserDraftService(self._session).remove(meeting.id, browser_stream_id)
+            await self._session.refresh(meeting, with_for_update=True)
+            drafts = BrowserDraftService(self._session)
+            if await drafts.is_resolved(meeting.id, browser_stream_id):
+                await self._session.commit()
+                return None
+            await drafts.remove(meeting.id, browser_stream_id)
         try:
             stored = await TranscriptService(self._session).append_stt_final(
                 meeting, self._actor_id,

@@ -248,11 +248,11 @@ def test_translation_fallback_uses_secondary_after_primary_failure() -> None:
             return TranslationCapabilities(frozenset({("vi", "en")}))
 
         async def translate_segments(self, segments, *_args) -> tuple[TranscriptionSegment, ...]:
-            return segments
+            return tuple(TranscriptionSegment(s.start_ms, s.end_ms, "Hello") for s in segments)
 
     provider = FallbackTranslationProvider(FailingProvider(), SuccessfulProvider())
     segments = (TranscriptionSegment(0, 1, "Xin chào"),)
-    assert asyncio.run(provider.translate_segments(segments, "vi", "en")) == segments
+    assert asyncio.run(provider.translate_segments(segments, "vi", "en"))[0].text == "Hello"
 
 
 def test_translation_registry_builds_groq_fallback() -> None:
@@ -463,33 +463,29 @@ def test_streaming_disabled_diarization_and_duplicate_finals(monkeypatch):
     asyncio.run(scenario())
 
 
-def test_groq_translation_multi_batch_and_malformed_fallback(monkeypatch) -> None:
+def test_groq_translation_multi_batch_preserves_alignment(monkeypatch) -> None:
     provider = GroqTranslationProvider("key", "qwen/qwen3.8-27b", "https://groq.test/openai/v1")
     call_count = 0
 
     async def response(prompt, *_args, **_kwargs):
         nonlocal call_count
         call_count += 1
-        if call_count == 1:
-            # Thirty rows are deliberately coalesced into one batch.
-            return {"translations": [f"Dịch {i}" for i in range(30)]}
-        return {"unknown_key": "data"}
+        start = (call_count - 1) * 15
+        return {"translations": [f"Dịch {i}" for i in range(start, start + 15)]}
 
     monkeypatch.setattr(provider, "_generate", response)
     segments = tuple(TranscriptionSegment(i * 1000, (i + 1) * 1000, f"Segment {i}") for i in range(30))
     translated = asyncio.run(provider.translate_segments(segments, "en", "vi"))
 
     assert len(translated) == 30
-    # Upload translation batches are deliberately 30--35 rows; 30 inputs fit
-    # in one Groq request while preserving all ordering guarantees.
-    assert call_count == 1
+    assert call_count == 2
     assert translated[0].text == "Dịch 0"
     assert translated[14].text == "Dịch 14"
     assert translated[15].text == "Dịch 15"
     assert translated[29].text == "Dịch 29"
 
 
-def test_groq_translation_survives_failed_chunk(monkeypatch) -> None:
+def test_groq_translation_surfaces_failed_chunk_for_fallback(monkeypatch) -> None:
     provider = GroqTranslationProvider("key", "qwen/qwen3.8-27b", "https://groq.test/openai/v1")
 
     async def response(*_args, **_kwargs):
@@ -497,12 +493,10 @@ def test_groq_translation_survives_failed_chunk(monkeypatch) -> None:
 
     monkeypatch.setattr(provider, "_generate", response)
     segments = (TranscriptionSegment(0, 1000, "Good luck"), TranscriptionSegment(1000, 2000, "Thank you"))
-    # A failed provider/GTX path leaves detectable blanks; callers must never
-    # persist original source text as if it were translated.
-    translated = asyncio.run(provider.translate_segments(segments, "en", "vi"))
-    assert len(translated) == 2
-    assert translated[0].text == ""
-    assert translated[1].text == ""
+    with pytest.raises(TranslationProviderError) as captured:
+        asyncio.run(provider.translate_segments(segments, "en", "vi"))
+    assert captured.value.code == "GROQ_RATE_LIMITED"
+    assert captured.value.retryable is False
 
 
 def test_condense_transcript_preserves_bounds() -> None:

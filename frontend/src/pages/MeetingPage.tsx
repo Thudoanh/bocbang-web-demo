@@ -12,12 +12,15 @@ import type { SttMode } from "../realtime/sttMode";
 import { MicrophonePcmCapture } from "../realtime/microphonePcm";
 import { browserDraftLabel, restoreBrowserDrafts, finishLiveTranscript, pruneStalePartials, reconcileStoredTranscript, updateLiveTranscript, type LiveTranscript, type LiveTranscriptEntry, type TranscriptEvent } from "../realtime/liveTranscript";
 import { recordRender } from "../realtime/diagnostics";
+import { browserRecoveryKey, nextBrowserRecovery, MAX_BROWSER_RECOVERY_ATTEMPTS } from "../realtime/liveTranscript";
+import { BrowserRecoveryScheduler } from "../realtime/browserRecovery";
 import { capabilitiesApi, meetingsApi, recordingApi, type TranscriptMutation } from "../api/endpoints";
 import { ApiError, translateErrorMessage } from "../api/client";
 import { useAsync } from "../hooks/useAsync";
 import { useJobMonitor } from "../state/useJobMonitor";
 import { can } from "../utils/permissions";
 import { languageLabel } from "../utils/language";
+import { buildTranslationMap, isUsableTranslation } from "../utils/translation";
 import { formatTimestampInput, parseTimestampInput } from "../utils/time";
 import type { ExportFormat, MediaFile, Meeting, Permission, Segment, Speaker, SummaryLanguage, SummaryTemplate, Transcript, Translation } from "../types/domain";
 import { Button, Empty, Failure, Icon, Loading, Status, statusLabel } from "../components/ui";
@@ -153,8 +156,7 @@ function fallbackCopy(text: string): boolean {
 
 async function translateTextInstant(text: string, targetLang: string = "vi"): Promise<string> {
   if (!text || !text.trim() || text.trim() === "...") return "";
-  const isVietnamese = /[àáảãạăắằẳẵặâấầẩẫậèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵđ]/i.test(text);
-  const target = isVietnamese ? (targetLang === "vi" ? "en" : (targetLang || "en")) : "vi";
+  const target = targetLang;
 
   // 1. Try backend server endpoint (zero CORS issues)
   try {
@@ -169,7 +171,7 @@ async function translateTextInstant(text: string, targetLang: string = "vi"): Pr
     });
     if (res.ok) {
       const data = await res.json();
-      if (data?.translated) return String(data.translated).trim();
+      if (isUsableTranslation(text, data?.translated)) return String(data.translated).trim();
     }
   } catch {
     // proceed to fallback
@@ -187,7 +189,7 @@ async function translateTextInstant(text: string, targetLang: string = "vi"): Pr
           .map((part: string[]) => part[0])
           .join("")
           .trim();
-        if (translated) return translated;
+        if (isUsableTranslation(text, translated)) return translated;
       }
     }
   } catch {
@@ -402,6 +404,12 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
   const [notice, setNotice] = useState("");
   const [recordingActive, setRecordingActive] = useState(false);
   const [liveTranscript, setLiveTranscript] = useState<LiveTranscript>({});
+  const resolvedBrowserDrafts = useRef(new Set<string>());
+  const [resolvingBrowserDraft, setResolvingBrowserDraft] = useState("");
+  const browserRecoveryAttempts = useRef(new Map<string, number>());
+  const [browserRecoveryTick, setBrowserRecoveryTick] = useState(0);
+  const browserRecoveryScheduler = useRef(new BrowserRecoveryScheduler());
+  useEffect(() => () => browserRecoveryScheduler.current.cancel(), [meetingId]);
   const finalizedBrowserTurns = useRef(new Set<string>());
   useEffect(() => {
     if (bundle.data?.browser_drafts) setLiveTranscript(current => restoreBrowserDrafts(current,
@@ -475,26 +483,10 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
   const latestTranslation: Translation | undefined = translations.data?.[0];
 
   // Combined translation map from all server translations + localStorage cache
-  const translationMap = useMemo(() => {
-    const map = new Map<string, string>();
-    if (translations.data && translations.data.length > 0) {
-      for (const trans of [...translations.data].reverse()) {
-        if (trans.segments) {
-          for (const item of trans.segments) {
-            if (item.text && item.text.trim()) {
-              map.set(item.logical_segment_id, item.text);
-            }
-          }
-        }
-      }
-    }
-    for (const [id, rTrans] of Object.entries(realtimeTranslations)) {
-      if (rTrans.text && rTrans.text.trim() && !map.has(id)) {
-        map.set(id, rTrans.text);
-      }
-    }
-    return map;
-  }, [translations.data, realtimeTranslations]);
+  const translationMap = useMemo(
+    () => buildTranslationMap(transcript.data?.segments ?? [], translations.data ?? [], realtimeTranslations),
+    [transcript.data?.segments, translations.data, realtimeTranslations],
+  );
 
   // Chronological order (earliest to latest) matching screenshot
   const orderedSegments = useMemo(
@@ -512,10 +504,12 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
   useEffect(() => {
     if (translations.data && translations.data.length > 0) {
       const batch: Record<string, RealtimeTranslation> = {};
-      for (const trans of translations.data) {
+      const sourceTexts = new Map((transcript.data?.segments ?? []).map(segment => [segment.logical_segment_id, segment.text]));
+      for (const trans of [...translations.data].reverse()) {
         if (trans.segments) {
           for (const seg of trans.segments) {
-            if (seg.text && seg.text.trim()) {
+            const source = sourceTexts.get(seg.logical_segment_id);
+            if (source !== undefined && isUsableTranslation(source, seg.text)) {
               batch[seg.logical_segment_id] = {
                 text: seg.text,
                 sourceLanguage: trans.source_language || "vi",
@@ -529,7 +523,7 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
         handleMultipleTranslationsReceived(batch);
       }
     }
-  }, [translations.data, handleMultipleTranslationsReceived]);
+  }, [translations.data, transcript.data?.segments, handleMultipleTranslationsReceived]);
   const isTranslating = ["queued", "processing", "retrying"].includes(translationJobs.job?.status ?? "");
 
   const triggerTranslation = useCallback(async () => {
@@ -768,85 +762,23 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
     }
   }, [transcript.data?.segments, translationMap, isTranslating, meetingId, triggerTranslation]);
 
-  // Instant client-side fallback translation for missing segments to eliminate stuck "Đang tự động dịch..."
+  // Completed uploads use the durable translation job, tracked above.
   useEffect(() => {
-    if (recordingActive || !transcript.data?.segments?.length) return;
-    const missing = transcript.data.segments.filter(
-      (s) =>
-        s.text &&
-        s.text.trim() &&
-        !translationMap.has(s.logical_segment_id) &&
-        !realtimeTranslations[s.logical_segment_id]?.text
-    );
-    if (missing.length === 0) return;
+    if (meeting.data?.stt_mode !== "browser" || !can(meeting.data.permission, "edit") || resolvingBrowserDraft) {
+      browserRecoveryScheduler.current.cancel();
+      return;
+    }
+    const pending = nextBrowserRecovery(liveTranscript, browserRecoveryAttempts.current);
+    if (!pending) { browserRecoveryScheduler.current.cancel(); return; }
+    const [key, event] = pending;
+    const attemptKey = browserRecoveryKey(event);
+    const attempt = browserRecoveryAttempts.current.get(attemptKey) ?? 0;
+    browserRecoveryScheduler.current.schedule(attemptKey, attempt ? Math.min(8000, 2000 * 2 ** (attempt - 1)) : 0, () => {
+      browserRecoveryAttempts.current.set(attemptKey, attempt + 1);
+      void resolveBrowserDraft(key, event, "recover").then(() => setBrowserRecoveryTick(value => value + 1));
+    });
+  }, [meeting.data?.stt_mode, meeting.data?.permission, meetingId, liveTranscript, resolvingBrowserDraft, browserRecoveryTick]);
 
-    let active = true;
-    const sliceMissing = missing.slice(0, 50);
-
-    const token = localStorage.getItem("bocbang_token");
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (token) headers["Authorization"] = `Bearer ${token}`;
-
-    fetch(`${config.apiBaseUrl}/translations/instant`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        texts: sliceMissing.map((s) => s.text),
-        target_language: targetLang,
-      }),
-    })
-      .then(async (res) => {
-        if (!res.ok) throw new Error("Instant batch translation failed");
-        return res.json();
-      })
-      .then((data) => {
-        if (!active || !data?.translations) return;
-        const batch: Record<string, RealtimeTranslation> = {};
-        sliceMissing.forEach((seg, idx) => {
-          const trans = data.translations[idx];
-          if (trans && trans.trim()) {
-            batch[seg.logical_segment_id] = {
-              text: trans.trim(),
-              sourceLanguage: "auto",
-              targetLanguage: targetLang,
-            };
-          }
-        });
-        if (Object.keys(batch).length > 0) {
-          handleMultipleTranslationsReceived(batch);
-        }
-      })
-      .catch(async () => {
-        // Fallback: translate individually
-        const fallbackBatch: Record<string, RealtimeTranslation> = {};
-        await Promise.all(
-          sliceMissing.slice(0, 20).map(async (seg) => {
-            const tr = await translateTextInstant(seg.text, targetLang);
-            if (tr && active) {
-              fallbackBatch[seg.logical_segment_id] = {
-                text: tr,
-                sourceLanguage: "auto",
-                targetLanguage: targetLang,
-              };
-            }
-          })
-        );
-        if (active && Object.keys(fallbackBatch).length > 0) {
-          handleMultipleTranslationsReceived(fallbackBatch);
-        }
-      });
-
-    return () => {
-      active = false;
-    };
-  }, [
-    transcript.data?.segments,
-    translationMap,
-    realtimeTranslations,
-    targetLang,
-    recordingActive,
-    handleMultipleTranslationsReceived,
-  ]);
 
 
 
@@ -1099,6 +1031,44 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
     })
     .sort(([, a], [, b]) => a.start_ms - b.start_ms);
 
+  async function resolveBrowserDraft(key: string, event: LiveTranscriptEntry, action: "confirm" | "discard" | "recover") {
+    if (!event.stream_segment_id || event.revision === undefined) return false;
+    setResolvingBrowserDraft(key);
+    try {
+      const resolution = await meetingsApi.resolveBrowserDraft(meetingId, { stream_segment_id: event.stream_segment_id, revision: event.revision, action });
+      if (resolution.logical_segment_id && isUsableTranslation(event.text, event.translation)) {
+        handleTranslationReceived(resolution.logical_segment_id, { text: event.translation!,
+          sourceLanguage: event.language, targetLanguage: event.language === "en" ? "vi" : "en" });
+      }
+      resolvedBrowserDrafts.current.add(event.stream_segment_id);
+      finalizedBrowserTurns.current.add(event.stream_segment_id);
+      setLiveTranscript(current => resolution.logical_segment_id && action !== "discard"
+        ? updateLiveTranscript(current, { type: "transcript.final", logical_segment_id: resolution.logical_segment_id,
+            language: event.language, text: event.text, start_ms: event.start_ms, end_ms: event.end_ms,
+            stream_segment_id: event.stream_segment_id, translation: event.translation })
+        : Object.fromEntries(Object.entries(current).filter(([, item]) => item.stream_segment_id !== event.stream_segment_id)));
+      meetingsApi.invalidateBundle(meetingId);
+      bundle.setData(await meetingsApi.bundle(meetingId, true));
+      if (action !== "recover") setNotice(action === "confirm" ? "Đã lưu văn bản do bạn xác nhận." : "Đã bỏ đoạn chưa xác nhận.");
+      return true;
+    } catch (error) {
+      if (action === "recover" && (error as { code?: string }).code === "BROWSER_DRAFT_NOT_FOUND") {
+        try {
+          meetingsApi.invalidateBundle(meetingId);
+          bundle.setData(await meetingsApi.bundle(meetingId, true));
+          finalizedBrowserTurns.current.add(event.stream_segment_id);
+          setLiveTranscript(current => Object.fromEntries(Object.entries(current).filter(([, item]) =>
+            item.type === "transcript.final" || item.stream_segment_id !== event.stream_segment_id)));
+          return true;
+        } catch { return false; }
+      }
+      if (action !== "recover" || (browserRecoveryAttempts.current.get(browserRecoveryKey(event)) ?? 0) >= MAX_BROWSER_RECOVERY_ATTEMPTS) {
+        setNotice(error instanceof Error ? error.message : "Không thể lưu văn bản Browser. Hãy kiểm tra kết nối rồi thử lại.");
+      }
+      return false;
+    } finally { setResolvingBrowserDraft(""); }
+  }
+
   function renderLiveEntries() {
     return (
       <>
@@ -1107,11 +1077,16 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
             <div className="dual-cell left">
               <div className="dual-cell-main">
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                  <span className="dual-speaker-name">
+                  {meeting.data?.stt_mode !== "browser" && <span className="dual-speaker-name">
                     {event.speaker_name ?? speakerNameFromLabel(event.speaker_label)}:
-                  </span>
+                  </span>}
                   {(event.revision !== undefined || event.recognition_status === "unconfirmed") && (
-                    <span className="browser-draft-status" style={{ color: "var(--muted)", fontSize: 12 }} title={event.draft_saved_at ? "Bản nháp đã được lưu và có thể được Web Speech sửa lại." : "Đang chờ xác nhận lưu từ máy chủ."}>{browserDraftLabel(event)}</span>
+                    <span className="browser-draft-status" style={{ color: "var(--muted)", fontSize: 12 }} title={event.draft_saved_at ? "Văn bản được tự chốt khi lượt nhận diện kết thúc." : "Đang chờ xác nhận lưu từ máy chủ."}>{
+                      event.recognition_status === "unconfirmed" && !event.awaiting_final && editable
+                        ? (browserRecoveryAttempts.current.get(browserRecoveryKey(event)) ?? 0) >= MAX_BROWSER_RECOVERY_ATTEMPTS && resolvingBrowserDraft !== key
+                          ? "Lưu tự động chưa thành công" : "Đang hoàn tất văn bản"
+                        : browserDraftLabel(event)
+                    }</span>
                   )}
                 </div>
                 {event.revision !== undefined ? <BrowserTranscriptText text={event.text} active={event.type === "transcript.partial" && event.recognition_status !== "unconfirmed"} /> : <StreamingTypewriter
@@ -1119,6 +1094,16 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
                   text={event.text}
                   active={event.type === "transcript.partial" && event.recognition_status !== "unconfirmed"}
                 />}
+                {editable && meeting.data?.stt_mode === "browser" && event.recognition_status === "unconfirmed" && !event.awaiting_final &&
+                  (browserRecoveryAttempts.current.get(browserRecoveryKey(event)) ?? 0) >= MAX_BROWSER_RECOVERY_ATTEMPTS && (
+                  <div style={{ marginTop: 8, display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                    <small style={{ color: "var(--muted)" }}>Web Speech chưa chốt đoạn này. Kiểm tra nội dung rồi chọn:</small>
+                    <Button disabled={Boolean(resolvingBrowserDraft) || event.draft_saved_revision !== event.revision}
+                      onClick={() => void resolveBrowserDraft(key, event, "confirm")}>Xác nhận văn bản</Button>
+                    <Button disabled={Boolean(resolvingBrowserDraft) || event.draft_saved_revision !== event.revision}
+                      onClick={() => void resolveBrowserDraft(key, event, "discard")}>Bỏ đoạn</Button>
+                  </div>
+                )}
               </div>
             </div>
             {showTranslationSplit && (
@@ -1513,9 +1498,7 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
               const isEditing = editing?.logical_segment_id === segment.logical_segment_id;
               const speakerInfo = getSpeakerDisplay(segment.speaker_id, segment.speaker_label, speakers.data);
 
-              const rawTransText =
-                translationMap.get(segment.logical_segment_id) ||
-                realtimeTranslations[segment.logical_segment_id]?.text;
+              const rawTransText = translationMap.get(segment.logical_segment_id);
               const transText = rawTransText?.trim() || undefined;
 
               const isRowMenuOpen = rowMenuOpenId === segment.logical_segment_id;
@@ -1607,7 +1590,7 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
                       <>
                         <div className="dual-cell-main">
                           <span className="dual-speaker-name">
-                            {speakerInfo.name}:
+                            {meeting.data?.stt_mode !== "browser" && <>{speakerInfo.name}:</>}
                             {isMergeSelected && (
                               <span className="merge-row-selected-badge">✓ Đã chọn</span>
                             )}
@@ -1747,11 +1730,11 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
                   {showTranslationSplit && (
                     <div className="dual-cell right">
                       <div className="dual-cell-main">
-                        <span className="dual-speaker-name">{speakerInfo.name}:</span>
+                        {meeting.data?.stt_mode !== "browser" && <span className="dual-speaker-name">{speakerInfo.name}:</span>}
                         <span className="dual-text">
                           {transText ? (
                             transText
-                          ) : (isTranslating && !recordingActive && meeting.data?.status !== "completed") ? (
+                          ) : (isTranslating && !recordingActive) ? (
                             <span style={{ display: "inline-flex", alignItems: "center", gap: 6, color: "var(--primary-color, #2563eb)", fontSize: 13, fontWeight: 500 }}>
                               <span className="record-pulsing-dot" style={{ width: 6, height: 6, background: "#38bdf8" }} />
                               Đang tự động dịch…
@@ -2005,6 +1988,7 @@ export function MeetingPage({ meetingId }: { meetingId: string }) {
             existingSegmentIds={transcript.data?.segments?.map((s) => s.logical_segment_id) ?? []}
             existingTranslationIds={Object.keys(realtimeTranslations)}
             onTranscript={(event) => {
+              if (event.stream_segment_id && resolvedBrowserDrafts.current.has(event.stream_segment_id)) return;
               if (event.type === "transcript.final" && event.stream_segment_id) finalizedBrowserTurns.current.add(event.stream_segment_id);
               setLiveTranscript((current) => updateLiveTranscript(current, event));
             }}
@@ -3328,6 +3312,7 @@ function RecordingPanel({
   const [savingSttMode, setSavingSttMode] = useState(false);
 
   useEffect(() => {
+    const newIds = (existingSegmentIds ?? []).filter(id => !finalSegmentIds.current.has(id));
     if (existingSegmentIds && existingSegmentIds.length > 0) {
       for (const id of existingSegmentIds) {
         finalSegmentIds.current.add(id);
@@ -3338,7 +3323,12 @@ function RecordingPanel({
         translatedSegmentIds.current.add(id);
       }
     }
-  }, [existingSegmentIds, existingTranslationIds]);
+    // HTTP recovery creates a persisted turn without a native final event.
+    // Backfill that turn through the same live translator as normal finals.
+    if (newIds.length && state === "recording" && translationEnabled.current && targetLanguage) {
+      socket.current?.enableTranslation(targetLanguage, newIds);
+    }
+  }, [existingSegmentIds, existingTranslationIds, state, targetLanguage]);
 
   useEffect(() => () => {
     void stop(true);

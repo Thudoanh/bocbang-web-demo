@@ -32,7 +32,7 @@ from app.schemas.meeting import (
 from app.models.enums import MeetingSourceType, MeetingStatus
 from app.services.meetings import MeetingService, register_bundle_invalidator
 from app.services.browser_drafts import BrowserDraftService
-from app.schemas.browser_draft import BrowserDraftResponse
+from app.schemas.browser_draft import BrowserDraftResponse, BrowserDraftResolveRequest
 import time
 
 _BUNDLE_CACHE: dict[UUID, tuple[float, MeetingBundleResponse]] = {}
@@ -222,6 +222,23 @@ async def get_browser_drafts(meeting_id: UUID, user: CurrentUserDependency,
                              service: MeetingServiceDependency) -> list[BrowserDraftResponse]:
     await service.require_access(meeting_id, user, "read")
     return await BrowserDraftService(service._session).list(meeting_id)
+
+
+@router.post("/{meeting_id}/browser-drafts/resolve")
+async def resolve_browser_draft(meeting_id: UUID, body: BrowserDraftResolveRequest,
+                                user: CurrentUserDependency, service: MeetingServiceDependency):
+    from app.services.broadcaster import meeting_broadcaster
+    row, segment = await BrowserDraftService(service._session).resolve(meeting_id, user, body)
+    payload = {"type": "transcript.partial", "language": row.language,
+               "stream_segment_id": row.stream_segment_id, "text": "", "recognition_status": "withdrawn",
+               "revision": row.revision + 1, "start_ms": row.start_ms, "end_ms": row.end_ms}
+    if segment is not None:
+        payload.update(type="transcript.final", text=segment.text,
+                       logical_segment_id=str(segment.logical_segment_id), recognition_status=None)
+    await meeting_broadcaster.broadcast(meeting_id, payload)
+    invalidate_bundle_cache(meeting_id)
+    return {"stream_segment_id": row.stream_segment_id, "action": body.action,
+            "logical_segment_id": str(segment.logical_segment_id) if segment is not None else None}
 
 
 @router.patch("/{meeting_id}", response_model=MeetingResponse)

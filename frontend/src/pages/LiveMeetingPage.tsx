@@ -705,14 +705,14 @@ export function LiveMeetingPage({ token }: { token: string }) {
                     flexShrink: 0,
                   }}
                 >
-                  {(seg.speaker_name || "N").slice(0, 1).toUpperCase()}
+                  {meeting?.stt_mode === "browser" ? "T" : (seg.speaker_name || "N").slice(0, 1).toUpperCase()}
                 </div>
 
                 {/* Content Box */}
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
                     <span style={{ fontSize: 13, fontWeight: 650, color: "#e2e8f0" }}>
-                      {seg.speaker_name || "Người nói"}
+                      {meeting?.stt_mode === "browser" ? "Văn bản" : seg.speaker_name || "Người nói"}
                     </span>
                     <span style={{ fontSize: 11, color: "#64748b" }}>
                       {formatMs(seg.start_ms)}
@@ -789,7 +789,7 @@ export function LiveMeetingPage({ token }: { token: string }) {
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
                   <span style={{ fontSize: 13, fontWeight: 650, color: "#a5b4fc" }}>
-                    {partial.speaker_name || "Đang nói…"}
+                    {meeting?.stt_mode === "browser" ? "Văn bản" : partial.speaker_name || "Đang nói…"}
                   </span>
                   <span
                     style={{

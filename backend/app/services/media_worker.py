@@ -14,12 +14,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.db.session import Database
-from app.models.enums import MeetingStatus
+from app.models.enums import JobStatus, MeetingStatus
 from app.models.media import Job, MediaFile
 from app.models.meeting import Meeting
 from app.core.logging import get_logger
-from app.providers.contracts import STTProvider, STTProviderError, TranscriptionSegment
+from app.providers.contracts import STTProvider, STTProviderError
 from app.providers.storage import MediaStorage
+from app.providers.translation_validation import translation_source_language
 
 logger = get_logger(__name__)
 from app.services.transcripts import TranscriptService
@@ -120,6 +121,19 @@ class MediaProcessingWorker:
                 section = await MeetingSectionService(session).ensure(meeting)
                 section.is_started = True
                 section.end_ms = max(meeting.duration_ms or 0, max(row.end_ms for row in result.segments))
+                # Commit translation work with the transcript. It must survive
+                # asyncio.run() ending, worker shutdown and broker delivery errors.
+                language = translation_source_language(meeting.language_mode, " ".join(s.text for s in result.segments[:5]))
+                translation_job = Job(
+                    meeting_id=meeting.id, job_type="translation", status=JobStatus.QUEUED, progress=0,
+                    payload={"transcript_version_id": str(meeting.current_transcript_version_id),
+                             "source_language": language, "target_language": "en" if language == "vi" else "vi",
+                             "actor_id": str(meeting.owner_id), "source_upload_job_id": str(job.id)},
+                )
+                session.add(translation_job)
+                await session.flush()
+                translation_job_id = translation_job.id
+                job.payload = {**job.payload, "translation_job_id": str(translation_job_id)}
                 await session.commit()
                 from app.services.meetings import invalidate_meeting_cache
                 invalidate_meeting_cache(meeting.id)
@@ -129,11 +143,12 @@ class MediaProcessingWorker:
                 # Complete the job right now so user UI unblocks without waiting for translation
                 await lifecycle.completed(session, job)
 
-                # 2. Asynchronous background translation: bóc băng trước, dịch sau trong nền
-                # Không bắt người dùng phải chờ đợi ở màn hình tải tệp
-                version_id = meeting.current_transcript_version_id
-                if version_id:
-                    asyncio.create_task(self._background_auto_translate(meeting.id, version_id))
+                from app.workers.broker import enqueue_job
+                try:
+                    await asyncio.to_thread(enqueue_job, translation_job_id, self._settings)
+                except Exception:
+                    # The reconciler republishes the durable queued job later.
+                    logger.warning("upload_translation_waiting_for_delivery", extra={"job_id": str(translation_job_id)})
 
                 return False
             except STTProviderError as exc:
@@ -148,88 +163,6 @@ class MediaProcessingWorker:
                         await asyncio.to_thread(source.unlink, missing_ok=True)
                     except OSError:
                         pass
-
-    async def _background_auto_translate(self, meeting_id: UUID, version_id: UUID) -> None:
-        """Translate segments in background without blocking file upload / STT completion."""
-        try:
-            import re
-            from sqlalchemy import select
-            from app.models.transcript import CurrentSegment, Transcript
-            from app.models.translation import Translation, TranslationSegment
-            from app.services.broadcaster import meeting_broadcaster
-            from app.providers.google_translate import GoogleTranslateProvider
-
-            async with self._database.session() as session:
-                transcript_record = await session.scalar(
-                    select(Transcript).where(Transcript.meeting_id == meeting_id)
-                )
-                if not transcript_record:
-                    return
-                current_segs = list(
-                    await session.scalars(
-                        select(CurrentSegment)
-                        .where(CurrentSegment.transcript_id == transcript_record.id)
-                        .order_by(CurrentSegment.position, CurrentSegment.start_ms)
-                    )
-                )
-                if not current_segs:
-                    return
-
-                from app.providers.translation import build_translation_provider
-                translator = build_translation_provider(self._settings)
-
-                sample_text = " ".join(cs.text for cs in current_segs[:5])
-                is_vi = any(c in sample_text.casefold() for c in "ăâđêôơưàáảãạằắẳẵặầấẩẫậèéẻẽẹềếểễệìíỉĩịòóỏõọồốổỗộờớởỡợùúủũụừứửữựỳýỷỹỵ")
-                tgt = "en" if is_vi else "vi"
-                src = "vi" if is_vi else "en"
-
-                input_segments = tuple(
-                    TranscriptionSegment(start_ms=cs.start_ms, end_ms=cs.end_ms, text=cs.text)
-                    for cs in current_segs
-                )
-                try:
-                    translated_segments = await translator.translate_segments(input_segments, src, tgt)
-                except Exception as tr_err:
-                    logger.warning("Translator batch translation non-fatal error: %s", tr_err)
-                    translated_segments = input_segments
-
-                translation_record = Translation(
-                    meeting_id=meeting_id,
-                    transcript_version_id=version_id,
-                    source_language=src,
-                    target_language=tgt,
-                )
-                session.add(translation_record)
-                await session.flush()
-
-                db_translation_segs = []
-                for idx, cs in enumerate(current_segs):
-                    tr_text = (
-                        translated_segments[idx].text.strip()
-                        if idx < len(translated_segments) and translated_segments[idx].text.strip()
-                        else cs.text.strip()
-                    )
-                    db_translation_segs.append(
-                        TranslationSegment(
-                            translation_id=translation_record.id,
-                            logical_segment_id=cs.logical_segment_id,
-                            sequence=idx + 1,
-                            text=tr_text,
-                        )
-                    )
-                    meeting_broadcaster.set_translation(
-                        meeting_id, str(cs.logical_segment_id), tr_text
-                    )
-
-                session.add_all(db_translation_segs)
-                await session.commit()
-                from app.services.meetings import invalidate_meeting_cache
-                from app.api.v1.routes.meetings import invalidate_bundle_cache
-                invalidate_meeting_cache(meeting_id)
-                invalidate_bundle_cache(meeting_id)
-                logger.info("Background translated and saved %d segments for meeting %s", len(db_translation_segs), meeting_id)
-        except Exception as exc:
-            logger.warning("Background translation non-fatal error for meeting %s: %s", meeting_id, exc)
 
     async def _download_source(self, media: MediaFile) -> Path:
         descriptor, name = tempfile.mkstemp(prefix="bocbang-source-", suffix=Path(media.original_filename).suffix.lower())

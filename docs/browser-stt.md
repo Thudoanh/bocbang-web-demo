@@ -49,7 +49,10 @@ regardless of the default selected for new microphone meetings.
   Repeated unchanged text does not write again. Archiving an unfinished turn
   requests an immediate save. Normal audio/recognition continues during saves.
 - The UI distinguishes **Đang nhận diện**, **Có bản lưu tạm · đang cập nhật**, and
-  **Đã lưu tạm · chưa xác nhận** using server acknowledgements, not a local timer.
+  **Đã lưu tạm · đang nhận diện** using server acknowledgements, not a local timer.
+  Interrupted recognition is **Nhận diện đã dừng · cần kiểm tra**, so it cannot
+  look like an engine that is still processing forever. Browser rows omit speaker
+  headings; Web Speech does not supply speaker diarization.
   An engine final awaiting the backend acknowledgement is **Đang lưu bản cuối**;
   it is no longer an animated active preview while the next turn is being heard.
   If the latest words have changed since the last acknowledgement, only the older
@@ -83,9 +86,27 @@ regardless of the default selected for new microphone meetings.
   Speech below that threshold can still be treated as silence; this is an energy
   heuristic rather than a trained voice detector. The 1.5-second interval is the
   time before requesting a final, not a guarantee of the engine's response latency.
-- After requesting a final, wait at most 2.5 seconds for the engine to finish.
+- After requesting a final, wait at most 5 seconds for the engine to finish.
   If it still returns no final, retain the text as unconfirmed and restart;
   never save an interim result as if the engine had confirmed it.
+- Editors automatically recover an acknowledged interrupted draft through
+  `POST /meetings/{id}/browser-drafts/resolve` with `action=recover`. Once the
+  recognition turn has ended, the last saved hypothesis becomes a timestamp-ordered
+  STT row. A `browser_auto_commit` audit event records
+  `confirmation_source=application` and `engine_confirmed=false`. This is application
+  finalization of recognized text, not a claim that Google emitted `isFinal=true`.
+  It does not rerun audio through a paid/cloud STT provider.
+- Active recognition, native finals awaiting persistence and unsaved newer words
+  are excluded from automatic recovery. Recovery retries up to three times per
+  revision, without unrelated ongoing speech restarting the retry deadline.
+  If storage still fails, the editor sees an error and can retry with
+  **Xác nhận văn bản** or **Bỏ đoạn**. Manual confirmation remains a `user_edit`
+  version. Existing confirmed text cannot be overlapped silently. Tombstones
+  prevent delayed/replayed results from recreating a resolved turn.
+- Restored interrupted drafts follow the same automatic recovery path. Recovered
+  rows join the existing live translation backfill; matching preview translations
+  can display immediately. Summary/export use the resulting transcript normally.
+  Native final behavior and Cloud STT are unchanged. No migration is required.
 - Pause/stop lets Web Speech return its final result (bounded wait). Unconfirmed
   text is kept as an unconfirmed draft, including on engine restart or connection
   loss. Acknowledged drafts survive reload. Text never becomes a fake engine final.

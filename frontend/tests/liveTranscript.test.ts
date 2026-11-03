@@ -164,7 +164,7 @@ test("a delayed save acknowledgement cannot replace newer optimistic text", () =
   assert.equal(state["session:turn:0"].revision, 3);
   assert.equal(browserDraftLabel(state["session:turn:0"]), "Có bản lưu tạm · đang cập nhật");
   state = updateLiveTranscript(state, { ...draft, draft_saved_revision: 3, draft_saved_at: "2026-11-02T00:00:01Z" });
-  assert.equal(browserDraftLabel(state["session:turn:0"]), "Đã lưu tạm · chưa xác nhận");
+  assert.equal(browserDraftLabel(state["session:turn:0"]), "Đã lưu tạm · đang nhận diện");
 });
 
 test("reload restores a saved draft honestly and a final replaces all of its provisional text", () => {
@@ -172,7 +172,7 @@ test("reload restores a saved draft honestly and a final replaces all of its pro
     draft_saved_revision: 2, draft_saved_at: "2026-11-02T00:00:00Z" } as const;
   let state = restoreBrowserDrafts({}, [draft]);
   assert.equal(state["session:turn:0"].recognition_status, "unconfirmed");
-  assert.equal(browserDraftLabel(state["session:turn:0"]), "Đã lưu tạm · chưa xác nhận");
+  assert.equal(browserDraftLabel(state["session:turn:0"]), "Nhận diện đã dừng · cần kiểm tra");
   state = updateLiveTranscript(state, { ...draft, type: "transcript.final", logical_segment_id: "stored", revision: 3, text: "Bản cuối sửa cả phần đầu." });
   state = restoreBrowserDrafts(state, [draft]);
   assert.deepEqual(Object.keys(state), ["final:stored"]);
@@ -188,7 +188,7 @@ test("a native final waiting for server storage is explicit and stops waiting on
   assert.equal(state["session:turn:0"].text, "Bản cuối từ engine");
   assert.equal(browserDraftLabel(state["session:turn:0"]), "Đang lưu bản cuối");
   state = finishLiveTranscript(state);
-  assert.equal(browserDraftLabel(state["session:turn:0"]), "Có bản lưu tạm · đang cập nhật");
+  assert.equal(browserDraftLabel(state["session:turn:0"]), "Nhận diện đã dừng · cần kiểm tra");
 });
 
 test("a spectator interruption archives even unsaved previews only from that socket", () => {

@@ -284,6 +284,9 @@ async def realtime_transcription(websocket: WebSocket, meeting_id: UUID) -> None
                     continue
                 try:
                     browser_message = BrowserTranscriptMessage.model_validate(browser_payload)
+                    scoped_id = f"{transcript_service.stream_session_id}:{browser_message.result_id}"
+                    if await BrowserDraftService(session).is_resolved(meeting_id, scoped_id):
+                        continue
                     await _emit_events(
                         send_json, transcript_service,
                         stream.accept(browser_message, max(0, audio_writer.end_ms - transcript_service.time_offset_ms)),
@@ -700,11 +703,15 @@ async def _emit_events(
                         end_ms=int(payload["end_ms"]), revision=event.browser_revision,
                         recognition_status=event.recognition_status,
                     )
+                    if saved is None:
+                        continue
                     payload["draft_saved_revision"] = saved.draft_saved_revision
                     payload["draft_saved_at"] = saved.draft_saved_at.isoformat()
         if event.type == "final":
             stored = await transcript_service.persist_final(segment, event.turn_order,
                 str(payload["stream_segment_id"]) if event.browser_revision is not None else None)
+            if stored is None:
+                continue
             logical_segment_id = stored.logical_segment_id
             payload["logical_segment_id"] = str(logical_segment_id)
             if stored.speaker_id:

@@ -4,14 +4,29 @@ export type TranscriptEvent = Extract<RealtimeEvent, { type: "transcript.partial
 export type LiveTranscriptEntry = TranscriptEvent & { recognition_status?: "unconfirmed" | "withdrawn"; updated_at?: number };
 export type LiveTranscript = Record<string, LiveTranscriptEntry>;
 
+export const MAX_BROWSER_RECOVERY_ATTEMPTS = 3;
+export function browserRecoveryKey(event: LiveTranscriptEntry): string {
+  return `${event.stream_segment_id}@${event.revision}`;
+}
+
+/** Only archive acknowledgements can be auto-committed. Active/native finals keep their own path. */
+export function nextBrowserRecovery(current: LiveTranscript, attempts: Map<string, number>) {
+  return Object.entries(current).sort(([, a], [, b]) => a.start_ms - b.start_ms).find(([, event]) =>
+    event.type === "transcript.partial" && event.recognition_status === "unconfirmed" &&
+    !event.awaiting_final && Boolean(event.stream_segment_id) && Boolean(event.text.trim()) &&
+    event.revision !== undefined && event.draft_saved_revision === event.revision &&
+    (attempts.get(browserRecoveryKey(event)) ?? 0) < MAX_BROWSER_RECOVERY_ATTEMPTS);
+}
+
 export function browserDraftLabel(event: LiveTranscriptEntry): string {
   if (event.type === "transcript.final") return "Đã xác nhận";
   if (event.awaiting_final) return "Đang lưu bản cuối";
+  if (event.recognition_status === "unconfirmed") return "Nhận diện đã dừng · cần kiểm tra";
   if (event.draft_saved_revision !== undefined) {
-    return event.draft_saved_revision === event.revision ? "Đã lưu tạm · chưa xác nhận"
+    return event.draft_saved_revision === event.revision ? "Đã lưu tạm · đang nhận diện"
       : "Có bản lưu tạm · đang cập nhật";
   }
-  return event.recognition_status === "unconfirmed" ? "Chưa xác nhận · chưa lưu" : "Đang nhận diện";
+  return "Đang nhận diện";
 }
 
 export function restoreBrowserDrafts(current: LiveTranscript, drafts: BrowserDraftEvent[]): LiveTranscript {

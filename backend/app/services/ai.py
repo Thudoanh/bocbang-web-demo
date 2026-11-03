@@ -24,6 +24,7 @@ from app.providers.contracts import (
     TranslationProviderError,
 )
 from app.providers.storage import MediaStorage
+from app.providers.translation_validation import validate_translation
 from app.schemas.ai import (
     SummaryCreateRequest,
     SummaryEditRequest,
@@ -55,11 +56,23 @@ class AIService:
 
     async def request_translation(self, meeting_id: UUID, user: User, payload: TranslationCreateRequest) -> JobResponse:
         meeting, _ = await self._meetings.require_access(meeting_id, user, MeetingPermission.EDIT)
+        await self._session.refresh(meeting, with_for_update=True)
         if self._translation is None:
             raise ApiError("PROVIDER_CAPABILITY_UNAVAILABLE", "Translation is not configured.", 503)
         if (payload.source_language, payload.target_language) not in self._translation.capabilities().supported_language_pairs:
             raise ApiError("PROVIDER_CAPABILITY_UNAVAILABLE", "This translation language pair is not supported.", 422)
         version = await self._valid_current_transcript(meeting.current_transcript_version_id)
+        # The upload worker may already have queued this exact translation.
+        pending = await self._session.scalars(select(Job).where(
+            Job.meeting_id == meeting.id, Job.job_type == "translation",
+            Job.status.in_([JobStatus.QUEUED, JobStatus.PROCESSING, JobStatus.RETRYING]),
+        ))
+        for existing in pending:
+            data = existing.payload or {}
+            if (data.get("transcript_version_id"), data.get("source_language"), data.get("target_language")) == (
+                str(version.id), payload.source_language, payload.target_language,
+            ):
+                return _job_response(existing)
         job = Job(
             meeting_id=meeting.id,
             job_type="translation",
@@ -296,11 +309,13 @@ class AIJobDispatcher:
         if (source, target) not in self._translation.capabilities().supported_language_pairs:
             raise TranslationProviderError("This translation language pair is not supported.", code="PROVIDER_CAPABILITY_UNAVAILABLE", retryable=False)
         originals = await _valid_segments(session, version_id)
+        inputs = tuple(TranscriptionSegment(item.start_ms, item.end_ms, item.text) for item in originals)
         translated = await self._translation.translate_segments(
-            tuple(TranscriptionSegment(item.start_ms, item.end_ms, item.text) for item in originals),
+            inputs,
             source,
             target,
         )
+        validate_translation(inputs, translated, source, target)
 
         translation = Translation(meeting_id=job.meeting_id, transcript_version_id=version_id, source_language=source, target_language=target)
         session.add(translation)
@@ -308,11 +323,7 @@ class AIJobDispatcher:
 
         db_segs = []
         for index, original in enumerate(originals, start=1):
-            tr_text = (
-                translated[index - 1].text.strip()
-                if index - 1 < len(translated) and translated[index - 1].text.strip()
-                else original.text.strip()
-            )
+            tr_text = translated[index - 1].text.strip()
             db_segs.append(
                 TranslationSegment(
                     translation_id=translation.id,

@@ -33,7 +33,9 @@ const SILENCE_MS = 1500;
 // Keep this separate from the duration: raising it must not increase the wait.
 const SILENCE_RMS = 0.025;
 const STALLED_PREVIEW_MS = 8000;
-const FINAL_WAIT_MS = 2500;
+// stop() only requests a result. Allow a delayed native final before aborting;
+// fast finals still render immediately. An exhausted wait becomes recoverable.
+const FINAL_WAIT_MS = 5000;
 const AUTOSAVE_MS = 1500;
 
 function constructorForBrowser(): RecognitionConstructor | undefined {
@@ -219,6 +221,8 @@ export class BrowserSpeech {
   private finishRecognition(recognition: Recognition, abort = false) {
     if (this.recognition !== recognition) return;
     const wasFlushing = this.flushing === recognition;
+    recordBrowserTiming(abort ? "engine.final-timeout" : "engine.ended", this.preview?.result_id,
+      this.preview ? "unconfirmed" : "final-received");
     this.recognition = undefined;
     this.flushing = undefined;
     this.clearTurnTimers();

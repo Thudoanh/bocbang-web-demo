@@ -169,13 +169,22 @@ class GroqTranslationProvider(_GroqBase):
             try:
                 result = await self._generate(prompt)
                 raw_texts = result.get("translations")
-                if isinstance(raw_texts, list):
-                    batch_texts = [str(t).strip() for t in raw_texts if isinstance(t, str)]
+                if (
+                    not isinstance(raw_texts, list)
+                    or len(raw_texts) != len(batch)
+                    or any(not isinstance(t, str) or not t.strip() for t in raw_texts)
+                ):
+                    raise TranslationProviderError("Groq returned incomplete translations.", code="TRANSLATION_INCOMPLETE", retryable=True)
+                batch_texts = [t.strip() for t in raw_texts]
+            except LLMProviderError as exc:
+                raise TranslationProviderError(str(exc), code=exc.code, retryable=exc.retryable) from exc
+            except TranslationProviderError:
+                raise
             except Exception as exc:
-                logger.warning("Groq batch translation non-fatal error: %s", exc)
+                raise TranslationProviderError("Groq translation failed.", retryable=True) from exc
 
             for j, item in enumerate(batch):
-                translated_text = batch_texts[j] if j < len(batch_texts) and batch_texts[j] else item.text
+                translated_text = batch_texts[j]
                 all_translated.append(
                     TranscriptionSegment(
                         start_ms=item.start_ms,

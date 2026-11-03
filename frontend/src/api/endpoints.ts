@@ -67,6 +67,8 @@ let listCache: { key: string; data: Meeting[]; timestamp: number } | null = null
 const LIST_CACHE_TTL = 15_000;
 
 export const meetingsApi = {
+  resolveBrowserDraft: (id: string, body: { stream_segment_id: string; revision: number; action: "confirm" | "discard" | "recover" }) =>
+    apiClient.post<{ logical_segment_id?: string | null }>(`/meetings/${id}/browser-drafts/resolve`, body),
   sections: (id: string) => apiClient.get<MeetingSection[]>(`/meetings/${id}/sections`),
   renameSection: (meetingId: string, sectionId: string, title: string) => apiClient.patch<MeetingSection>(`/meetings/${meetingId}/sections/${sectionId}`, { title }),
   updateSection: (meetingId: string, sectionId: string, body: { title: string; start_ms: number; end_ms: number | null; expected_revision: string }) => apiClient.patch<MeetingSection>(`/meetings/${meetingId}/sections/${sectionId}`, body),

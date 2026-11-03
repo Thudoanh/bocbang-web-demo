@@ -67,10 +67,7 @@ def test_upload_uses_configured_provider_even_with_groq_key_and_preserves_brief_
                     TranscriptionSegment(1400, 3000, "Vậy chúng ta thống nhất.", "speaker_1"),
                 ), provider_name="speechmatics")
 
-        async def no_translation(*args):
-            pass
-
-        monkeypatch.setattr(MediaProcessingWorker, "_background_auto_translate", no_translation)
+        monkeypatch.setattr("app.workers.broker.enqueue_job", lambda *args: None)
         provider = Provider()
         provider.calls = []
         try:
@@ -127,10 +124,7 @@ def test_original_upload_is_submitted_unchanged_even_with_cached_wav(tmp_path, m
                 return TranscriptionResult("vi", (TranscriptionSegment(0, 1000, "Xin chào", "S1"),),
                     provider_name="speechmatics", provider_metadata={"model":"enhanced", "submit_ms":10, "wait_ms":20})
 
-        async def no_translation(*args):
-            pass
-
-        monkeypatch.setattr(MediaProcessingWorker, "_background_auto_translate", no_translation)
+        monkeypatch.setattr("app.workers.broker.enqueue_job", lambda *args: None)
         provider = Provider()
         try:
             assert await MediaProcessingWorker(db, storage, provider, Settings(_env_file=None)).run(jid) is False
