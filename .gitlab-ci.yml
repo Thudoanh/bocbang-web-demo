@@ -1,0 +1,67 @@
+stages:
+  - build
+  - deploy
+
+variables:
+  IMAGE_BE: "registry.h2qsolution.com/boc-bang-new/be"
+  IMAGE_FE: "registry.h2qsolution.com/boc-bang-new/fe"
+  DOCKER_TLS_CERTDIR: "/certs"
+
+.docker-build:
+  image: docker:cli
+  stage: build
+  services:
+    - docker:dind
+  before_script:
+    # Login only when credentials are provided (DOCKER_* or REGISTRY_*).
+    # Without them the runner host must already be logged in to the registry.
+    - |
+      REG_USER="${DOCKER_USERNAME:-$REGISTRY_USERNAME}"
+      REG_PASS="${DOCKER_PASSWORD:-$REGISTRY_PASSWORD}"
+      if [ -n "$REG_USER" ] && [ -n "$REG_PASS" ]; then
+        echo "$REG_PASS" | docker login -u "$REG_USER" --password-stdin registry.h2qsolution.com
+      else
+        echo "No registry CI variables set; using existing docker credentials on the runner."
+      fi
+  only:
+    - dev_new
+  tags:
+    - build_images_204
+
+build_be_dev:
+  extends: .docker-build
+  script:
+    - docker build -t "$IMAGE_BE:latest" -t "$IMAGE_BE:$CI_COMMIT_SHORT_SHA" -f docker/backend.Dockerfile backend
+    - docker push "$IMAGE_BE:latest"
+    - docker push "$IMAGE_BE:$CI_COMMIT_SHORT_SHA"
+
+build_fe_dev:
+  extends: .docker-build
+  script:
+    - docker build -t "$IMAGE_FE:latest" -t "$IMAGE_FE:$CI_COMMIT_SHORT_SHA" -f docker/frontend.Dockerfile frontend
+    - docker push "$IMAGE_FE:latest"
+    - docker push "$IMAGE_FE:$CI_COMMIT_SHORT_SHA"
+
+.kubectl-deploy:
+  image: bitnami/kubectl:1.30
+  stage: deploy
+  variables:
+    KUBECONFIG: /home/gitlab-runner/.kube/config
+  only:
+    - dev_new
+  tags:
+    - build_images_204
+
+deploy_dev:
+  extends: .kubectl-deploy
+  script:
+    # Migration job is immutable, so recreate it before applying.
+    - kubectl -n bocbang-backend delete job bocbang-migrate --ignore-not-found
+    - kubectl apply -f k8s/bocbang.yaml
+    - kubectl -n bocbang-backend wait --for=condition=complete job/bocbang-migrate --timeout=300s
+    - kubectl -n bocbang-backend rollout restart deployment/bocbang-backend-deployment deployment/bocbang-worker deployment/bocbang-reconciler
+    - kubectl -n bocbang-backend rollout status deployment/bocbang-backend-deployment --timeout=300s
+    - kubectl -n bocbang-backend rollout status deployment/bocbang-worker --timeout=300s
+    - kubectl -n bocbang-backend rollout status deployment/bocbang-reconciler --timeout=300s
+    - kubectl -n bocbang-frontend rollout restart deployment/bocbang-frontend-deployment
+    - kubectl -n bocbang-frontend rollout status deployment/bocbang-frontend-deployment --timeout=300s

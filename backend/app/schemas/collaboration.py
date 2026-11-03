@@ -1,0 +1,64 @@
+"""Collaboration comment and capability-link response contracts."""
+
+from datetime import datetime
+from uuid import UUID
+
+from pydantic import BaseModel, Field, field_validator
+
+from app.models.enums import MeetingPermission
+from app.schemas.meeting import MeetingResponse
+from app.schemas.browser_draft import BrowserDraftResponse
+from app.schemas.transcript import SpeakerResponse, TranscriptResponse
+
+
+class CommentCreateRequest(BaseModel):
+    body: str = Field(min_length=1, max_length=20_000)
+    segment_logical_id: UUID | None = None
+
+    @field_validator("body")
+    @classmethod
+    def strip_body(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Comment body cannot be blank.")
+        return value
+
+
+class CommentUpdateRequest(BaseModel):
+    body: str = Field(min_length=1, max_length=20_000)
+
+    @field_validator("body")
+    @classmethod
+    def strip_body(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Comment body cannot be blank.")
+        return value
+
+
+class CommentResponse(BaseModel):
+    id: UUID
+    meeting_id: UUID
+    segment_logical_id: UUID | None = None
+    author_id: UUID
+    author_user_id: UUID | None = None
+    author_name: str | None = None
+    author_avatar_url: str | None = None
+    body: str
+    content: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ShareAccessResponse(BaseModel):
+    meeting: MeetingResponse
+    permission: MeetingPermission
+
+
+class ShareTranscriptResponse(ShareAccessResponse):
+    """Capability-link-safe view of the current transcript only."""
+
+    transcript: TranscriptResponse | None
+    browser_drafts: list[BrowserDraftResponse] = Field(default_factory=list)
+    translations: dict[str, str] = Field(default_factory=dict)
+    speakers: list[SpeakerResponse] = Field(default_factory=list)

@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.pyc
+.venv*/
+venv/
+
+# Node
+node_modules/
+dist/
+
+# Environment
+.env
+.env.local
+
+# Local Speechmatics API testing (audio, voiceprints, and credentials)
+speechmatics-test/
+
+# IDE and OS
+.DS_Store
+Thumbs.db
+.local-media/
+
+*.db
+patch_main_cors.py
+start_offline.bat
+
+# Temp and test artifacts
+.*tmp*/
+*.sqlite3
+obj/
+bin/
+
+*.onnx
+!backend/app/realtime_engine/models/*.onnx

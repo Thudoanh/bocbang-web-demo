@@ -1,0 +1,403 @@
+# Kubernetes manifests for the BocBang stack (mirrors compose.yaml).
+# Secrets are NOT in this file. Create them on the cluster first:
+#   bocbang-env       from the root .env
+#   bocbang-postgres  with POSTGRES_PASSWORD
+# Backend stack (api, worker, reconciler, migrate, postgres, redis) runs in namespace bocbang-backend.
+# Frontend runs in namespace bocbang-frontend. Both namespaces already exist on the cluster.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  namespace: bocbang-backend
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-data
+  namespace: bocbang-backend
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 2Gi
+---
+# api, worker and reconciler all write media, so this needs ReadWriteMany.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: media-data
+  namespace: bocbang-backend
+spec:
+  accessModes: [ReadWriteMany]
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: bocbang-backend
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {app: postgres}
+  template:
+    metadata:
+      labels: {app: postgres}
+    spec:
+      imagePullSecrets:
+        - name: s-z4b4g
+      containers:
+        - name: postgres
+          image: registry.h2qsolution.com/boc-bang-new/postgres:latest
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: bocbang-postgres, key: POSTGRES_PASSWORD}
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+              subPath: pgdata
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U bocbang -d bocbang"]
+            periodSeconds: 5
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: postgres-data}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: bocbang-backend
+spec:
+  selector: {app: postgres}
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: bocbang-backend
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {app: redis}
+  template:
+    metadata:
+      labels: {app: redis}
+    spec:
+      imagePullSecrets:
+        - name: s-z4b4g
+      containers:
+        - name: redis
+          image: registry.h2qsolution.com/boc-bang-new/redis:latest
+          ports:
+            - containerPort: 6379
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: 5
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: redis-data}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: bocbang-backend
+spec:
+  selector: {app: redis}
+  ports:
+    - port: 6379
+      targetPort: 6379
+---
+# Shared backend env: Secret bocbang-env from .env, then overrides from compose.yaml.
+# Order matters: POSTGRES_PASSWORD must be defined before DATABASE_URL, so $(POSTGRES_PASSWORD) expands.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bocbang-backend-overrides
+  namespace: bocbang-backend
+# API/OAuth credentials are supplied by the existing bocbang-env Secret.
+data:
+  APP_ENVIRONMENT: development
+  QUEUE_BACKEND: redis
+  STORAGE_BACKEND: local
+  MEDIA_STORAGE_PATH: /data/media
+  REDIS_URL: redis://redis:6379/0
+  TRANSLATION_PROVIDER: "groq"
+  TRANSLATION_FALLBACK_PROVIDER: "gemini"
+  LLM_FALLBACK_PROVIDER: "groq"
+  GROQ_MODEL: "qwen/qwen3.8-27b"
+  GROQ_API_BASE_URL: "https://api.groq.com/openai/v1"
+  GOOGLE_REDIRECT_URI: https://bocbangapi.democloud.xyz/api/v1/auth/google/callback
+  # First origin is also the OAuth redirect target; keep the public frontend first.
+  FRONTEND_ORIGINS: https://htm.democloud.xyz,https://demobocbang.vercel.app,https://bocbangdemo.vercel.app,http://localhost:5173
+---
+# Database migration: run once before the api/worker pick up schema changes.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: bocbang-migrate
+  namespace: bocbang-backend
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: Never
+      imagePullSecrets:
+        - name: s-z4b4g
+      containers:
+        - name: migrate
+          image: registry.h2qsolution.com/boc-bang-new/be:latest
+          imagePullPolicy: Always
+          command: ["alembic", "upgrade", "head"]
+          envFrom:
+            - secretRef: {name: bocbang-env}
+            - configMapRef: {name: bocbang-backend-overrides}
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: bocbang-postgres, key: POSTGRES_PASSWORD}
+            - name: DATABASE_URL
+              value: postgresql+asyncpg://bocbang:$(POSTGRES_PASSWORD)@postgres:5432/bocbang
+          volumeMounts:
+            - name: media
+              mountPath: /data/media
+      volumes:
+        - name: media
+          persistentVolumeClaim: {claimName: media-data}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bocbang-backend-deployment
+  namespace: bocbang-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: bocbang-backend}
+  template:
+    metadata:
+      labels: {app: bocbang-backend}
+    spec:
+      imagePullSecrets:
+        - name: s-z4b4g
+      containers:
+        - name: bocbang-backend
+          image: registry.h2qsolution.com/boc-bang-new/be:latest
+          imagePullPolicy: Always
+          command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - secretRef: {name: bocbang-env}
+            - configMapRef: {name: bocbang-backend-overrides}
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: bocbang-postgres, key: POSTGRES_PASSWORD}
+            - name: DATABASE_URL
+              value: postgresql+asyncpg://bocbang:$(POSTGRES_PASSWORD)@postgres:5432/bocbang
+          volumeMounts:
+            - name: media
+              mountPath: /data/media
+          readinessProbe:
+            httpGet: {path: /api/v1/ready, port: 8000}
+            initialDelaySeconds: 20
+            periodSeconds: 10
+      volumes:
+        - name: media
+          persistentVolumeClaim: {claimName: media-data}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bocbang-backend-service
+  namespace: bocbang-backend
+spec:
+  selector: {app: bocbang-backend}
+  ports:
+    - port: 8000
+      targetPort: 8000
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: bocbang-backend-ingress
+  namespace: bocbang-backend
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "600m"
+    nginx.ingress.kubernetes.io/client-max-body-size: "600m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    nginx.ingress.kubernetes.io/websocket-services: "bocbang-backend-service"
+    nginx.org/websocket-services: "bocbang-backend-service"
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: bocbangapi.democloud.xyz
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: bocbang-backend-service
+                port: {number: 8000}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bocbang-worker
+  namespace: bocbang-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: bocbang-worker}
+  template:
+    metadata:
+      labels: {app: bocbang-worker}
+    spec:
+      terminationGracePeriodSeconds: 120
+      imagePullSecrets:
+        - name: s-z4b4g
+      containers:
+        - name: worker
+          image: registry.h2qsolution.com/boc-bang-new/be:latest
+          imagePullPolicy: Always
+          command: ["dramatiq", "app.workers.worker", "--processes", "1", "--threads", "4"]
+          envFrom:
+            - secretRef: {name: bocbang-env}
+            - configMapRef: {name: bocbang-backend-overrides}
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: bocbang-postgres, key: POSTGRES_PASSWORD}
+            - name: DATABASE_URL
+              value: postgresql+asyncpg://bocbang:$(POSTGRES_PASSWORD)@postgres:5432/bocbang
+          volumeMounts:
+            - name: media
+              mountPath: /data/media
+      volumes:
+        - name: media
+          persistentVolumeClaim: {claimName: media-data}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bocbang-reconciler
+  namespace: bocbang-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: bocbang-reconciler}
+  template:
+    metadata:
+      labels: {app: bocbang-reconciler}
+    spec:
+      imagePullSecrets:
+        - name: s-z4b4g
+      containers:
+        - name: reconciler
+          image: registry.h2qsolution.com/boc-bang-new/be:latest
+          imagePullPolicy: Always
+          command: ["python", "-m", "app.workers.reconciler"]
+          envFrom:
+            - secretRef: {name: bocbang-env}
+            - configMapRef: {name: bocbang-backend-overrides}
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: bocbang-postgres, key: POSTGRES_PASSWORD}
+            - name: DATABASE_URL
+              value: postgresql+asyncpg://bocbang:$(POSTGRES_PASSWORD)@postgres:5432/bocbang
+          volumeMounts:
+            - name: media
+              mountPath: /data/media
+      volumes:
+        - name: media
+          persistentVolumeClaim: {claimName: media-data}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bocbang-frontend-deployment
+  namespace: bocbang-frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: bocbang-frontend}
+  template:
+    metadata:
+      labels: {app: bocbang-frontend}
+    spec:
+      imagePullSecrets:
+        - name: s-d5bjn
+      containers:
+        - name: bocbang-frontend
+          # Built with VITE_API_BASE_URL baked in at build time; the build must point at https://bocbangapi.democloud.xyz/api/v1
+          image: registry.h2qsolution.com/boc-bang-new/fe:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bocbang-frontend-service
+  namespace: bocbang-frontend
+spec:
+  selector: {app: bocbang-frontend}
+  ports:
+    - port: 8080
+      targetPort: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: bocbang-frontend-ingress
+  namespace: bocbang-frontend
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "600m"
+    nginx.ingress.kubernetes.io/client-max-body-size: "600m"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: htm.democloud.xyz
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: bocbang-frontend-service
+                port: {number: 8080}

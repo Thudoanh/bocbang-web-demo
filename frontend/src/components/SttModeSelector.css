@@ -1,0 +1,35 @@
+.stt-mode-selector { color: var(--text); font-size: 12px; padding: 8px 10px; }
+.stt-mode-selector label { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 0; }
+.stt-mode-selector select { width: auto; min-width: 100px; padding: 6px 8px; border: 1px solid var(--border, #777); border-radius: 8px; background: var(--bg); color: var(--text); cursor: pointer; }
+.stt-mode-selector select:disabled { cursor: default; opacity: .7; }
+.stt-mode-selector small { display: block; text-align: center; margin-top: 4px; opacity: .8; }
+.stt-mode-selector.is-compact { padding: 6px 0; }
+.stt-mode-selector.is-compact label { flex-direction: column; gap: 3px; font-size: 9px; }
+.stt-mode-selector.is-compact select { width: 49px; min-width: 0; padding: 4px 0; font-size: 10px; }
+.bocbang-floating-bar-wrap.recording-stt-bar { width: max-content; max-width: calc(100vw - 284px); }
+.sidebar-collapsed .bocbang-floating-bar-wrap.recording-stt-bar { max-width: calc(100vw - 80px); }
+.recording-stt-bar > .bocbang-floating-bar { max-width: 100%; gap: 8px; }
+.stt-mode-selector.is-inline { padding: 0; flex: 0 0 auto; position: relative; }
+.stt-mode-selector.is-inline label > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.stt-mode-selector.is-inline select, .browser-stt-language select {
+  height: 46px; min-height: 46px; margin: 0; padding: 0 10px;
+  border: 1px solid var(--border, #e2e8f0); border-radius: 14px;
+  background: var(--surface, #ffffff); color: var(--text, #0f172a);
+  font: inherit; font-size: 12px; cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .04);
+}
+.stt-mode-selector.is-inline select { width: 112px; min-width: 112px; }
+.browser-stt-language { margin: 0; display: flex; flex: 0 0 auto; }
+.browser-stt-language select { width: 66px; min-width: 66px; }
+.stt-mode-selector.is-inline select:disabled, .browser-stt-language select:disabled { cursor: default; opacity: .7; }
+.stt-mode-selector.is-inline [role="alert"] {
+  position: absolute; bottom: calc(100% + 10px); left: 50%; transform: translateX(-50%);
+  width: 250px; margin: 0; padding: 10px; border-radius: 10px;
+  background: var(--surface, #ffffff); box-shadow: 0 4px 16px rgba(0, 0, 0, .15);
+}
+html[data-theme="dark"] .stt-mode-selector.is-inline select,
+html[data-theme="dark"] .browser-stt-language select { background: #161822; border-color: rgba(255,255,255,.14); }
+@media (max-width: 1150px) {
+  .recording-stt-bar > .bocbang-floating-bar { overflow-x: auto; scrollbar-width: none; }
+  .recording-stt-bar > .bocbang-floating-bar::-webkit-scrollbar { display: none; }
+}
