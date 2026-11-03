@@ -164,6 +164,8 @@ async def get_translation(translation_id: UUID, user: CurrentUserDependency, ser
 @meetings_router.post("/{meeting_id}/summaries", response_model=JobResponse, status_code=status.HTTP_202_ACCEPTED)
 async def create_summary(meeting_id: UUID, payload: SummaryCreateRequest, user: CurrentUserDependency, service: AIServiceDependency, request: Request) -> JobResponse:
     job = await service.request_summary(meeting_id, user, payload)
+    if job.status in {"processing", "retrying"}:
+        return job
     try:
         request.app.state.enqueue_job(job.id, request.app.state.settings)
     except Exception:

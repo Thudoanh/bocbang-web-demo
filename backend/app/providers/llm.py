@@ -3,7 +3,9 @@
 from collections.abc import Callable
 
 from app.core.config import Settings
+from app.core.logging import get_logger
 from app.providers.contracts import LLMCapabilities, LLMProvider, LLMProviderError
+from app.providers.summary_validation import validate_summary
 
 LLMProviderFactory = Callable[[Settings], LLMProvider]
 
@@ -53,13 +55,20 @@ class FallbackLLMProvider:
         template: str | None = None,
     ) -> dict[str, object]:
         try:
-            return await self._primary.generate_summary(
+            result = await self._primary.generate_summary(
                 transcript, prompt, output_language, template
             )
-        except LLMProviderError:
-            return await self._fallback.generate_summary(
+            return validate_summary(result, template)
+        except LLMProviderError as exc:
+            get_logger(__name__).warning("summary_fallback_activated", extra={
+                "primary_provider": type(self._primary).__name__,
+                "fallback_provider": type(self._fallback).__name__,
+                "error_code": exc.code,
+            })
+            result = await self._fallback.generate_summary(
                 transcript, prompt, output_language, template
             )
+            return validate_summary(result, template)
 
 
 llm_provider_registry = LLMProviderRegistry()

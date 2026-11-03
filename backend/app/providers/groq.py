@@ -19,6 +19,7 @@ from app.providers.contracts import (
     TranslationProviderError,
 )
 from app.providers.transcript_polish import TranscriptPolishMixin
+from app.providers.summary_validation import validate_summary
 
 _SUMMARY_KEYS = ("overview", "key_points", "action_items", "decisions", "risks_notes")
 
@@ -33,6 +34,14 @@ class _GroqBase:
         self._api_base_url = api_base_url.rstrip("/")
 
     async def _generate(self, prompt: str, schema: dict[str, object] | None = None) -> dict[str, Any]:
+        instruction = "You are a professional assistant. You MUST output a valid JSON object."
+        response_format: dict[str, object] = {"type": "json_object"}
+        if schema is not None:
+            instruction += " Follow this JSON schema exactly. Keep its property names unchanged: " + json.dumps(schema, ensure_ascii=False)
+            if self._model in {"openai/gpt-oss-20b", "openai/gpt-oss-120b", "qwen/qwen3.8-27b", "meta-models/muse-spark-open"}:
+                response_format = {"type": "json_schema", "json_schema": {
+                    "name": "structured_response", "strict": True, "schema": schema,
+                }}
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=15.0)) as client:
                 response = await client.post(
@@ -41,16 +50,17 @@ class _GroqBase:
                     json={
                         "model": self._model,
                         "messages": [
-                            {"role": "system", "content": "You are a professional assistant. You MUST output a valid JSON object."},
+                            {"role": "system", "content": instruction},
                             {"role": "user", "content": prompt},
                         ],
-                        "response_format": {"type": "json_object"},
+                        "response_format": response_format,
                         "temperature": 0.1,
                     },
                 )
         except httpx.HTTPError as exc:
             raise LLMProviderError("Groq could not be reached.", code="GROQ_NETWORK_ERROR", retryable=True) from exc
         if response.is_error:
+            logger.warning("groq_request_failed", extra={"model": self._model, "http_status": response.status_code})
             provider_code = None
             try:
                 payload = response.json()
@@ -139,7 +149,7 @@ class GroqSummaryProvider(TranscriptPolishMixin, _GroqBase):
                 f"Write every human-readable value in {language_name}. Return JSON only. "
                 f"\n\nUser request:\n{user_prompt}\n\nTranscript:\n{transcript}"
             )
-        return await self._generate(prompt, schema)
+        return validate_summary(await self._generate(prompt, schema), template)
 
 
 class GroqTranslationProvider(_GroqBase):

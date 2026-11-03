@@ -173,7 +173,7 @@ def test_gemini_summary_declares_structured_output(monkeypatch) -> None:
         return {"overview": "Overview", "key_points": [], "action_items": [], "decisions": [], "risks_notes": []}
 
     monkeypatch.setattr(provider, "_generate", response)
-    result = asyncio.run(provider.generate_summary("Transcript", "general", "vi"))
+    result = asyncio.run(provider.generate_summary("Transcript", None, "vi", "general"))
     assert provider.capabilities().structured_output
     assert result["overview"] == "Overview"
 
@@ -185,7 +185,7 @@ def test_groq_summary_declares_structured_output(monkeypatch) -> None:
         return {"overview": "Overview", "key_points": [], "action_items": [], "decisions": [], "risks_notes": []}
 
     monkeypatch.setattr(provider, "_generate", response)
-    result = asyncio.run(provider.generate_summary("Transcript", "general", "en"))
+    result = asyncio.run(provider.generate_summary("Transcript", None, "en", "general"))
     assert provider.capabilities().structured_output
     assert result["overview"] == "Overview"
 
@@ -219,7 +219,7 @@ def test_llm_fallback_uses_secondary_after_primary_failure() -> None:
             return {"overview": "Fallback", "key_points": [], "action_items": [], "decisions": [], "risks_notes": []}
 
     provider = FallbackLLMProvider(FailingProvider(), SuccessfulProvider())
-    assert asyncio.run(provider.generate_summary("Transcript", "general", "en"))["overview"] == "Fallback"
+    assert asyncio.run(provider.generate_summary("Transcript", None, "en", "general"))["overview"] == "Fallback"
 
 
 def test_llm_registry_builds_groq_fallback() -> None:

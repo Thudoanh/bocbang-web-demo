@@ -8,6 +8,8 @@ from typing import Any
 import httpx
 
 from app.core.config import Settings
+from app.core.logging import get_logger
+from app.providers.summary_validation import validate_summary
 from app.providers.contracts import (
     LLMCapabilities,
     LLMProviderError,
@@ -39,7 +41,10 @@ class _GeminiBase:
             raise LLMProviderError("Gemini could not be reached.", code="GEMINI_NETWORK_ERROR", retryable=True) from exc
         if response.is_error:
             retryable = response.status_code == 429 or response.status_code >= 500
-            raise LLMProviderError("Gemini rejected the request.", code="GEMINI_HTTP_ERROR", retryable=retryable)
+            get_logger(__name__).warning("gemini_request_failed", extra={"model": self._model, "http_status": response.status_code})
+            raise LLMProviderError(
+                "Gemini đang giới hạn số yêu cầu. Hãy chờ hạn mức hồi phục." if response.status_code == 429 else "Gemini rejected the request.",
+                code="GEMINI_RATE_LIMITED" if response.status_code == 429 else "GEMINI_HTTP_ERROR", retryable=retryable)
         try:
             payload = response.json()
             text = payload["candidates"][0]["content"]["parts"][0]["text"]
@@ -113,7 +118,7 @@ class GeminiSummaryProvider(TranscriptPolishMixin, _GeminiBase):
                 f"Write every human-readable value in {language_name}. Return JSON only. "
                 f"\n\nUser request:\n{user_prompt}\n\nTranscript:\n{transcript}"
             )
-        return await self._generate(prompt, schema)
+        return validate_summary(await self._generate(prompt, schema), template)
 
 
 def build_gemini_translation_provider(settings: Settings) -> GeminiTranslationProvider:

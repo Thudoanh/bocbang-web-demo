@@ -130,6 +130,13 @@ class AIService:
                 "actor_id": str(user.id),
             },
         )
+        pending = await self._session.scalars(select(Job).where(
+            Job.meeting_id == meeting.id, Job.job_type == "summary",
+            Job.status.in_([JobStatus.QUEUED, JobStatus.PROCESSING, JobStatus.RETRYING]),
+        ))
+        for existing in pending:
+            if all((existing.payload or {}).get(key) == value for key, value in job.payload.items()):
+                return _job_response(existing)
         self._session.add(job)
         await self._session.commit()
         await self._session.refresh(job)
